@@ -51,6 +51,7 @@ type Service struct {
 	Tools      int  // tools the bridge serves
 	ToolsKnown bool // the bridge has reported at least once
 	MCPDown    bool // the local server does not answer; the bridge restarts it
+	MCPURL     bool // the local server is a URL: it is not restarted, only reached again
 }
 
 // Line is one recent request or connection.
@@ -93,7 +94,7 @@ func NewStore(relay, version string, specs []client.TunnelSpec) *Store {
 		summed:   map[int]bool{},
 	}
 	for i, sp := range specs {
-		s.m.Services = append(s.m.Services, Service{Name: sp.Name, Type: sp.Type, Local: sp.LocalAddr, MCP: sp.MCP != nil})
+		s.m.Services = append(s.m.Services, Service{Name: sp.Name, Type: sp.Type, Local: sp.LocalAddr, MCP: sp.MCP != nil, MCPURL: sp.MCP != nil && sp.MCP.URL != ""})
 		if sp.MCP != nil {
 			sp.MCP.Status.OnChange(func(tools int, running bool) { s.setTools(i, tools, running) })
 		}

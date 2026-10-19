@@ -51,6 +51,9 @@ func (b *Bridge) supervise() {
 	}
 }
 
+// exitSettle is how long a closed session waits for the child's exit.
+const exitSettle = time.Second
+
 func errText(err error) string {
 	if err == nil {
 		return "exit status 0"
@@ -98,6 +101,10 @@ func (b *Bridge) runChild() error {
 		}
 		return fmt.Errorf("no MCP handshake: %w", err)
 	}
+	// The session can end while the child runs on: a line on stdout that
+	// is not JSON-RPC ends it. The child is then ended and started again.
+	sessionEnded := make(chan error, 1)
+	go func(cs *mcp.ClientSession) { sessionEnded <- cs.Wait() }(cs)
 	b.setSession(cs, false)
 	if err := b.refresh(b.ctx); err != nil && b.ctx.Err() == nil {
 		b.log.Warn("mcp server: tool list not fetched", "source", b.opts.Name, "error", err.Error())
@@ -106,6 +113,22 @@ func (b *Bridge) runChild() error {
 	select {
 	case <-p.exited:
 	case <-b.ctx.Done():
+	case werr := <-sessionEnded:
+		// A child that exits closes the session first; give its exit a
+		// moment to be seen, so that its status is what is reported.
+		t := time.NewTimer(exitSettle)
+		defer t.Stop()
+		select {
+		case <-p.exited: // it ended because the child did
+		case <-t.C:
+			why := "the connection closed"
+			if werr != nil {
+				why = werr.Error()
+			}
+			b.log.Warn("mcp server: session ended while the process runs; ending it", "source", b.opts.Name, "reason", why)
+			stop()
+			return fmt.Errorf("the MCP session ended: %s", why)
+		}
 	}
 	stop()
 	return p.exitErr()

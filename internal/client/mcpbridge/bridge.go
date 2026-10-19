@@ -40,6 +40,8 @@ const (
 	defaultBackoffMax = 30 * time.Second
 	// connectTimeout bounds the MCP handshake with a fresh child or URL.
 	connectTimeout = 30 * time.Second
+	// listTimeout bounds one fetch of the tool list.
+	listTimeout = 30 * time.Second
 	// stableRun is how long a child has to run for the next restart to start
 	// from the shortest wait again.
 	stableRun = time.Minute
@@ -156,15 +158,16 @@ func Start(o Options) (*Bridge, error) {
 		Logger:       b.log,
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{ListChanged: true}},
 	})
+	b.server.AddReceivingMiddleware(toolsOnly)
 	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return b.server }, &mcp.StreamableHTTPOptions{
 		Stateless:    true,
 		JSONResponse: true,
-		// Requests come through the tunnel with the relay's Host header. The
-		// listener is on loopback only.
-		DisableLocalhostProtection: true,
-		Logger:                     b.log,
+		// The SDK's DNS-rebinding guard stays on: the relay's tunnel sends
+		// Host = the local address, so only a foreign name is refused.
+		Logger: b.log,
 	})
-	b.http = &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	// No write timeout: a tool call may take as long as the source allows.
+	b.http = &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
 	go func() { _ = b.http.Serve(ln) }()
 
 	b.wg.Add(2)
@@ -192,7 +195,7 @@ func validate(o *Options) error {
 	}
 	for _, kv := range o.Env {
 		if k, _, ok := strings.Cut(kv, "="); !ok || k == "" {
-			return fmt.Errorf("mcp bridge: environment entry %q is not KEY=VALUE", kv)
+			return errors.New("mcp bridge: an environment entry is not KEY=VALUE") // the value may be a secret
 		}
 	}
 	if o.Logger == nil {
@@ -373,6 +376,8 @@ func (b *Bridge) withSession(ctx context.Context, again bool, f func(*mcp.Client
 
 // refresh fetches the tool list and serves it.
 func (b *Bridge) refresh(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, listTimeout)
+	defer cancel()
 	var tools []*mcp.Tool
 	err := b.withSession(ctx, true, func(cs *mcp.ClientSession) error {
 		tools = tools[:0]
@@ -490,6 +495,23 @@ func (b *Bridge) detach(reqCtx context.Context) (context.Context, context.Cancel
 	return ctx, func() { stop(); cancel() }
 }
 
+// refusedPrefixes are the method families beyond tools (D3).
+var refusedPrefixes = []string{"resources/", "prompts/", "completion/", "logging/", "tasks/", "sampling/", "elicitation/", "roots/"}
+
+// toolsOnly answers a method outside tools with -32601 and a message that
+// names the limit. Where the SDK refuses a method itself (it knows the
+// server has no resources), its own -32601 comes first.
+func toolsOnly(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		for _, p := range refusedPrefixes {
+			if strings.HasPrefix(method, p) {
+				return nil, &jsonrpc.Error{Code: jsonrpc.CodeMethodNotFound, Message: "burrow mcp publishes tools only; " + method + " is not supported"}
+			}
+		}
+		return next(ctx, method, req)
+	}
+}
+
 func errorResult(text string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }
@@ -543,10 +565,4 @@ func (b *Bridge) startsForTest() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.starts
-}
-
-func (b *Bridge) pidForTest() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.pid
 }

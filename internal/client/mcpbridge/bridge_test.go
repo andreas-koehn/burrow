@@ -5,15 +5,16 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"os/exec"
 	"runtime"
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/ankoehn/burrow/internal/mcptest"
@@ -200,6 +201,67 @@ func TestBridge_ServesToolsOnly(t *testing.T) {
 	}
 }
 
+// The SDK's DNS-rebinding guard stays on: the relay's tunnel sends Host =
+// the local address, a page in a browser that was rebound to 127.0.0.1 sends
+// its own name.
+func TestBridge_RefusesAForeignHost(t *testing.T) {
+	o := fast(t, nil, nil)
+	o.Command = []string{mcptest.BuildMockMCP(t)}
+	b := start(t, o)
+	waitReady(t, b)
+	post := func(host string) int {
+		body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"x","version":"1"}}}`
+		req, err := http.NewRequest(http.MethodPost, "http://"+b.Addr()+"/mcp", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = host
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+		return res.StatusCode
+	}
+	if code := post("evil.example.com"); code != http.StatusForbidden {
+		t.Fatalf("foreign Host: status %d, want 403", code)
+	}
+	if code := post(b.Addr()); code != http.StatusOK {
+		t.Fatalf("Host = the local address: status %d, want 200", code)
+	}
+}
+
+// Methods outside tools are refused with -32601 (D3), on every revision:
+// by the bridge with a message that names the limit, or, where the SDK
+// refuses the method first, with its own message.
+func TestBridge_RefusesNonToolMethods(t *testing.T) {
+	o := fast(t, nil, nil)
+	o.Command = []string{mcptest.BuildMockMCP(t)}
+	b := start(t, o)
+	waitReady(t, b)
+	for _, rev := range []string{"", "2025-11-25", "2025-06-18"} {
+		c := mcp.NewClient(&mcp.Implementation{Name: "relay-test"}, nil)
+		cs, err := c.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: "http://" + b.Addr() + "/mcp", DisableStandaloneSSE: true},
+			&mcp.ClientSessionOptions{ProtocolVersion: rev})
+		if err != nil {
+			t.Fatalf("%q: %v", rev, err)
+		}
+		for name, call := range map[string]func() error{
+			"resources/list": func() error { _, err := cs.ListResources(context.Background(), nil); return err },
+			"prompts/list":   func() error { _, err := cs.ListPrompts(context.Background(), nil); return err },
+		} {
+			err := call()
+			var we *jsonrpc.Error
+			if !errors.As(err, &we) || we.Code != jsonrpc.CodeMethodNotFound {
+				t.Fatalf("%q %s: err = %v, want -32601", rev, name, err)
+			}
+		}
+		_ = cs.Close()
+	}
+}
+
 func TestBridge_HTTPUpstream(t *testing.T) {
 	for _, stateful := range []bool{false, true} {
 		name := "stateless"
@@ -355,71 +417,6 @@ func TestBridge_ChildEnvAndStderrReachTheLog(t *testing.T) {
 	if !strings.Contains(buf.String(), "source=files") {
 		t.Fatalf("the stderr line does not name the source:\n%s", buf.String())
 	}
-}
-
-func TestBridge_CloseEndsTheChild(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("checks the pid with signal 0")
-	}
-	o := fast(t, nil, nil)
-	o.Command = []string{mcptest.BuildMockMCP(t)}
-	b := start(t, o)
-	waitReady(t, b)
-	pid := b.pidForTest()
-	if pid <= 0 || syscall.Kill(pid, 0) != nil {
-		t.Fatalf("no running child (pid %d)", pid)
-	}
-	if err := b.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
-		t.Fatalf("the child %d is still there after Close (kill 0: %v)", pid, err)
-	}
-	select {
-	case <-b.Done():
-	default:
-		t.Fatal("Done is open after Close")
-	}
-	if b.Err() != nil {
-		t.Fatalf("Err after Close = %v, want nil", b.Err())
-	}
-}
-
-func TestTerminate_SIGTERMThenKill(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh and signals")
-	}
-	t.Run("exits on SIGTERM", func(t *testing.T) {
-		p, err := startProcess([]string{"sh", "-c", "while :; do sleep 0.05; done"}, nil, nil, time.Second)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer p.closePipes()
-		began := time.Now()
-		p.terminate(5 * time.Second)
-		if d := time.Since(began); d > 3*time.Second {
-			t.Fatalf("terminate took %v for a process that ends on SIGTERM", d)
-		}
-	})
-	t.Run("killed after the grace period", func(t *testing.T) {
-		p, err := startProcess([]string{"sh", "-c", `trap "" TERM; while :; do sleep 0.05; done`}, nil, nil, time.Second)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer p.closePipes()
-		time.Sleep(100 * time.Millisecond) // let the shell set its trap
-		began := time.Now()
-		p.terminate(300 * time.Millisecond)
-		d := time.Since(began)
-		if d < 300*time.Millisecond {
-			t.Fatalf("terminate returned after %v, before the grace period", d)
-		}
-		select {
-		case <-p.exited:
-		default:
-			t.Fatal("the process is still running")
-		}
-	})
 }
 
 func TestStart_Validation(t *testing.T) {

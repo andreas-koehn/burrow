@@ -297,16 +297,21 @@ func mcpLabel(s Service) string {
 	case !s.ToolsKnown:
 		return "MCP · starting"
 	case s.Tools == 1:
-		return withDown("MCP · 1 tool", s.MCPDown)
+		return withDown("MCP · 1 tool", s)
 	}
-	return withDown(fmt.Sprintf("MCP · %d tools", s.Tools), s.MCPDown)
+	return withDown(fmt.Sprintf("MCP · %d tools", s.Tools), s)
 }
 
-func withDown(label string, down bool) string {
-	if down {
-		return label + " · restarting"
+// withDown adds why the server does not answer: a command is started again,
+// a URL is only reached again.
+func withDown(label string, s Service) string {
+	switch {
+	case !s.MCPDown:
+		return label
+	case s.MCPURL:
+		return label + " · unreachable"
 	}
-	return label
+	return label + " · restarting"
 }
 
 // accessLabel names a relay access mode for a person. A mode without a name

@@ -4,10 +4,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -18,6 +16,7 @@ type process struct {
 	stdout io.ReadCloser  // our end
 	exited chan struct{}  // closed once Wait returned
 	err    error          // what Wait returned; read after exited
+	group  platformGroup  // the process group (Unix) or job object (Windows)
 }
 
 // startProcess starts argv with this process's environment plus env. stderr
@@ -38,6 +37,7 @@ func startProcess(argv, env []string, stderr io.Writer, grace time.Duration) (*p
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = inR, outW, stderr
 	cmd.WaitDelay = grace
+	prepare(cmd)
 	if err := cmd.Start(); err != nil {
 		for _, f := range []*os.File{inR, inW, outR, outW} {
 			_ = f.Close()
@@ -48,6 +48,7 @@ func startProcess(argv, env []string, stderr io.Writer, grace time.Duration) (*p
 	_ = inR.Close()
 	_ = outW.Close()
 	p := &process{cmd: cmd, stdin: inW, stdout: outR, exited: make(chan struct{})}
+	p.started()
 	go func() {
 		p.err = cmd.Wait()
 		close(p.exited)
@@ -55,28 +56,29 @@ func startProcess(argv, env []string, stderr io.Writer, grace time.Duration) (*p
 	return p, nil
 }
 
-// terminate ends the child: SIGTERM (on Windows, which has no SIGTERM, a
-// kill), and a kill when it is still there after grace. It returns once the
-// child has been waited for.
+// terminate ends the child and what it started: a polite stop (SIGTERM to
+// its process group; on Windows there is none, so the job is ended at once),
+// and a kill when it is still there after grace. It returns once the child
+// has been waited for. A child that already ended gets its leftovers killed.
 func (p *process) terminate(grace time.Duration) {
 	select {
 	case <-p.exited:
+		p.kill()
+		p.release()
 		return
 	default:
 	}
-	if runtime.GOOS == "windows" {
-		_ = p.cmd.Process.Kill()
-	} else {
-		_ = p.cmd.Process.Signal(syscall.SIGTERM)
-	}
+	p.stop()
 	t := time.NewTimer(grace)
 	defer t.Stop()
 	select {
 	case <-p.exited:
+		p.kill() // grandchildren that ignored the stop
 	case <-t.C:
-		_ = p.cmd.Process.Kill()
+		p.kill()
 		<-p.exited
 	}
+	p.release()
 }
 
 func (p *process) closePipes() {

@@ -73,8 +73,13 @@ func newMCPCmd(d deps) *cobra.Command {
 			}
 			env, _ := flags.GetStringArray("env")
 			for _, kv := range env {
-				if k, _, ok := strings.Cut(kv, "="); !ok || !client.ValidEnvKey(k) {
-					return usageErrorf("--env takes KEY=VALUE, not %q", kv)
+				// Only the key is ever shown: the value may be a secret.
+				k, _, ok := strings.Cut(kv, "=")
+				switch {
+				case !ok:
+					return usageErrorf("--env takes KEY=VALUE; an entry has no =")
+				case !client.ValidEnvKey(k):
+					return usageErrorf("--env takes KEY=VALUE; an entry has an empty key")
 				}
 			}
 			spec.Env = env
@@ -162,24 +167,28 @@ func foregroundWithBridges(cmd *cobra.Command, d deps, creds client.Credentials,
 
 	// The first tool lists, so that the relay finds the tools when the
 	// tunnel comes up. Ctrl-C while waiting still closes the bridges.
-	wait, stopWait := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	timer := time.NewTimer(mcpReadyWait)
+	// One deadline for all of them, not one each.
+	sig, stopSig := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	wait, stopWait := context.WithTimeout(sig, mcpReadyWait)
 	for i, b := range bridges {
 		select {
 		case <-b.Ready():
-		case <-timer.C:
-			log.Warn("mcp server: no tool list yet; the tunnel comes up anyway", "source", out[i].Name)
 		case <-wait.Done():
 		}
 		if err := b.Err(); err != nil {
 			stopWait()
-			timer.Stop()
+			stopSig()
 			return &exitError{code: exitGeneral, msg: err.Error()}
 		}
+		select {
+		case <-b.Ready():
+		default:
+			log.Warn("mcp server: no tool list yet; the tunnel comes up anyway", "source", out[i].Name)
+		}
 	}
-	timer.Stop()
-	interrupted := wait.Err() != nil && ctx.Err() == nil
 	stopWait()
+	interrupted := sig.Err() != nil && ctx.Err() == nil
+	stopSig()
 	if interrupted {
 		return nil
 	}

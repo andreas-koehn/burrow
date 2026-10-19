@@ -15,6 +15,12 @@ func mcpService(tools int, known, down bool) Service {
 	}
 }
 
+func urlService(tools int, down bool) Service {
+	s := mcpService(tools, true, down)
+	s.MCPURL = true
+	return s
+}
+
 func TestRender_MCPService(t *testing.T) {
 	cases := []struct {
 		svc  Service
@@ -24,6 +30,7 @@ func TestRender_MCPService(t *testing.T) {
 		{mcpService(1, true, false), "  files   AI gateway only  →  MCP · 1 tool"},
 		{mcpService(0, false, false), "  files   AI gateway only  →  MCP · starting"},
 		{mcpService(4, true, true), "  files   AI gateway only  →  MCP · 4 tools · restarting"},
+		{urlService(4, true), "  files   AI gateway only  →  MCP · 4 tools · unreachable"},
 	}
 	for _, tc := range cases {
 		lines := Render(connected(tc.svc), 100, false)
@@ -42,7 +49,7 @@ func TestStore_MCPStatusFromTheBridge(t *testing.T) {
 	st := &client.MCPStatus{}
 	specs := []client.TunnelSpec{{Name: "files", Type: "http", LocalAddr: "127.0.0.1:41234", MCP: &client.MCPSpec{Command: []string{"x"}, Status: st}}}
 	s := NewStore("burrow.example.com", "v0.6.0", specs)
-	if sv := s.Snapshot().Services[0]; !sv.MCP || sv.ToolsKnown {
+	if sv := s.Snapshot().Services[0]; !sv.MCP || sv.ToolsKnown || sv.MCPURL {
 		t.Fatalf("before the first status: %+v", sv)
 	}
 	st.Set(5, true)
@@ -63,5 +70,12 @@ func TestStore_MCPStatusFromTheBridge(t *testing.T) {
 	s.Registered(client.RegisteredTunnel{TunnelID: "t1", Name: "files", Type: "http", LocalAddr: "127.0.0.1:41234", GatewayOnly: true})
 	if sv := s.Snapshot().Services[0]; !sv.MCP || sv.Tools != 5 || sv.Public != GatewayOnlyPublic {
 		t.Fatalf("after registration: %+v", sv)
+	}
+}
+
+func TestStore_MCPURLSource(t *testing.T) {
+	specs := []client.TunnelSpec{{Name: "notes", Type: "http", LocalAddr: "127.0.0.1:1", MCP: &client.MCPSpec{URL: "http://localhost:3001/mcp"}}}
+	if sv := NewStore("r", "v", specs).Snapshot().Services[0]; !sv.MCP || !sv.MCPURL {
+		t.Fatalf("%+v", sv)
 	}
 }

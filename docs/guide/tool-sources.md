@@ -68,13 +68,20 @@ own flags go before it:
 ```sh
 burrow mcp files -- npx -y @modelcontextprotocol/server-filesystem ~/docs
 
-burrow mcp github --env GITHUB_PERSONAL_ACCESS_TOKEN=ghp_... -- \
+# The command gets burrow's environment: export a secret instead of
+# putting it on the command line.
+export GITHUB_PERSONAL_ACCESS_TOKEN=...
+burrow mcp github -- \
   docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server
 ```
 
+Do not pass secrets with `--env`. Everything on a command line can be read by
+other users of the machine and ends up in shell history. Export the variable
+before you run `burrow mcp`, or put it under `env` in `burrow.yaml`.
+
 | Flag | Meaning |
 |---|---|
-| `--env KEY=VALUE` | Adds a variable to the command's environment. It can be repeated. The command also gets burrow's own environment. |
+| `--env KEY=VALUE` | Adds a variable to the command's environment. It can be repeated. The command also gets burrow's own environment. Use it for settings, not for secrets. |
 | `--restart-max N` | Restarts the command at most N times, then gives up. `0` never restarts it. The default, `-1`, has no limit. |
 
 ### A server that already runs
@@ -132,6 +139,8 @@ a local address:
 
 `MCP · starting` means that the first tool list has not arrived yet.
 `· restarting` means that the command has ended and is being started again.
+`· unreachable` means that the URL of a server that was already running does
+not answer.
 The status view replaces the log lines, so the server's stderr is not shown
 there. Run with `--log text` to see it.
 
@@ -143,7 +152,10 @@ there. Run with `--log text` to see it.
 bridge is an MCP client to your server and also an MCP server toward the
 relay. The tunnel's local address is the bridge, so the relay calls it like
 any other http service. Because the bridge speaks MCP on both sides, your
-server may use an older protocol revision than the relay.
+server may use an older protocol revision than the relay. The bridge refuses
+requests whose `Host` header is not a loopback address. This protects it
+from DNS rebinding. The relay's tunnel sends the local address as the host,
+so its requests pass.
 
 Before the tunnel comes up, burrow waits up to 30 seconds for the server's
 first tool list, so that the relay's first sync finds the tools. After that
@@ -170,8 +182,15 @@ announces a change.
     list. A call in that time gets an error result that says the server is
     being started again. Keeping the list stops the tools from looking removed
     and then new to the relay, which would make them pending again.
-  - When `burrow mcp` stops, the command gets SIGTERM and is killed if it is
-    still running 5 seconds later. On Windows it is killed at once.
+  - The command runs in its own process group, so a Ctrl-C in the terminal
+    goes to burrow and not straight to the command. On Windows it runs in its
+    own job object instead.
+  - When `burrow mcp` stops, the command and every process it started get
+    SIGTERM. Whatever is still running 5 seconds later is killed. On Windows
+    the job is killed at once.
+  - If the command writes something to stdout that is not MCP, such as a
+    banner line, the session ends. Burrow then ends the command and starts
+    it again. Write logs to stderr instead.
 - **Calls are not repeated.** If a call fails because the local server went
   away, it is not sent again, because the server may already have acted on
   it. The only exception is when a server that keeps sessions says that it no

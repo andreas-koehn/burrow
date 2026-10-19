@@ -227,3 +227,54 @@ func TestUp_StartsABridgeForEveryMCPService(t *testing.T) {
 		t.Fatalf("tools through the bridge = %v", seen)
 	}
 }
+
+// Each bridge that never answers must not get a wait of its own: all of them
+// share one deadline.
+func TestUp_BridgesThatNeverAnswerShareOneDeadline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	old := mcpReadyWait
+	mcpReadyWait = 300 * time.Millisecond
+	t.Cleanup(func() { mcpReadyWait = old })
+	h := newHarness(t)
+	h.signIn()
+	yml := filepath.Join(t.TempDir(), "burrow.yaml")
+	body := "services:\n" +
+		"  - { name: one, type: mcp, command: sh, args: [-c, 'sleep 60'] }\n" +
+		"  - { name: two, type: mcp, command: sh, args: [-c, 'sleep 60'] }\n"
+	if err := os.WriteFile(yml, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan int, 1)
+	began := time.Now()
+	go func() { done <- h.exec("up", "--file", yml) }()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, h.stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("up still waits for bridges that never answer")
+	}
+	if d := time.Since(began); d > 5*time.Second {
+		t.Fatalf("up took %v", d)
+	}
+	if len(h.oneRun().tunnels) != 2 {
+		t.Fatal("not both tunnels")
+	}
+}
+
+// A malformed --env is refused without showing what may be a secret value.
+func TestMCP_EnvErrorShowsNoValue(t *testing.T) {
+	for _, arg := range []string{"TOPSECRETVALUE", "=TOPSECRETVALUE"} {
+		h := newHarness(t)
+		h.signIn()
+		if code := h.exec("mcp", "files", "--env", arg, "--", "npx"); code != exitUsage {
+			t.Fatalf("%q: exit %d", arg, code)
+		}
+		if strings.Contains(h.stderr.String(), "TOPSECRETVALUE") {
+			t.Fatalf("%q: the value was printed: %q", arg, h.stderr.String())
+		}
+	}
+}
