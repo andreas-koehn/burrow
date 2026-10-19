@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -16,11 +18,16 @@ import (
 type Opts struct {
 	// Stateful makes the upstream issue Mcp-Session-Id sessions.
 	Stateful bool
-	// Tools is the initial tool set; DefaultTools() when empty.
+	// Tools is the initial tool set; DefaultTools() when empty and NoTools
+	// is false.
 	Tools []ToolSpec
+	// NoTools starts the upstream with no tools at all.
+	NoTools bool
 	// Authorize, if set, must return true for a request to be served; else 401.
 	Authorize func(*http.Request) bool
 }
+
+const maxBody = 4 << 20
 
 // Request is one recorded HTTP request.
 type Request struct {
@@ -35,7 +42,12 @@ type Request struct {
 type Server struct {
 	*httptest.Server
 	opts Opts
+	down atomic.Bool
 
+	// opMu serialises the mutating operations (SetTools, ChangeDescription,
+	// Restart) so each one is atomic with respect to the others. mu only
+	// guards the fields below and is never held across an SDK call.
+	opMu    sync.Mutex
 	mu      sync.Mutex
 	tools   []ToolSpec
 	sdk     *mcp.Server
@@ -48,10 +60,10 @@ type Server struct {
 func NewServer(t testing.TB, opts Opts) *Server {
 	t.Helper()
 	s := &Server{opts: opts, tools: append([]ToolSpec(nil), opts.Tools...)}
-	if len(s.tools) == 0 {
+	if len(s.tools) == 0 && !opts.NoTools {
 		s.tools = DefaultTools()
 	}
-	s.build()
+	s.sdk, s.handler = s.newHandler(s.tools)
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.Close)
 	return s
@@ -64,12 +76,10 @@ func (s *Server) Close() {
 	s.Server.Close()
 }
 
-// build creates a fresh SDK server and handler from the current tools.
-// Caller holds mu, or is the constructor.
-func (s *Server) build() {
-	s.sdk = NewSDKServer("mcptest", s.tools, s.record)
-	sdk := s.sdk
-	s.handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return sdk },
+// newHandler creates a fresh SDK server and Streamable HTTP handler for tools.
+func (s *Server) newHandler(tools []ToolSpec) (*mcp.Server, http.Handler) {
+	sdk := newSDKServer("mcptest", tools, s.record)
+	return sdk, mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return sdk },
 		&mcp.StreamableHTTPOptions{
 			Stateless:                  !s.opts.Stateful,
 			JSONResponse:               true,
@@ -86,7 +96,12 @@ func (s *Server) record(c Call) {
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	rec := Request{Method: r.Method, Path: r.URL.Path, Header: r.Header.Clone(), SessionID: r.Header.Get("Mcp-Session-Id")}
 	if r.Method == http.MethodPost && r.Body != nil {
-		body, _ := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
+		if err != nil || len(body) > maxBody {
+			// Fail loudly rather than hand the SDK a truncated body.
+			http.Error(w, "mcptest: request body over 4 MiB", http.StatusRequestEntityTooLarge)
+			return
+		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		var m struct {
 			Method string `json:"method"`
@@ -98,6 +113,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.reqs = append(s.reqs, rec)
 	h := s.handler
 	s.mu.Unlock()
+	if s.down.Load() {
+		http.Error(w, "mcptest: upstream down", http.StatusServiceUnavailable)
+		return
+	}
 	if s.opts.Authorize != nil && !s.opts.Authorize(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -105,55 +124,76 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	h.ServeHTTP(w, r)
 }
 
+// SetDown makes the upstream answer every request with 503 while down is
+// true; setting it back to false restores service at the same URL. Requests
+// made while down are still recorded. Sessions survive.
+func (s *Server) SetDown(down bool) { s.down.Store(down) }
+
 // SetTools replaces the tool set. Sessions that are open are told with
 // notifications/tools/list_changed.
 func (s *Server) SetTools(tools ...ToolSpec) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	s.setToolsLocked(tools)
+}
+
+// setToolsLocked needs opMu. The SDK is called without mu held; the new set
+// becomes visible to ChangeDescription only after the SDK has it.
+func (s *Server) setToolsLocked(tools []ToolSpec) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	keep := map[string]bool{}
-	for _, t := range tools {
-		keep[t.Name] = true
-	}
+	sdk, old := s.sdk, s.tools
+	s.mu.Unlock()
 	var gone []string
-	for _, t := range s.tools {
-		if !keep[t.Name] {
+	for _, t := range old {
+		if !slices.ContainsFunc(tools, func(n ToolSpec) bool { return n.Name == t.Name }) {
 			gone = append(gone, t.Name)
 		}
 	}
 	if len(gone) > 0 {
-		s.sdk.RemoveTools(gone...)
+		sdk.RemoveTools(gone...)
 	}
-	s.tools = append([]ToolSpec(nil), tools...)
-	addTools(s.sdk, s.tools, s.record)
+	addTools(sdk, tools, s.record)
+	s.mu.Lock()
+	s.tools = slices.Clone(tools)
+	s.mu.Unlock()
 }
 
 // ChangeDescription changes one tool's description; it reports whether the
-// tool exists.
+// tool exists. It is atomic against SetTools, Restart and other
+// ChangeDescription calls.
 func (s *Server) ChangeDescription(name, description string) bool {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
 	s.mu.Lock()
-	var next []ToolSpec
-	found := false
-	for _, t := range s.tools {
-		if t.Name == name {
-			t.Description = description
-			found = true
-		}
-		next = append(next, t)
-	}
+	next := slices.Clone(s.tools)
 	s.mu.Unlock()
-	if found {
-		s.SetTools(next...)
+	i := slices.IndexFunc(next, func(t ToolSpec) bool { return t.Name == name })
+	if i < 0 {
+		return false
 	}
-	return found
+	next[i].Description = description
+	s.setToolsLocked(next)
+	return true
 }
 
 // Restart forgets every session, as if a stateful upstream had been
-// restarted: the next request that carries an old Mcp-Session-Id gets 404
+// restarted: the old SDK sessions are closed (no goroutines are left behind),
+// and the next request that carries an old Mcp-Session-Id gets 404
 // (mcp.ErrSessionMissing on the client). URL, tools and recordings stay.
 func (s *Server) Restart() {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.build()
+	old := s.sdk
+	tools := slices.Clone(s.tools)
+	s.mu.Unlock()
+	sdk, h := s.newHandler(tools)
+	s.mu.Lock()
+	s.sdk, s.handler = sdk, h
+	s.mu.Unlock()
+	for ss := range old.Sessions() {
+		_ = ss.Close()
+	}
 }
 
 // Requests returns the recorded HTTP requests.

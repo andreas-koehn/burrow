@@ -18,13 +18,15 @@
 //
 //	up.SetTools(tools...)              replace the tool set (list_changed is sent)
 //	up.ChangeDescription(name, text)   change one description, like a new upstream release
-//	up.Restart()                       forget all sessions
+//	up.Restart()                       forget all sessions (old sessions are closed)
+//	up.SetDown(true)                   answer 503 to everything until SetDown(false)
 //	up.Requests()                      every HTTP request: method, path, headers (incl. credentials), session id, JSON-RPC method
 //	up.Calls()                         every tools/call: tool, arguments, headers, session id
 //	up.CallsTo("echo")                 the same, for one tool
 //	up.ResetRecords()                  clear both recordings
 //	up.Close()                         also registered with t.Cleanup
 //
+// Opts.Tools empty means DefaultTools(); Opts.NoTools starts with none.
 // Opts.Authorize, when set, decides per HTTP request whether it is let in;
 // a false answer is a 401 (the request is still recorded). Use it to check
 // that the gateway injects the credential.
@@ -45,8 +47,8 @@
 //
 // # Stdio upstream
 //
-// BuildMockMCP compiles internal/mcptest/cmd/mockmcp once per test and returns
-// the binary; StdioCommand returns an *exec.Cmd for it, ready for
+// BuildMockMCP compiles internal/mcptest/cmd/mockmcp once per process (into a
+// temp dir that is not removed) and returns the binary; StdioCommand returns an *exec.Cmd for it, ready for
 // mcp.CommandTransport. The program serves DefaultTools() on stdin/stdout.
 // With --crash-after N it exits with status 3, without answering, when the Nth
 // tools/call arrives (N counts calls of this process only; 0 means never).
@@ -233,6 +235,11 @@ func NewSDKServer(name string, tools []ToolSpec, onCall func(Call)) *mcp.Server 
 	if len(tools) == 0 {
 		tools = DefaultTools()
 	}
+	return newSDKServer(name, tools, onCall)
+}
+
+// newSDKServer serves exactly tools, which may be none.
+func newSDKServer(name string, tools []ToolSpec, onCall func(Call)) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: name, Version: "0.0.0-test"}, &mcp.ServerOptions{
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{ListChanged: true}},
 	})

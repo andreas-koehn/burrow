@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -254,5 +255,116 @@ func TestStdioCrashAfter(t *testing.T) {
 	_ = cs.Wait() // the SDK reaps the child; reading ProcessState after it is safe
 	if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 3 {
 		t.Errorf("exit = %v", cmd.ProcessState)
+	}
+}
+
+func TestSetDown(t *testing.T) {
+	up := mcptest.NewServer(t, mcptest.Opts{})
+	cs := connect(t, up.URL, nil)
+	up.SetDown(true)
+	resp, err := http.Post(up.URL, "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status %d, want 503", resp.StatusCode)
+	}
+	if _, err := call(t, cs, "echo", nil); err == nil {
+		t.Error("call succeeded while down")
+	}
+	up.SetDown(false)
+	if r, err := call(t, cs, "echo", map[string]any{"text": "back"}); err != nil || firstText(r) != "echo: back" {
+		t.Errorf("after recovery: %v %v", r, err)
+	}
+}
+
+func TestNoTools(t *testing.T) {
+	up := mcptest.NewServer(t, mcptest.Opts{NoTools: true})
+	cs := connect(t, up.URL, nil)
+	if got := toolNames(t, cs); len(got) != 0 {
+		t.Errorf("tools: %v", got)
+	}
+	up.SetTools(mcptest.Echo("e"))
+	if got := toolNames(t, cs); len(got) != 1 {
+		t.Errorf("after SetTools: %v", got)
+	}
+}
+
+func TestOversizedBodyRefused(t *testing.T) {
+	up := mcptest.NewServer(t, mcptest.Opts{})
+	resp, err := http.Post(up.URL, "application/json", strings.NewReader(strings.Repeat("a", 4<<20+1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("status %d, want 413", resp.StatusCode)
+	}
+}
+
+func TestSessionHeaderOnTheWire(t *testing.T) {
+	for _, stateful := range []bool{false, true} {
+		up := mcptest.NewServer(t, mcptest.Opts{Stateful: stateful})
+		body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`
+		req, _ := http.NewRequest(http.MethodPost, up.URL, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if got := resp.Header.Get("Mcp-Session-Id") != ""; got != stateful {
+			t.Errorf("stateful=%v: Mcp-Session-Id present = %v (status %d)", stateful, got, resp.StatusCode)
+		}
+	}
+}
+
+func TestRestartLeaksNoGoroutines(t *testing.T) {
+	up := mcptest.NewServer(t, mcptest.Opts{Stateful: true})
+	settle := func() int {
+		time.Sleep(200 * time.Millisecond)
+		return runtime.NumGoroutine()
+	}
+	base := settle()
+	for range 20 {
+		cs := connect(t, up.URL, nil)
+		if _, err := call(t, cs, "echo", nil); err != nil {
+			t.Fatal(err)
+		}
+		up.Restart()
+		_ = cs.Close()
+	}
+	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
+	if after := settle(); after > base+10 {
+		t.Errorf("goroutines grew from %d to %d over 20 restarts", base, after)
+	}
+}
+
+func TestConcurrentMutationsRace(t *testing.T) {
+	up := mcptest.NewServer(t, mcptest.Opts{Stateful: true, Tools: []mcptest.ToolSpec{mcptest.Echo("a"), mcptest.Echo("b")}})
+	done := make(chan struct{})
+	for i := range 4 {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			for j := range 20 {
+				switch i % 3 {
+				case 0:
+					up.ChangeDescription("a", strings.Repeat("d", j))
+				case 1:
+					up.SetTools(mcptest.Echo("a"), mcptest.Echo("b"))
+				default:
+					up.Restart()
+				}
+			}
+		}()
+	}
+	for range 4 {
+		<-done
+	}
+	cs := connect(t, up.URL, nil)
+	if got := toolNames(t, cs); len(got) != 2 {
+		t.Errorf("tools: %v", got)
 	}
 }
