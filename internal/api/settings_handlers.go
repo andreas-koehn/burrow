@@ -40,6 +40,9 @@ func (d Deps) GetSettings(w http.ResponseWriter, r *http.Request) {
 			out[k] = v
 		}
 	}
+	// Read-only: BURROW_SERVICES_DOMAIN, "" when unset. Not in
+	// allowedSettingKeys, so a write never stores it.
+	out["services_domain"] = d.ServicesDomain
 	writeJSON(w, http.StatusOK, out)
 }
 

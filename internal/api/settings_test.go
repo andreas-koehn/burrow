@@ -86,3 +86,28 @@ func TestSettingsEndpoints(t *testing.T) {
 	}
 	r.Body.Close()
 }
+
+// services_domain is read-only on the relay: GET /settings answers it from
+// BURROW_SERVICES_DOMAIN ("" when unset) and PUT neither stores nor needs it.
+func TestSettingsGetServicesDomain(t *testing.T) {
+	for _, domain := range []string{"", "apps.example.com"} {
+		fs := &fakeSettings{}
+		d := Deps{Log: discardLog(), Settings: fs, Users: &fakeUserStore{role: "admin"}, ServicesDomain: domain}
+		srv := httptest.NewServer(NewRouter(d))
+		c := authedClient(t, srv)
+		r := c.get(t, "/api/v1/settings")
+		var got map[string]string
+		json.NewDecoder(r.Body).Decode(&got)
+		r.Body.Close()
+		v, ok := got["services_domain"]
+		if !ok || v != domain {
+			t.Errorf("domain %q: services_domain = %q (present %v)", domain, v, ok)
+		}
+		r = c.put(t, "/api/v1/settings", map[string]string{"smtp.host": "m", "services_domain": "evil.example"})
+		r.Body.Close()
+		if _, stored := fs.saved["services_domain"]; stored {
+			t.Errorf("PUT stored services_domain")
+		}
+		srv.Close()
+	}
+}

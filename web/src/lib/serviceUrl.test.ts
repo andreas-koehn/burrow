@@ -10,6 +10,16 @@ describe("serviceUrl", () => {
     expect(serviceUrl("p7baeh", "")).toBe(`${window.location.origin}/svc/p7baeh/`);
     expect(serviceUrl("p7baeh")).toBe(`${window.location.origin}/svc/p7baeh/`);
   });
+  it("builds the path URL on the services domain when one is set", () => {
+    expect(serviceUrl("p7baeh", "", "apps.example.com")).toBe("https://apps.example.com/svc/p7baeh/");
+    expect(serviceUrl("p7baeh", undefined, "apps.example.com")).toBe("https://apps.example.com/svc/p7baeh/");
+    expect(serviceUrl("", "", "apps.example.com")).toBe("");
+  });
+  it("treats an empty services domain as unset, and the API's URL still wins", () => {
+    expect(serviceUrl("p7baeh", "", "")).toBe(`${window.location.origin}/svc/p7baeh/`);
+    expect(serviceUrl("p7baeh", "https://x.example.com/svc/p7baeh/", "apps.example.com"))
+      .toBe("https://x.example.com/svc/p7baeh/");
+  });
   it("is empty without a slug", () => {
     expect(serviceUrl("", "")).toBe("");
   });

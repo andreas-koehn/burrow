@@ -16,6 +16,7 @@ import { serviceState, type ServedState } from "@/lib/status";
 import { SERVICE_ID_HINT, deriveServiceId, deriveSlug, serviceIdError } from "@/lib/slug";
 import { serviceUrl } from "@/lib/serviceUrl";
 import { useCan } from "@/auth/useCan";
+import { useServicesDomain } from "@/lib/useServicesDomain";
 import { P } from "@/auth/permissions";
 
 const ACCESS_LABEL: Record<AccessMode, string> = {
@@ -117,6 +118,7 @@ export default function Services() {
   const canListClients = useCan(P.tunnelsReadAny);
   // POST /services: services:configure:any.
   const canCreate = useCan(P.servicesConfigureAny);
+  const { domain: servicesDomain } = useServicesDomain();
   const clients = useQuery({
     queryKey: ["clients"],
     queryFn: () => apiFetch<ClientView[]>("/clients"),
@@ -605,7 +607,7 @@ export default function Services() {
             error={nsNameError ?? undefined}
             help={nsNameMissing || nsHint !== undefined ? "The address and the service ID follow from it." : (
               <>
-                {nsUrlSlug && <><span className="mono">{serviceUrl(nsUrlSlug)}</span>{" · "}</>}
+                {nsUrlSlug && <><span className="mono">{serviceUrl(nsUrlSlug, undefined, servicesDomain)}</span>{" · "}</>}
                 ID <span className="mono">{nsId}</span>
               </>
             )}

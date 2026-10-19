@@ -520,6 +520,14 @@ describe("ServiceDetail page", () => {
     expect(note).not.toHaveClass("muted");
   });
 
+  it("does not warn about the shared address when a services domain is set", async () => {
+    db.settings["services_domain"] = "apps.example.com";
+    mountAt("/services/svc_web01");
+    await screen.findByRole("radiogroup", { name: "Access mode" });
+    await waitFor(() => expect(screen.queryByText(/shares the dashboard's address/)).toBeNull());
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+
   it("does not warn about the shared address for an API-key service", async () => {
     mount();
     await screen.findByRole("radiogroup", { name: "Access mode" });

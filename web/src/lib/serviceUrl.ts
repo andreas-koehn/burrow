@@ -7,11 +7,13 @@ export function servicePath(slug: string): string {
 
 /**
  * Full public URL of an http service. The relay reports it when it knows its
- * own domain; otherwise the dashboard's origin is the same origin by design.
+ * own domain; with a services domain (BURROW_SERVICES_DOMAIN) the app is on
+ * that host; otherwise the dashboard's origin is the same origin by design.
  */
-export function serviceUrl(slug: string, apiUrl?: string): string {
+export function serviceUrl(slug: string, apiUrl?: string, servicesDomain?: string): string {
   if (apiUrl) return apiUrl;
   if (!slug) return "";
+  if (servicesDomain) return `https://${servicesDomain}${servicePath(slug)}`;
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   return `${origin}${servicePath(slug)}`;
 }

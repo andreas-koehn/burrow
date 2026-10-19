@@ -511,7 +511,8 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	// settings, backups, MCP status, database (O08)
 	// GetSettings (settings_handlers.go) writes a map with the keys of
 	// allowedSettingKeys that have a value.
-	"settingsGet":          {status: "200", keys: oaKeys(allowedSettingKeys)},
+	// Plus services_domain, which it adds from the environment.
+	"settingsGet":          {status: "200", keys: append(oaKeys(allowedSettingKeys), "services_domain")},
 	"retentionSettingsGet": {status: "200", typ: oaType[retentionSettingsResp]()},
 	"backupsList":          {status: "200", typ: oaType[backupRow](), list: true},
 	"backupCreate":         {status: "202", typ: oaType[startBackupResp]()},

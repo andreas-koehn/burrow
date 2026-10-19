@@ -2229,6 +2229,20 @@ components:
             rollups off and removes the stored ones; any other value, or
             none, leaves them on.
           example: 'true'
+    SettingsView:
+      description: >
+        What GET answers: the settings, and services_domain, which the relay
+        reads from its environment and a write ignores.
+      allOf:
+        - $ref: '#/components/schemas/Settings'
+        - type: object
+          properties:
+            services_domain:
+              type: string
+              description: >
+                BURROW_SERVICES_DOMAIN: the host that serves tunnelled apps,
+                or "" when it is not set. Always present in an answer.
+              example: apps.example.com
     RetentionSettingsInput:
       type: object
       description: How long the relay keeps its records. A field that is left out keeps its stored value.
@@ -5267,7 +5281,7 @@ paths:
           description: Settings.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Settings' }
+              schema: { $ref: '#/components/schemas/SettingsView' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     put:

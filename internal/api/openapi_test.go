@@ -208,14 +208,14 @@ func TestOpenAPI_EveryDocumentedOperationIsRouted(t *testing.T) {
 
 // withoutNonAPIRoutes drops what the spec does not describe: the SPA
 // catch-all, test-only /api/v1/internal/* routes (build-tag gated, never in
-// the shipped spec) and the dashboard's /link page.
+// the shipped spec) and the dashboard's /link and /oauth/consent pages.
 func withoutNonAPIRoutes(routes []routeEntry) []routeEntry {
 	filtered := make([]routeEntry, 0, len(routes))
 	for _, e := range routes {
 		if e.Path == "/*" || strings.HasPrefix(e.Path, "/api/v1/internal/") {
 			continue
 		}
-		if e.Path == "/link" || e.Path == "/link/" {
+		if e.Path == "/link" || e.Path == "/link/" || e.Path == "/oauth/consent" || e.Path == "/oauth/consent/" {
 			continue
 		}
 		filtered = append(filtered, e)

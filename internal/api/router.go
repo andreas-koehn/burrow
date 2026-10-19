@@ -819,6 +819,11 @@ func newRouter(d Deps) http.Handler {
 		link := getOrHead(shell.ServeHTTP)
 		r.Handle("/link", link)
 		r.Handle("/link/", link)
+		// /oauth/consent is where an MCP client sends the browser to approve
+		// a grant: the same kind of page, with the same headers and reading
+		// only.
+		r.Handle("/oauth/consent", link)
+		r.Handle("/oauth/consent/", link)
 		// Only a root catch-all: "/api/v1" is a mounted subrouter so chi
 		// matches it first; unknown/unauth /api/v1/* stays in the API group's
 		// own JSON 404/401 and never falls through here. (r.NotFound is NOT

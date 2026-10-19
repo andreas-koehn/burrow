@@ -13,6 +13,7 @@ import { DeleteServiceDialog } from "@/components/DeleteServiceDialog";
 import { useCan } from "@/auth/useCan";
 import { P } from "@/auth/permissions";
 import { serviceState } from "@/lib/status";
+import { useServicesDomain } from "@/lib/useServicesDomain";
 import type { ServiceDetail as ServiceDetailType, AccessMode, AiProvider } from "@/lib/contract";
 
 const ACCESS_LABEL: Record<AccessMode, string> = {
@@ -40,6 +41,7 @@ export default function ServiceDetail() {
   // The relay lets the owner and the holder of :any delete, as it lets them read.
   const canDelete = useCan([P.servicesConfigureOwn, P.servicesConfigureAny]);
   const qc = useQueryClient();
+  const services = useServicesDomain();
 
   const { data: svc, isLoading, error, refetch } = useQuery({
     queryKey: ["service", id],
@@ -137,9 +139,10 @@ export default function ServiceDetail() {
       : null;
   const providerName = (providers.data ?? []).find((p) => p.slug === providerSlug)?.name || providerSlug;
   const hasPublicUrl = svc.type === "http" && !svc.gateway_only && !!(svc.slug || svc.url);
-  // Under /svc/ a service is on the dashboard's own origin. Behind an API key no
-  // browser gets a page from it; in the other two modes one does.
-  const sharesOrigin = hasPublicUrl && (svc.access_mode === "open" || svc.access_mode === "burrow_login");
+  // Under /svc/ a service is on the dashboard's own origin, unless the relay has a
+  // services domain. Behind an API key no browser gets a page from it; in the other
+  // two modes one does. Nothing is claimed until the settings have answered.
+  const sharesOrigin = hasPublicUrl && services.ready && !services.domain && (svc.access_mode === "open" || svc.access_mode === "burrow_login");
 
   return (
     <div className="service-detail-page">

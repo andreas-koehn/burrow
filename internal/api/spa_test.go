@@ -222,3 +222,49 @@ func TestEveryDashboardShellRefusesFrames(t *testing.T) {
 		}
 	}
 }
+
+// /oauth/consent is the dashboard page an MCP client sends the browser to.
+// It gets the headers /link gets, and only reads.
+func TestConsentPageIsServedByTheSPA(t *testing.T) {
+	var hit bool
+	spa := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<div id=\"root\"></div>"))
+	})
+	ts := newTestServer(Deps{Users: &tokUsers{}, Log: discardLog(), SPA: spa})
+	defer ts.Close()
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	for _, path := range []string{"/oauth/consent?request=abc", "/oauth/consent/?request=abc", "/oauth/consent"} {
+		hit = false
+		resp, err := client.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !hit {
+			t.Fatalf("GET %s: status=%d spa=%v, want 200 from the SPA", path, resp.StatusCode, hit)
+		}
+		for name, want := range map[string]string{
+			"X-Frame-Options":         "DENY",
+			"Content-Security-Policy": "frame-ancestors 'none'",
+			"Referrer-Policy":         "no-referrer",
+		} {
+			if got := resp.Header.Get(name); got != want {
+				t.Errorf("GET %s: %s = %q, want %q", path, name, got, want)
+			}
+		}
+	}
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+		hit = false
+		req, _ := http.NewRequest(method, ts.URL+"/oauth/consent", nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", method, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusMethodNotAllowed || hit {
+			t.Errorf("%s /oauth/consent: status=%d spa=%v, want 405 without the SPA", method, resp.StatusCode, hit)
+		}
+	}
+}
