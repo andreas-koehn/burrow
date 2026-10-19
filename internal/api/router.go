@@ -395,11 +395,11 @@ func newRouter(d Deps) http.Handler {
 			// the password while no services domain is set (inline or a
 			// recent confirmation, checked by the handler) and is limited
 			// per address like the sign-in.
-			r.With(d.requireOAuth).Get("/oauth/requests/{id}", d.GetOAuthRequest)
-			r.With(d.requireOAuth, approveLimit).Post("/oauth/requests/{id}/approve", d.PostOAuthRequestApprove)
-			r.With(d.requireOAuth).Post("/oauth/requests/{id}/deny", d.PostOAuthRequestDeny)
-			r.With(d.requireOAuth).Get("/oauth/grants", d.GetOAuthGrants)
-			r.With(d.requireOAuth).Delete("/oauth/grants/{id}", d.DeleteOAuthGrant)
+			r.With(d.requireOAuthServed).Get("/oauth/requests/{id}", d.GetOAuthRequest)
+			r.With(d.requireOAuthServed, approveLimit).Post("/oauth/requests/{id}/approve", d.PostOAuthRequestApprove)
+			r.With(d.requireOAuthServed).Post("/oauth/requests/{id}/deny", d.PostOAuthRequestDeny)
+			r.With(d.requireOAuthServed).Get("/oauth/grants", d.GetOAuthGrants)
+			r.With(d.requireOAuthServed).Delete("/oauth/grants/{id}", d.DeleteOAuthGrant)
 			r.With(d.requireOAuth).Get("/oauth/clients", d.GetOAuthClients)
 			r.With(d.requireOAuth, recent).Post("/oauth/clients", d.PostOAuthClient)
 			r.With(d.requireOAuth).Delete("/oauth/clients/{id}", d.DeleteOAuthClient)

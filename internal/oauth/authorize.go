@@ -364,13 +364,18 @@ func (s *Server) takePending(id string) *pendingRequest {
 	return p
 }
 
-// clientAddr is the request's client address without the port (after the
-// router's trusted-proxy handling).
+// clientAddr keys the per-address cap: the request's client address (after
+// the router's trusted-proxy handling) without the port, an IPv6 address by
+// its /64 (one host usually holds a whole /64).
 func clientAddr(r *http.Request) string {
-	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return h
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
 	}
-	return r.RemoteAddr
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		return ip.Mask(net.CIDRMask(64, 128)).String()
+	}
+	return host
 }
 
 // PendingRequest returns what the consent page shows of a request, or

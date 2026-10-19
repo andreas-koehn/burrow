@@ -234,3 +234,54 @@ func TestDeleteClientEndsCodesAndRequests(t *testing.T) {
 		t.Fatalf("request of a deleted client: %v", err)
 	}
 }
+
+// The loopback exception needs a loopback Host and a loopback peer: a
+// remote client cannot switch it on with "Host: localhost".
+func TestIssuer_LoopbackNeedsALoopbackPeer(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.Issuer = "" })
+	for _, tc := range []struct {
+		host, remote string
+		on           bool
+	}{
+		{"localhost:8080", "127.0.0.1:5555", true},
+		{"[::1]:8080", "[::1]:5555", true},
+		{"localhost:8080", "203.0.113.9:5555", false},
+		{"127.0.0.1", "[2001:db8::1]:5555", false},
+		{"relay.example", "127.0.0.1:5555", false},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+		req.Host, req.RemoteAddr = tc.host, tc.remote
+		rec := httptest.NewRecorder()
+		h.s.Metadata(rec, req)
+		if on := rec.Code == http.StatusOK; on != tc.on || h.s.Available(req) != tc.on {
+			t.Errorf("Host %s from %s: %d, want on=%v", tc.host, tc.remote, rec.Code, tc.on)
+		}
+	}
+}
+
+// The per-address cap counts an IPv6 client by its /64.
+func TestClientAddrMasksIPv6(t *testing.T) {
+	for remote, want := range map[string]string{
+		"[2001:db8:1:2:aaaa::1]:1": "2001:db8:1:2::",
+		"[2001:db8:1:2:bbbb::9]:1": "2001:db8:1:2::",
+		"198.51.100.7:1":           "198.51.100.7",
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = remote
+		if got := clientAddr(req); got != want {
+			t.Errorf("%s: %q, want %q", remote, got, want)
+		}
+	}
+}
+
+// An empty Basic user name counts as no Basic header: the body's client_id
+// decides.
+func TestToken_EmptyBasicUserIsNoBasic(t *testing.T) {
+	h := newHarness(t)
+	code := h.code(t, h.authParams())
+	f := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "client_id": {h.client.ClientID},
+		"redirect_uri": {"http://127.0.0.1:5000/callback"}, "code_verifier": {verifier}}
+	if a := h.post(t, h.s.Token, f, func(r *http.Request) { r.SetBasicAuth("", "") }); a.status != http.StatusOK {
+		t.Fatalf("empty Basic user with client_id in the body: %d %v", a.status, a.body)
+	}
+}

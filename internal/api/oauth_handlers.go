@@ -81,6 +81,20 @@ func (d Deps) requireOAuth(next http.Handler) http.Handler {
 	})
 }
 
+// requireOAuthServed is requireOAuth for the consent and grant routes: they
+// also refuse while the server is off for the request (no issuer configured,
+// and not loopback by Host and peer), like its own endpoints.
+func (d Deps) requireOAuthServed(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if d.OAuth == nil || !d.OAuth.Available(r) {
+			writeErr(w, http.StatusNotFound, "oauth is not configured")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // --- consent ---------------------------------------------------------------
 
 type oauthRequestResp struct {

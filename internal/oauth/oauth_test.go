@@ -255,7 +255,7 @@ func TestIssuer_UnconfiguredIsOffExceptOnLoopback(t *testing.T) {
 	h := newHarness(t, func(c *Config) { c.Issuer = "" })
 	call := func(method, host, path string, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
-		req.Host = host
+		req.Host, req.RemoteAddr = host, "127.0.0.1:40000"
 		if body != "" {
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		}

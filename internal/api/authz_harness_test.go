@@ -129,7 +129,7 @@ func newAuthzHarness(t *testing.T, mods ...func(*Deps)) *authzHarness {
 		CacheServices: owners, InspectorServices: owners,
 		BackupDir: t.TempDir(), RestoreTracker: NewRestoreTracker(),
 		AuthDomain: "relay.test",
-		OAuth:      oauth.New(oauth.Config{Store: x}),
+		OAuth:      oauth.New(oauth.Config{Store: x, Issuer: "https://relay.test"}),
 	}
 	for _, mod := range mods {
 		mod(&d)

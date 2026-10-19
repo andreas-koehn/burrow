@@ -157,7 +157,10 @@ func (s *Server) Issuer(r *http.Request) string {
 	if s.issuer != "" {
 		return s.issuer
 	}
-	if !isLoopbackHost(hostOnly(r.Host)) {
+	// Development: the request must be loopback by its Host and by its peer
+	// (after the router's trusted-proxy handling), so that a remote client
+	// cannot switch this on with "Host: localhost".
+	if !isLoopbackHost(hostOnly(r.Host)) || !loopbackPeer(r) {
 		return ""
 	}
 	scheme := "http"
@@ -170,6 +173,16 @@ func (s *Server) Issuer(r *http.Request) string {
 // Configured reports whether an issuer is configured; without one only
 // loopback requests are served.
 func (s *Server) Configured() bool { return s.issuer != "" }
+
+// Available reports whether the server serves the request: an issuer is
+// configured, or the request is loopback by Host and peer (development).
+func (s *Server) Available(r *http.Request) bool { return s.Issuer(r) != "" }
+
+// loopbackPeer reports whether the request's peer address is a loopback one.
+func loopbackPeer(r *http.Request) bool {
+	ip := net.ParseIP(hostOnly(r.RemoteAddr))
+	return ip != nil && ip.IsLoopback()
+}
 
 // hostOnly is a Host header without its port and brackets.
 func hostOnly(host string) string {

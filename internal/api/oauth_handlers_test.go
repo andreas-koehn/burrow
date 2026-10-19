@@ -528,3 +528,47 @@ func TestOAuth_RootEndpoints(t *testing.T) {
 		t.Fatal("the authorization endpoint is not rate-limited")
 	}
 }
+
+// While no issuer is configured, the consent and grant routes refuse too,
+// unless the request is loopback by Host and by peer.
+func TestOAuth_RoutesOffWithoutIssuer(t *testing.T) {
+	sqldb, err := db.Open(filepath.Join(t.TempDir(), "off.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(sqldb); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqldb.Close() })
+	h := newAuthzHarness(t, func(d *Deps) { d.OAuth = oauth.New(oauth.Config{Store: db.Wrap(sqldb)}) })
+	session := h.session(t, "admin")
+	for _, r := range []apiRoute{
+		{http.MethodGet, "/api/v1/oauth/requests/{id}"},
+		{http.MethodPost, "/api/v1/oauth/requests/{id}/approve"},
+		{http.MethodPost, "/api/v1/oauth/requests/{id}/deny"},
+		{http.MethodGet, "/api/v1/oauth/grants"},
+		{http.MethodDelete, "/api/v1/oauth/grants/{id}"},
+	} {
+		rec := h.call(t, r, func(req *http.Request) {
+			session(req)
+			req.Host, req.RemoteAddr = "localhost", "203.0.113.9:4000"
+		})
+		if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "oauth is not configured") {
+			t.Errorf("%s with Host localhost from a remote peer: %d %s", r.key(), rec.Code, rec.Body.String())
+		}
+	}
+	rec := h.call(t, apiRoute{http.MethodGet, "/api/v1/oauth/grants"}, func(req *http.Request) {
+		session(req)
+		req.Host, req.RemoteAddr = "localhost", "127.0.0.1:4000"
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("loopback by Host and peer: %d %s", rec.Code, rec.Body.String())
+	}
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	req.Host, req.RemoteAddr = "localhost", "203.0.113.9:4000"
+	out := httptest.NewRecorder()
+	h.router.ServeHTTP(out, req)
+	if out.Code != http.StatusNotFound {
+		t.Fatalf("metadata with Host localhost from a remote peer: %d", out.Code)
+	}
+}

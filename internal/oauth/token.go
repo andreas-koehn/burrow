@@ -73,6 +73,9 @@ func formRequest(w http.ResponseWriter, r *http.Request) (clientIdent, *tokenErr
 	noSecret := &tokenError{http.StatusUnauthorized, "invalid_client", "public clients only: no client secret"}
 	form := r.PostForm.Get("client_id")
 	user, pass, basic := r.BasicAuth()
+	if basic && user == "" && pass == "" {
+		basic = false // an empty Basic header names no client
+	}
 	if !basic {
 		if r.PostForm.Get("client_secret") != "" {
 			return nil, noSecret
@@ -95,7 +98,7 @@ func formRequest(w http.ResponseWriter, r *http.Request) (clientIdent, *tokenErr
 		}
 		ident = clientIdent{form}
 	}
-	if user == "" && form == "" {
+	if user == "" {
 		return nil, tokenErr("invalid_request", "client_id is required")
 	}
 	return ident, nil
