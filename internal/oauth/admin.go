@@ -81,6 +81,7 @@ func (s *Server) DeleteClient(ctx context.Context, id string) (db.OAuthClient, e
 		}
 		return db.OAuthClient{}, err
 	}
+	s.dropPendingOfClient(id)
 	return c, nil
 }
 

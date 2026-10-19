@@ -74,6 +74,27 @@ func TestOAuth_Postgres(t *testing.T) {
 	if err != nil || !again.Used || again.GrantID != "g-pg" {
 		t.Fatalf("second redeem: %+v %v", again, err)
 	}
+	// A second use before the link: the link is refused.
+	code2 := code
+	code2.Hash = "pg-code2"
+	_, _ = x.sqlDB.ExecContext(ctx, `DELETE FROM oauth_codes WHERE code_hash='pg-code2'`)
+	if err := x.CreateOAuthCode(ctx, code2); err != nil {
+		t.Fatal(err)
+	}
+	if peek, err := x.GetOAuthCode(ctx, "pg-code2"); err != nil || peek.Used {
+		t.Fatalf("peek: %+v %v", peek, err)
+	}
+	if _, err := x.RedeemOAuthCode(ctx, "pg-code2"); err != nil {
+		t.Fatal(err)
+	}
+	if late, err := x.RedeemOAuthCode(ctx, "pg-code2"); err != nil || !late.Used || late.GrantID != "" {
+		t.Fatalf("reuse before link: %+v %v", late, err)
+	}
+	gLate := g
+	gLate.ID = "g-pg-late"
+	if err := x.CreateOAuthGrant(ctx, gLate, "pg-code2"); !errors.Is(err, ErrOAuthCodeReused) {
+		t.Fatalf("link after reuse: %v", err)
+	}
 	tok, grant, err := x.GetOAuthToken(ctx, "pg-access")
 	if err != nil || tok.Kind != "access" || grant.ID != "g-pg" || !grant.ToolsReadOnly || grant.RevokedAt != nil || tok.UsedAt != nil {
 		t.Fatalf("get token: %+v %+v %v", tok, grant, err)
@@ -122,8 +143,17 @@ func TestOAuth_Postgres(t *testing.T) {
 	if err := x.CreateOAuthGrant(ctx, g2, "", OAuthToken{Hash: "pg-a3", Kind: "access", GrantID: "g-pg2", FamilyID: "g-pg2", ExpiresAt: now.Add(time.Hour), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
+	code3 := code
+	code3.Hash = "pg-code3"
+	_, _ = x.sqlDB.ExecContext(ctx, `DELETE FROM oauth_codes WHERE code_hash='pg-code3'`)
+	if err := x.CreateOAuthCode(ctx, code3); err != nil {
+		t.Fatal(err)
+	}
 	if err := x.DeleteOAuthClient(ctx, "bcl_pg", now); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := x.GetOAuthCode(ctx, "pg-code3"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("open code of a deleted client: %v", err)
 	}
 	if gg, _ := x.GetOAuthGrant(ctx, "g-pg2"); gg.RevokedAt == nil {
 		t.Fatal("grant of a deleted client not revoked")

@@ -174,8 +174,9 @@ const (
 
 	// OAuth authorization server (spec D30). A client was pre-registered or
 	// deleted; a user approved a consent request or a grant was revoked (by
-	// its user, an admin or its client); a refresh token or code came back a
-	// second time and its grant was revoked. Never a code or token.
+	// its user, an admin or its client); a refresh token or an authorization
+	// code came back a second time (oauth.refresh.reuse covers both; payload
+	// "via") and its grant was revoked. Never a code or token.
 	ActionOAuthClientCreate = "oauth.client.create"
 	ActionOAuthClientDelete = "oauth.client.delete"
 	ActionOAuthGrantApprove = "oauth.grant.approve"

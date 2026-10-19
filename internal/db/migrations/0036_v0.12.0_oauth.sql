@@ -33,7 +33,8 @@ CREATE INDEX idx_oauth_grants_client ON oauth_grants(client_id);
 
 -- Authorization codes: sha256 of the code only, 60 s, single use. The grant
 -- fields wait here until the exchange; grant_id names the grant the code was
--- exchanged for, so that a second use can revoke it.
+-- exchanged for, so that a second use can revoke it. reused marks a second
+-- use: a grant not linked yet is then never linked.
 CREATE TABLE oauth_codes (
   code_hash       TEXT PRIMARY KEY,
   client_id       TEXT NOT NULL,
@@ -47,6 +48,7 @@ CREATE TABLE oauth_codes (
   tools_read_only INTEGER NOT NULL DEFAULT 0,
   expires_at      DATETIME NOT NULL,
   used            INTEGER NOT NULL DEFAULT 0,
+  reused          INTEGER NOT NULL DEFAULT 0,
   grant_id        TEXT NOT NULL DEFAULT '',
   created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

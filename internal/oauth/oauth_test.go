@@ -93,6 +93,10 @@ func newHarness(t *testing.T, mods ...func(*Config)) *harness {
 		db.MCPSource{Slug: "github", Name: "GitHub", URL: "https://mcp.example/mcp", TimeoutS: 60, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
+	if err := x.CreateRemoteMCPSource(ctx, db.Service{ID: "svc-off", UserID: "u-admin", Name: "mcp:off", AccessMode: "api_key"},
+		db.MCPSource{Slug: "off", Name: "Off", URL: "https://off.example/mcp", TimeoutS: 60, Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
 	clk := &testClock{t: time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)}
 	al := &recAudit{}
 	cfg := Config{Store: x, Issuer: testIssuer, Audit: al, Now: clk.now}
@@ -245,12 +249,62 @@ func TestMetadata(t *testing.T) {
 	}
 }
 
-func TestIssuerFromRequestWhenUnconfigured(t *testing.T) {
+// Without a configured issuer the server is off, except for a request to a
+// loopback host (development), whose issuer is taken from it and not cached.
+func TestIssuer_UnconfiguredIsOffExceptOnLoopback(t *testing.T) {
 	h := newHarness(t, func(c *Config) { c.Issuer = "" })
+	call := func(method, host, path string, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Host = host
+		if body != "" {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+		rec := httptest.NewRecorder()
+		switch {
+		case strings.HasPrefix(path, "/.well-known"):
+			h.s.Metadata(rec, req)
+		case strings.HasPrefix(path, "/oauth/authorize"):
+			h.s.Authorize(rec, req)
+		case path == "/oauth/token":
+			h.s.Token(rec, req)
+		default:
+			h.s.Revoke(rec, req)
+		}
+		return rec
+	}
+	for _, host := range []string{"burrow.example.com", "burrow.local:8080", "10.0.0.5"} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Host = host
+		if got := h.s.Issuer(req); got != "" {
+			t.Errorf("issuer for %s: %q, want none", host, got)
+		}
+		for _, c := range []struct{ method, path, body string }{
+			{http.MethodGet, "/.well-known/oauth-authorization-server", ""},
+			{http.MethodGet, "/oauth/authorize?" + h.authParams().Encode(), ""},
+			{http.MethodPost, "/oauth/token", "grant_type=refresh_token&refresh_token=bor_x&client_id=x"},
+			{http.MethodPost, "/oauth/revoke", "token=x&client_id=x"},
+		} {
+			if rec := call(c.method, host, c.path, c.body); rec.Code != http.StatusNotFound {
+				t.Errorf("%s %s on %s: %d, want 404", c.method, c.path, host, rec.Code)
+			}
+		}
+	}
+	for host, iss := range map[string]string{
+		"localhost:8080": "http://localhost:8080", "127.0.0.1:9": "http://127.0.0.1:9", "[::1]:80": "http://[::1]:80",
+	} {
+		rec := call(http.MethodGet, host, "/.well-known/oauth-authorization-server", "")
+		var m map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &m)
+		if rec.Code != http.StatusOK || m["issuer"] != iss || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("loopback %s: %d %v %q", host, rec.Code, m["issuer"], rec.Header().Get("Cache-Control"))
+		}
+	}
+	// A configured issuer is used whatever the Host says.
+	h2 := newHarness(t)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "burrow.local:8080"
-	if got := h.s.Issuer(req); got != "http://burrow.local:8080" {
-		t.Fatalf("issuer %q", got)
+	req.Host = "evil.example"
+	if got := h2.s.Issuer(req); got != testIssuer {
+		t.Fatalf("configured issuer: %q", got)
 	}
 }
 
@@ -332,9 +386,14 @@ func TestAuthorize_ErrorsGoBackWithIss(t *testing.T) {
 		mod  func(url.Values)
 		code string
 	}{
-		"no PKCE":              {func(q url.Values) { q.Del("code_challenge"); q.Del("code_challenge_method") }, "invalid_request"},
-		"plain PKCE":           {func(q url.Values) { q.Set("code_challenge_method", "plain") }, "invalid_request"},
-		"short challenge":      {func(q url.Values) { q.Set("code_challenge", "abc") }, "invalid_request"},
+		"no PKCE":           {func(q url.Values) { q.Del("code_challenge"); q.Del("code_challenge_method") }, "invalid_request"},
+		"plain PKCE":        {func(q url.Values) { q.Set("code_challenge_method", "plain") }, "invalid_request"},
+		"short challenge":   {func(q url.Values) { q.Set("code_challenge", "abc") }, "invalid_request"},
+		"challenge charset": {func(q url.Values) { q.Set("code_challenge", strings.Repeat("a+/=", 11)) }, "invalid_request"},
+		"disabled source": {func(q url.Values) {
+			q.Set("resource", testIssuer+"/mcp/off")
+			q.Set("scope", "mcp:tools")
+		}, "invalid_target"},
 		"token response":       {func(q url.Values) { q.Set("response_type", "token") }, "unsupported_response_type"},
 		"no resource":          {func(q url.Values) { q.Del("resource") }, "invalid_target"},
 		"foreign resource":     {func(q url.Values) { q.Set("resource", "https://other.example/mcp/burrow") }, "invalid_target"},
@@ -356,6 +415,9 @@ func TestAuthorize_ErrorsGoBackWithIss(t *testing.T) {
 		}
 		if got := loc.Query(); got.Get("error") != tc.code || got.Get("iss") != testIssuer || got.Get("state") != "st-1" {
 			t.Errorf("%s: redirect %q, want error=%s with iss and state", name, loc, tc.code)
+		}
+		if rec.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("%s: error redirect may be cached", name)
 		}
 	}
 }

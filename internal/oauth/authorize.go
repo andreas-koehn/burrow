@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -17,9 +18,14 @@ import (
 	"github.com/ankoehn/burrow/internal/store"
 )
 
-// maxPending caps the authorization requests waiting for a decision. Anyone
-// can open one, so the cap keeps memory bounded; expired ones go first.
-const maxPending = 10000
+// Anyone can open an authorization request, so the requests waiting for a
+// decision are capped: per client address, so that one address cannot use up
+// the room of all others, and in all. Expired ones go first. A request holds
+// a few short strings (the query is capped at maxAuthorizeQuery).
+const (
+	maxPending        = 2000
+	maxPendingPerAddr = 20
+)
 
 // maxAuthorizeQuery bounds the query of an authorization request.
 const maxAuthorizeQuery = 8 << 10
@@ -42,9 +48,14 @@ type clientInfo struct {
 // pendingRequest is an authorization request waiting for the user's
 // decision on the consent page.
 type pendingRequest struct {
-	ID            string
-	Issuer        string
-	Client        clientInfo
+	ID         string
+	Issuer     string
+	Addr       string // the client address that opened it, for the cap
+	ClientID   string
+	ClientName string
+	ClientKind string
+	// RedirectURI is the redirect URI the request named and the client's
+	// registration matched; the registered list itself is not kept.
 	RedirectURI   string
 	State         string
 	CodeChallenge string
@@ -93,6 +104,10 @@ func (e authzError) Error() string { return e.code + ": " + e.desc }
 // client with error, state and iss. A valid request is stored for ten minutes
 // and the browser is sent to the consent page.
 func (s *Server) Authorize(w http.ResponseWriter, r *http.Request) {
+	iss, ok := s.endpoint(w, r)
+	if !ok {
+		return
+	}
 	// A pending request is kept in memory: its size is bounded here.
 	if len(r.URL.RawQuery) > maxAuthorizeQuery {
 		s.errorPage(w, "The request is too long.")
@@ -119,9 +134,9 @@ func (s *Server) Authorize(w http.ResponseWriter, r *http.Request) {
 		s.errorPage(w, "The redirect_uri is not registered for this client.")
 		return
 	}
-	iss := s.Issuer(r)
 	state := q.Get("state")
 	fail := func(code, desc string) {
+		w.Header().Set("Cache-Control", "no-store")
 		http.Redirect(w, r, withParams(redirectURI, map[string]string{
 			"error": code, "error_description": desc, "state": state, "iss": iss,
 		}), http.StatusFound)
@@ -166,7 +181,8 @@ func (s *Server) Authorize(w http.ResponseWriter, r *http.Request) {
 	}
 	now := s.now()
 	p := &pendingRequest{
-		ID: randomID(), Issuer: iss, Client: client, RedirectURI: redirectURI, State: state,
+		ID: randomID(), Issuer: iss, Addr: clientAddr(r),
+		ClientID: client.ID, ClientName: client.Name, ClientKind: client.Kind, RedirectURI: redirectURI, State: state,
 		CodeChallenge: challenge, Resource: resource, ResourceKind: kind, Source: source, Scopes: scopes,
 		CreatedAt: now, ExpiresAt: now.Add(RequestTTL),
 	}
@@ -244,12 +260,15 @@ func (s *Server) resolveResource(ctx context.Context, iss, raw string) (resource
 		return res, ResourceBurrow, "", nil
 	case strings.HasPrefix(rest, "/") && store.ValidToolSourceSlug(rest[1:]):
 		slug := rest[1:]
-		_, err := s.store.GetMCPSource(ctx, slug)
+		src, err := s.store.GetMCPSource(ctx, slug)
 		if errors.Is(err, db.ErrNotFound) {
 			break
 		}
 		if err != nil {
 			return "", "", "", err
+		}
+		if !src.Enabled {
+			return "", "", "", authzError{"invalid_target", "the tool source is disabled"}
 		}
 		return res, ResourceSource, slug, nil
 	}
@@ -278,19 +297,43 @@ func withParams(raw string, params map[string]string) string {
 func (s *Server) addPending(p *pendingRequest) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.pending) >= maxPending {
+	if len(s.pending) >= maxPending || s.pendingPerAddr[p.Addr] >= maxPendingPerAddr {
 		now := s.now()
 		for id, e := range s.pending {
 			if !now.Before(e.ExpiresAt) {
-				delete(s.pending, id)
+				s.dropLocked(id)
 			}
 		}
-		if len(s.pending) >= maxPending {
+		if len(s.pending) >= maxPending || s.pendingPerAddr[p.Addr] >= maxPendingPerAddr {
 			return false
 		}
 	}
 	s.pending[p.ID] = p
+	s.pendingPerAddr[p.Addr]++
 	return true
+}
+
+// dropLocked removes a request; s.mu is held.
+func (s *Server) dropLocked(id string) {
+	p := s.pending[id]
+	if p == nil {
+		return
+	}
+	delete(s.pending, id)
+	if s.pendingPerAddr[p.Addr]--; s.pendingPerAddr[p.Addr] <= 0 {
+		delete(s.pendingPerAddr, p.Addr)
+	}
+}
+
+// dropPendingOfClient removes the waiting requests of a client.
+func (s *Server) dropPendingOfClient(clientID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, p := range s.pending {
+		if p.ClientID == clientID {
+			s.dropLocked(id)
+		}
+	}
 }
 
 // getPending returns a live request, or nil.
@@ -302,7 +345,7 @@ func (s *Server) getPending(id string) *pendingRequest {
 		return nil
 	}
 	if !s.now().Before(p.ExpiresAt) {
-		delete(s.pending, id)
+		s.dropLocked(id)
 		return nil
 	}
 	return p
@@ -314,11 +357,20 @@ func (s *Server) takePending(id string) *pendingRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p := s.pending[id]
-	delete(s.pending, id)
+	s.dropLocked(id)
 	if p == nil || !s.now().Before(p.ExpiresAt) {
 		return nil
 	}
 	return p
+}
+
+// clientAddr is the request's client address without the port (after the
+// router's trusted-proxy handling).
+func clientAddr(r *http.Request) string {
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return h
+	}
+	return r.RemoteAddr
 }
 
 // PendingRequest returns what the consent page shows of a request, or
@@ -329,7 +381,7 @@ func (s *Server) PendingRequest(ctx context.Context, id string) (Request, error)
 		return Request{}, ErrNotFound
 	}
 	out := Request{
-		ID: p.ID, ClientID: p.Client.ID, ClientName: p.Client.Name, ClientKind: p.Client.Kind,
+		ID: p.ID, ClientID: p.ClientID, ClientName: p.ClientName, ClientKind: p.ClientKind,
 		RedirectURI: p.RedirectURI, RedirectHost: redirectHost(p.RedirectURI),
 		LocalhostRedirect: IsLoopbackRedirect(p.RedirectURI),
 		Resource:          p.Resource, ResourceKind: p.ResourceKind, Source: p.Source,
@@ -442,7 +494,7 @@ func (s *Server) Approve(ctx context.Context, id string, d Decision) (Approved, 
 	code := randomSecret("")
 	now := s.now()
 	if err := s.store.CreateOAuthCode(ctx, db.OAuthCode{
-		Hash: hashSecret(code), ClientID: p.Client.ID, ClientName: p.Client.Name, UserID: d.UserID,
+		Hash: hashSecret(code), ClientID: p.ClientID, ClientName: p.ClientName, UserID: d.UserID,
 		RedirectURI: p.RedirectURI, CodeChallenge: p.CodeChallenge, Resource: p.Resource,
 		Scopes: scopes, AllowedTools: tools, ToolsReadOnly: readOnly,
 		ExpiresAt: now.Add(CodeTTL), CreatedAt: now,
@@ -453,7 +505,7 @@ func (s *Server) Approve(ctx context.Context, id string, d Decision) (Approved, 
 		s.log.Warn("oauth: prune", "err", err)
 	}
 	return Approved{
-		ClientID: p.Client.ID, ClientName: p.Client.Name, ClientKind: p.Client.Kind,
+		ClientID: p.ClientID, ClientName: p.ClientName, ClientKind: p.ClientKind,
 		Resource: p.Resource, ResourceKind: p.ResourceKind, Scopes: scopes, AllowedTools: tools, ToolsReadOnly: readOnly,
 		RedirectURL: withParams(p.RedirectURI, map[string]string{"code": code, "state": p.State, "iss": p.Issuer}),
 	}, nil
@@ -506,7 +558,7 @@ func (s *Server) Deny(_ context.Context, id string) (Denied, error) {
 		return Denied{}, ErrNotFound
 	}
 	return Denied{
-		ClientID: p.Client.ID, ClientName: p.Client.Name,
+		ClientID: p.ClientID, ClientName: p.ClientName,
 		RedirectURL: withParams(p.RedirectURI, map[string]string{
 			"error": "access_denied", "error_description": "the user denied the request", "state": p.State, "iss": p.Issuer,
 		}),

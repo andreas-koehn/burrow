@@ -999,11 +999,15 @@ func newRootCmd() *cobra.Command {
 			}
 
 			// The OAuth authorization server for MCP clients. Its issuer is
-			// the dashboard's origin; without a public name it is taken
-			// from each request.
+			// the dashboard's https origin (BURROW_AUTH_DOMAIN, or the first
+			// ACME domain), https also behind a TLS-terminating proxy.
+			// Without one it is off: its endpoints answer 404, except to a
+			// request sent to a loopback host (development).
 			oauthIssuer := ""
 			if proxyAuthDomain != "" {
 				oauthIssuer = "https://" + proxyAuthDomain
+			} else {
+				log.Warn("oauth: authorization server off (served on loopback hosts only): no public name; set BURROW_AUTH_DOMAIN or BURROW_ACME_DOMAIN")
 			}
 			oauthServer := oauth.New(oauth.Config{
 				Store: db.Wrap(database), Issuer: oauthIssuer, Audit: v04.AuditAppender, Log: log,

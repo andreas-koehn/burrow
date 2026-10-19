@@ -2569,9 +2569,14 @@ paths:
       security: []
       summary: Authorization server metadata (RFC 8414)
       description: >
-        Public. The issuer is the dashboard's origin; endpoints, PKCE S256
+        Public. The issuer is the dashboard's https origin
+        (BURROW_AUTH_DOMAIN or the first ACME domain); endpoints, PKCE S256
         only, public clients only (`none`), authorization_code and
-        refresh_token, client ID metadata documents, RFC 9207 `iss`.
+        refresh_token, client ID metadata documents, RFC 9207 `iss`. Without
+        a configured issuer the authorization server is off and this and the
+        other three OAuth endpoints answer 404, except to a request sent to a
+        loopback host (development), whose issuer is that origin and whose
+        answers are not cacheable.
       responses:
         '200':
           description: The metadata document.
@@ -2610,10 +2615,13 @@ paths:
         cached 5 minutes to 24 hours) and its redirect URI (exact; a loopback
         http URI may differ in port). Until both are known good an error is a
         page (400). Then PKCE S256, `resource` (one of this relay's MCP
-        endpoints: /mcp/burrow, /mcp, /mcp/<slug>) and the scopes are checked;
-        an error goes back to the redirect URI with `error`, `state` and
-        `iss`. A valid request is kept ten minutes and the browser is sent to
-        the consent page `/oauth/consent?request=<id>`.
+        endpoints: /mcp/burrow, /mcp, /mcp/<slug> of an enabled source) and
+        the scopes are checked; an error goes back to the redirect URI with
+        `error`, `state` and `iss` (not cacheable). A valid request is kept
+        ten minutes and the browser is sent to the consent page
+        `/oauth/consent?request=<id>`. At most 20 requests per client address
+        and 2000 in all wait for a decision; beyond that the client is told
+        `temporarily_unavailable`.
       parameters:
         - { name: client_id, in: query, required: true, schema: { type: string } }
         - { name: redirect_uri, in: query, required: true, schema: { type: string } }
@@ -2638,12 +2646,19 @@ paths:
         Public clients only: client_id in the body or as the user name of
         HTTP Basic with an empty password; a client secret is refused
         (invalid_client). `authorization_code` needs code, redirect_uri,
-        code_verifier and client_id (and `resource`, if sent, must match); a
-        code is good for 60 s and once, and a second use revokes what the
-        first one got. `refresh_token` rotates: every refresh token is good
-        once, and using one again revokes the grant (audited as
-        `oauth.refresh.reuse`). Access tokens (boa_) live one hour, refresh
-        tokens (bor_) 30 days. 120 requests per address and minute.
+        code_verifier and client_id (and `resource`, if sent, must match). A
+        code is good for 60 s and once: a second use revokes what the first
+        one got, or keeps it from being issued when it lands first, and is
+        audited as `oauth.refresh.reuse` too. A request naming another client
+        does not use the code up. `refresh_token` rotates: every refresh token
+        is good once, and using one again revokes the grant (audited as
+        `oauth.refresh.reuse`). The rule is strict: two refreshes sent at
+        once with the same token count as a reuse, so at most one gets new
+        tokens and the grant is revoked; a client must refresh one at a time.
+        `scope` on a refresh, if sent, must name exactly the grant's scopes
+        (`invalid_scope` otherwise; narrowing is not offered). Access tokens
+        (boa_) live one hour, refresh tokens (bor_) 30 days. 120 requests per
+        address and minute.
       requestBody:
         required: true
         content:

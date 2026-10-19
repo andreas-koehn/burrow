@@ -14,6 +14,10 @@ import (
 	"time"
 )
 
+// ErrOAuthCodeReused is returned by CreateOAuthGrant when the code was used a
+// second time before its grant was linked: the grant is not stored.
+var ErrOAuthCodeReused = errors.New("db: oauth code was used again")
+
 // OAuthClient is a pre-registered public client.
 type OAuthClient struct {
 	ClientID     string
@@ -153,8 +157,8 @@ func (x *DB) ListOAuthClients(ctx context.Context) ([]OAuthClient, error) {
 	return out, rows.Err()
 }
 
-// DeleteOAuthClient removes a pre-registered client and ends every grant it
-// holds (their tokens are deleted). ErrNotFound when there is no such client.
+// DeleteOAuthClient removes a pre-registered client, its codes not used yet,
+// and ends every grant it holds (their tokens are deleted). ErrNotFound when there is no such client.
 func (x *DB) DeleteOAuthClient(ctx context.Context, clientID string, now time.Time) error {
 	tx, err := x.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
@@ -167,6 +171,9 @@ func (x *DB) DeleteOAuthClient(ctx context.Context, clientID string, now time.Ti
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_codes WHERE client_id=? AND used=0`, clientID); err != nil {
+		return fmt.Errorf("delete oauth client codes: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM oauth_tokens WHERE grant_id IN (SELECT id FROM oauth_grants WHERE client_id=?)`, clientID); err != nil {
@@ -198,43 +205,56 @@ func (x *DB) CreateOAuthCode(ctx context.Context, c OAuthCode) error {
 	return nil
 }
 
-// RedeemOAuthCode marks the code used and returns it. A code that was used
-// before comes back with Used set and nothing changed; the caller refuses it
-// (and revokes GrantID). ErrNotFound when no code has that hash. The caller
-// checks expiry, client, redirect URI and verifier after this: a failed
-// attempt burns the code too.
-func (x *DB) RedeemOAuthCode(ctx context.Context, hash string) (OAuthCode, error) {
+const oauthCodeCols = `code_hash, client_id, client_name, user_id, redirect_uri, code_challenge, resource,
+		        scopes, allowed_tools, tools_read_only, expires_at, used, grant_id, created_at`
+
+func scanOAuthCode(row interface{ Scan(...any) error }) (OAuthCode, error) {
 	var c OAuthCode
 	var scopes, tools string
 	var ro, used int
-	err := x.sqlDB.QueryRowContext(ctx,
-		`SELECT code_hash, client_id, client_name, user_id, redirect_uri, code_challenge, resource,
-		        scopes, allowed_tools, tools_read_only, expires_at, used, grant_id, created_at
-		   FROM oauth_codes WHERE code_hash=?`, hash).
-		Scan(&c.Hash, &c.ClientID, &c.ClientName, &c.UserID, &c.RedirectURI, &c.CodeChallenge, &c.Resource,
-			&scopes, &tools, &ro, &c.ExpiresAt, &used, &c.GrantID, &c.CreatedAt)
+	err := row.Scan(&c.Hash, &c.ClientID, &c.ClientName, &c.UserID, &c.RedirectURI, &c.CodeChallenge, &c.Resource,
+		&scopes, &tools, &ro, &c.ExpiresAt, &used, &c.GrantID, &c.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OAuthCode{}, ErrNotFound
 	}
 	if err != nil {
 		return OAuthCode{}, fmt.Errorf("get oauth code: %w", err)
 	}
-	c.Scopes, c.AllowedTools, c.ToolsReadOnly = parseList(scopes), parseList(tools), ro != 0
+	c.Scopes, c.AllowedTools, c.ToolsReadOnly, c.Used = parseList(scopes), parseList(tools), ro != 0, used != 0
 	c.ExpiresAt, c.CreatedAt = c.ExpiresAt.UTC(), c.CreatedAt.UTC()
-	if used != 0 {
-		c.Used = true
-		return c, nil
-	}
-	res, err := x.sqlDB.ExecContext(ctx, `UPDATE oauth_codes SET used=1 WHERE code_hash=? AND used=0`, hash)
+	return c, nil
+}
+
+// GetOAuthCode returns the code without changing it, or ErrNotFound.
+func (x *DB) GetOAuthCode(ctx context.Context, hash string) (OAuthCode, error) {
+	return scanOAuthCode(x.sqlDB.QueryRowContext(ctx, `SELECT `+oauthCodeCols+` FROM oauth_codes WHERE code_hash=?`, hash))
+}
+
+// RedeemOAuthCode marks the code used and returns it. A code that was used
+// before comes back with Used set; it is marked reused (so that a grant the
+// first use has not linked yet never is) and GrantID names the grant the
+// first use linked, if any, for the caller to revoke. ErrNotFound when no
+// code has that hash. The caller checks expiry, client, redirect URI and
+// verifier after this: a failed attempt burns the code too.
+func (x *DB) RedeemOAuthCode(ctx context.Context, hash string) (OAuthCode, error) {
+	c, err := x.GetOAuthCode(ctx, hash)
 	if err != nil {
-		return OAuthCode{}, fmt.Errorf("redeem oauth code: %w", err)
+		return OAuthCode{}, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		// Someone else redeemed it between the read and the update.
-		c.Used = true
-		if err := x.sqlDB.QueryRowContext(ctx, `SELECT grant_id FROM oauth_codes WHERE code_hash=?`, hash).Scan(&c.GrantID); err != nil {
-			return OAuthCode{}, fmt.Errorf("reread oauth code: %w", err)
+	if !c.Used {
+		res, err := x.sqlDB.ExecContext(ctx, `UPDATE oauth_codes SET used=1 WHERE code_hash=? AND used=0`, hash)
+		if err != nil {
+			return OAuthCode{}, fmt.Errorf("redeem oauth code: %w", err)
 		}
+		if n, _ := res.RowsAffected(); n == 1 {
+			return c, nil
+		}
+		// Someone else redeemed it between the read and the update.
+	}
+	c.Used = true
+	if err := x.sqlDB.QueryRowContext(ctx,
+		`UPDATE oauth_codes SET reused=1 WHERE code_hash=? RETURNING grant_id`, hash).Scan(&c.GrantID); err != nil {
+		return OAuthCode{}, fmt.Errorf("mark oauth code reused: %w", err)
 	}
 	return c, nil
 }
@@ -266,6 +286,17 @@ func (x *DB) CreateOAuthGrant(ctx context.Context, g OAuthGrant, codeHash string
 		return fmt.Errorf("begin oauth grant: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// The link comes first: it takes the code's row, and refuses a code that
+	// was used a second time meanwhile.
+	if codeHash != "" {
+		res, err := tx.ExecContext(ctx, `UPDATE oauth_codes SET grant_id=? WHERE code_hash=? AND reused=0`, g.ID, codeHash)
+		if err != nil {
+			return fmt.Errorf("link oauth code: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrOAuthCodeReused
+		}
+	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO oauth_grants(id, client_id, client_name, user_id, resource, scopes, allowed_tools, tools_read_only, created_at)
 		 VALUES(?,?,?,?,?,?,?,?,?)`,
@@ -276,11 +307,6 @@ func (x *DB) CreateOAuthGrant(ctx context.Context, g OAuthGrant, codeHash string
 	for _, t := range tokens {
 		if err := insertOAuthToken(ctx, tx, t); err != nil {
 			return err
-		}
-	}
-	if codeHash != "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE oauth_codes SET grant_id=? WHERE code_hash=?`, g.ID, codeHash); err != nil {
-			return fmt.Errorf("link oauth code: %w", err)
 		}
 	}
 	return tx.Commit()

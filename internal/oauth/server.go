@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -69,6 +70,7 @@ type Store interface {
 	DeleteOAuthClient(ctx context.Context, clientID string, now time.Time) error
 
 	CreateOAuthCode(ctx context.Context, c db.OAuthCode) error
+	GetOAuthCode(ctx context.Context, hash string) (db.OAuthCode, error)
 	RedeemOAuthCode(ctx context.Context, hash string) (db.OAuthCode, error)
 	CreateOAuthGrant(ctx context.Context, g db.OAuthGrant, codeHash string, tokens ...db.OAuthToken) error
 	GetOAuthGrant(ctx context.Context, id string) (db.OAuthGrant, error)
@@ -118,8 +120,9 @@ type Server struct {
 	now    func() time.Time
 	cimd   *cimdFetcher
 
-	mu      sync.Mutex
-	pending map[string]*pendingRequest
+	mu             sync.Mutex
+	pending        map[string]*pendingRequest
+	pendingPerAddr map[string]int
 }
 
 // New builds a server.
@@ -140,14 +143,22 @@ func New(cfg Config) *Server {
 		now:     now,
 		cimd:    newCIMDFetcher(cfg.CIMDClient, now),
 		pending: map[string]*pendingRequest{},
+
+		pendingPerAddr: map[string]int{},
 	}
 }
 
-// Issuer is the issuer identifier for a request: the configured one, or the
-// origin the request was sent to. Every resource URL starts with it.
+// Issuer is the issuer identifier for a request, "" when the server is off.
+// It is the configured issuer (the dashboard's https origin) whatever the
+// request's Host says. Without one the server is off, except for a request
+// sent to a loopback host (localhost, 127.0.0.1, [::1]): for development the
+// issuer is then that origin. Every resource URL starts with the issuer.
 func (s *Server) Issuer(r *http.Request) string {
 	if s.issuer != "" {
 		return s.issuer
+	}
+	if !isLoopbackHost(hostOnly(r.Host)) {
+		return ""
 	}
 	scheme := "http"
 	if r.TLS != nil {
@@ -156,10 +167,42 @@ func (s *Server) Issuer(r *http.Request) string {
 	return scheme + "://" + r.Host
 }
 
+// Configured reports whether an issuer is configured; without one only
+// loopback requests are served.
+func (s *Server) Configured() bool { return s.issuer != "" }
+
+// hostOnly is a Host header without its port and brackets.
+func hostOnly(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+}
+
+// endpoint starts an answer of the server's own endpoints: the issuer, or a
+// 404 when the server is off for this request. An issuer taken from a
+// loopback request is not for a cache to keep.
+func (s *Server) endpoint(w http.ResponseWriter, r *http.Request) (string, bool) {
+	iss := s.Issuer(r)
+	if iss == "" {
+		http.NotFound(w, r)
+		return "", false
+	}
+	if !s.Configured() {
+		w.Header().Set("Cache-Control", "no-store")
+	}
+	return iss, true
+}
+
 // ResourceURL is the resource (audience) URL of an MCP endpoint path such as
-// "/mcp/burrow", "/mcp" or "/mcp/<slug>" for the request's issuer.
+// "/mcp/burrow", "/mcp" or "/mcp/<slug>" for the request's issuer; "" when
+// the server is off for the request.
 func (s *Server) ResourceURL(r *http.Request, path string) string {
-	return s.Issuer(r) + path
+	iss := s.Issuer(r)
+	if iss == "" {
+		return ""
+	}
+	return iss + path
 }
 
 // metadata is the RFC 8414 document.
@@ -182,10 +225,15 @@ type metadata struct {
 
 // Metadata serves GET /.well-known/oauth-authorization-server.
 func (s *Server) Metadata(w http.ResponseWriter, r *http.Request) {
-	iss := s.Issuer(r)
+	iss, ok := s.endpoint(w, r)
+	if !ok {
+		return
+	}
 	h := w.Header()
 	h.Set("Access-Control-Allow-Origin", "*")
-	h.Set("Cache-Control", "public, max-age=300")
+	if s.Configured() {
+		h.Set("Cache-Control", "public, max-age=300")
+	}
 	writeJSON(w, http.StatusOK, metadata{
 		Issuer:                            iss,
 		AuthorizationEndpoint:             iss + "/oauth/authorize",

@@ -48,41 +48,57 @@ type tokenResponse struct {
 // id of a public client: client_id in the body, or HTTP Basic with the id as
 // user name and an empty password (what an OAuth library sends when it
 // detects the style by itself).
-func formRequest(w http.ResponseWriter, r *http.Request) (clientID string, te *tokenError) {
+// clientIdent is who a public client says it is: one id, or the two
+// readings of an HTTP Basic user name (raw, and form-urlencoded as RFC 6749
+// 2.3.1 asks; clients differ in this). It matches a code's or grant's client
+// when either reading equals it.
+type clientIdent []string
+
+func (c clientIdent) is(id string) bool { return slices.Contains(c, id) }
+
+func formRequest(w http.ResponseWriter, r *http.Request) (clientIdent, *tokenError) {
 	mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if mt != "application/x-www-form-urlencoded" {
-		return "", tokenErr("invalid_request", "the body must be application/x-www-form-urlencoded")
+		return nil, tokenErr("invalid_request", "the body must be application/x-www-form-urlencoded")
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
 	if err := r.ParseForm(); err != nil {
-		return "", tokenErr("invalid_request", "the body could not be read")
+		return nil, tokenErr("invalid_request", "the body could not be read")
 	}
 	for k, v := range r.PostForm {
 		if len(v) > 1 {
-			return "", tokenErr("invalid_request", "parameter "+k+" is repeated")
+			return nil, tokenErr("invalid_request", "parameter "+k+" is repeated")
 		}
 	}
-	clientID = r.PostForm.Get("client_id")
-	if user, pass, ok := r.BasicAuth(); ok {
-		// RFC 6749 2.3.1: both are form-urlencoded before they are joined
-		// (an https client_id arrives as https%3A%2F%2F…).
-		if u, err := url.QueryUnescape(user); err == nil {
-			user = u
+	noSecret := &tokenError{http.StatusUnauthorized, "invalid_client", "public clients only: no client secret"}
+	form := r.PostForm.Get("client_id")
+	user, pass, basic := r.BasicAuth()
+	if !basic {
+		if r.PostForm.Get("client_secret") != "" {
+			return nil, noSecret
 		}
-		if pass != "" || r.PostForm.Get("client_secret") != "" {
-			return "", &tokenError{http.StatusUnauthorized, "invalid_client", "public clients only: no client secret"}
+		if form == "" {
+			return nil, tokenErr("invalid_request", "client_id is required")
 		}
-		if clientID != "" && clientID != user {
-			return "", tokenErr("invalid_request", "client_id differs from the Authorization header")
-		}
-		clientID = user
-	} else if r.PostForm.Get("client_secret") != "" {
-		return "", &tokenError{http.StatusUnauthorized, "invalid_client", "public clients only: no client secret"}
+		return clientIdent{form}, nil
 	}
-	if clientID == "" {
-		return "", tokenErr("invalid_request", "client_id is required")
+	if pass != "" || r.PostForm.Get("client_secret") != "" {
+		return nil, noSecret
 	}
-	return clientID, nil
+	ident := clientIdent{user}
+	if u, err := url.QueryUnescape(user); err == nil && u != user {
+		ident = append(ident, u)
+	}
+	if form != "" {
+		if !ident.is(form) {
+			return nil, tokenErr("invalid_request", "client_id differs from the Authorization header")
+		}
+		ident = clientIdent{form}
+	}
+	if user == "" && form == "" {
+		return nil, tokenErr("invalid_request", "client_id is required")
+	}
+	return ident, nil
 }
 
 func writeTokenError(w http.ResponseWriter, te *tokenError) {
@@ -94,11 +110,14 @@ func writeTokenError(w http.ResponseWriter, te *tokenError) {
 
 // Token serves POST /oauth/token: authorization_code and refresh_token.
 func (s *Server) Token(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.endpoint(w, r); !ok {
+		return
+	}
 	h := w.Header()
 	h.Set("Cache-Control", "no-store")
 	h.Set("Pragma", "no-cache")
 	h.Set("Access-Control-Allow-Origin", "*")
-	clientID, te := formRequest(w, r)
+	client, te := formRequest(w, r)
 	if te != nil {
 		writeTokenError(w, te)
 		return
@@ -106,9 +125,9 @@ func (s *Server) Token(w http.ResponseWriter, r *http.Request) {
 	var resp tokenResponse
 	switch r.PostForm.Get("grant_type") {
 	case "authorization_code":
-		resp, te = s.exchangeCode(r, clientID)
+		resp, te = s.exchangeCode(r, client)
 	case "refresh_token":
-		resp, te = s.refresh(r, clientID)
+		resp, te = s.refresh(r, client)
 	case "":
 		te = tokenErr("invalid_request", "grant_type is required")
 	default:
@@ -133,12 +152,17 @@ func s256(verifier string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-func (s *Server) exchangeCode(r *http.Request, clientID string) (tokenResponse, *tokenError) {
+func (s *Server) exchangeCode(r *http.Request, client clientIdent) (tokenResponse, *tokenError) {
 	ctx := r.Context()
 	f := r.PostForm
 	code, redirectURI, verifier := f.Get("code"), f.Get("redirect_uri"), f.Get("code_verifier")
 	if code == "" || redirectURI == "" || verifier == "" {
 		return tokenResponse{}, tokenErr("invalid_request", "code, redirect_uri and code_verifier are required")
+	}
+	// A client that is not the code's does not burn it: the code is read
+	// first (a cheap lookup by hash), and only then redeemed.
+	if peek, err := s.store.GetOAuthCode(ctx, hashSecret(code)); err == nil && !peek.Used && !client.is(peek.ClientID) {
+		return tokenResponse{}, tokenErr("invalid_grant", "the code was issued to another client")
 	}
 	c, err := s.store.RedeemOAuthCode(ctx, hashSecret(code))
 	if errors.Is(err, db.ErrNotFound) {
@@ -151,21 +175,23 @@ func (s *Server) exchangeCode(r *http.Request, clientID string) (tokenResponse, 
 	if c.Used {
 		// A code is used once. A second use may be an attacker who saw it:
 		// whatever it was exchanged for ends (RFC 6749 4.1.2).
+		// A grant the first use has not linked yet never will be: the code
+		// is marked reused and the link refuses it.
 		if c.GrantID != "" {
 			if err := s.store.RevokeOAuthGrant(ctx, c.GrantID, s.now()); err != nil && !errors.Is(err, db.ErrNotFound) {
 				s.log.Error("oauth: revoke grant of a reused code", "err", err)
 			}
-			s.auditEvent(ctx, audit.ActionOAuthRefreshReuse, c.UserID, c.GrantID, c.ClientName, map[string]any{
-				"client_id": c.ClientID, "resource": c.Resource, "via": "authorization_code",
-			})
 		}
+		s.auditEvent(ctx, audit.ActionOAuthRefreshReuse, c.UserID, c.GrantID, c.ClientName, map[string]any{
+			"client_id": c.ClientID, "resource": c.Resource, "via": "authorization_code",
+		})
 		return tokenResponse{}, tokenErr("invalid_grant", "the code was used already")
 	}
 	now := s.now()
 	switch {
 	case !now.Before(c.ExpiresAt):
 		return tokenResponse{}, tokenErr("invalid_grant", "the code is unknown or expired")
-	case c.ClientID != clientID:
+	case !client.is(c.ClientID):
 		return tokenResponse{}, tokenErr("invalid_grant", "the code was issued to another client")
 	case c.RedirectURI != redirectURI:
 		return tokenResponse{}, tokenErr("invalid_grant", "redirect_uri differs from the authorization request")
@@ -184,7 +210,9 @@ func (s *Server) exchangeCode(r *http.Request, clientID string) (tokenResponse, 
 		Scopes: c.Scopes, AllowedTools: c.AllowedTools, ToolsReadOnly: c.ToolsReadOnly, CreatedAt: now,
 	}
 	access, refresh, rows := s.newTokens(g.ID, now)
-	if err := s.store.CreateOAuthGrant(ctx, g, c.Hash, rows...); err != nil {
+	if err := s.store.CreateOAuthGrant(ctx, g, c.Hash, rows...); errors.Is(err, db.ErrOAuthCodeReused) {
+		return tokenResponse{}, tokenErr("invalid_grant", "the code was used already")
+	} else if err != nil {
 		s.log.Error("oauth: create grant", "err", err)
 		return tokenResponse{}, &tokenError{http.StatusInternalServerError, "server_error", "the grant could not be stored"}
 	}
@@ -217,7 +245,7 @@ func (s *Server) userActive(ctx context.Context, userID string) *tokenError {
 	return nil
 }
 
-func (s *Server) refresh(r *http.Request, clientID string) (tokenResponse, *tokenError) {
+func (s *Server) refresh(r *http.Request, client clientIdent) (tokenResponse, *tokenError) {
 	ctx := r.Context()
 	f := r.PostForm
 	plain := f.Get("refresh_token")
@@ -241,7 +269,7 @@ func (s *Server) refresh(r *http.Request, clientID string) (tokenResponse, *toke
 	if t.Kind != "refresh" || g.RevokedAt != nil || !now.Before(t.ExpiresAt) {
 		return tokenResponse{}, invalid
 	}
-	if g.ClientID != clientID {
+	if !client.is(g.ClientID) {
 		return tokenResponse{}, tokenErr("invalid_grant", "the refresh token was issued to another client")
 	}
 	if t.UsedAt != nil {
@@ -251,12 +279,10 @@ func (s *Server) refresh(r *http.Request, clientID string) (tokenResponse, *toke
 	if res := f.Get("resource"); res != "" && !sameResource(res, g.Resource) {
 		return tokenResponse{}, tokenErr("invalid_target", "resource differs from the grant")
 	}
-	if sc := parseScope(f.Get("scope")); len(sc) > 0 {
-		for _, x := range sc {
-			if !slices.Contains(g.Scopes, x) {
-				return tokenResponse{}, tokenErr("invalid_scope", "a refresh cannot widen the grant")
-			}
-		}
+	// A refresh keeps the grant's scopes: a scope parameter must name
+	// exactly them (in any order); narrowing is not offered.
+	if sc := parseScope(f.Get("scope")); len(sc) > 0 && !sameSet(sc, g.Scopes) {
+		return tokenResponse{}, tokenErr("invalid_scope", "a refresh keeps the grant's scopes; ask for them all or leave scope out")
 	}
 	if te := s.userActive(ctx, g.UserID); te != nil {
 		return tokenResponse{}, te
@@ -294,10 +320,13 @@ func (s *Server) refreshReused(ctx context.Context, g db.OAuthGrant) {
 // grant; an access token ends itself. A token of another client is left
 // alone.
 func (s *Server) Revoke(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.endpoint(w, r); !ok {
+		return
+	}
 	h := w.Header()
 	h.Set("Cache-Control", "no-store")
 	h.Set("Access-Control-Allow-Origin", "*")
-	clientID, te := formRequest(w, r)
+	client, te := formRequest(w, r)
 	if te != nil {
 		writeTokenError(w, te)
 		return
@@ -315,7 +344,7 @@ func (s *Server) Revoke(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("oauth: look up token to revoke", "err", err)
 		writeTokenError(w, &tokenError{http.StatusServiceUnavailable, "temporarily_unavailable", "try again later"})
 		return
-	case g.ClientID != clientID:
+	case !client.is(g.ClientID):
 	case t.Kind == "refresh":
 		if err := s.store.RevokeOAuthGrant(ctx, g.ID, s.now()); err != nil {
 			s.log.Error("oauth: revoke grant", "err", err)
@@ -391,4 +420,17 @@ func (s *Server) auditEvent(ctx context.Context, action, userID, subjectID, labe
 	}); err != nil {
 		s.log.Warn("oauth: audit", "action", action, "err", err)
 	}
+}
+
+// sameSet reports whether a and b hold the same strings.
+func sameSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, x := range a {
+		if !slices.Contains(b, x) {
+			return false
+		}
+	}
+	return true
 }
