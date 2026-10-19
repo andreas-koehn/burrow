@@ -117,7 +117,8 @@ func servicesOriginSwitch(servicesDomain string, next http.Handler) http.Handler
 		// percent-encoded prefix (/%73vc/, /svc%2F, /%5F_burrow/) is not
 		// /svc/ or the gate to the router, and must not count as one here.
 		raw := r.URL.EscapedPath()
-		isSvc := strings.HasPrefix(raw, "/svc/")
+		// /svc/<slug>…: a non-empty first segment after /svc/.
+		isSvc := strings.HasPrefix(raw, "/svc/") && len(raw) > 5 && raw[5] != '/'
 		isGate := strings.HasPrefix(raw, "/__burrow/")
 		if canonicalHost(r.Host) == servicesDomain {
 			// The gate's own routes are plain: no escapes, no dot segments.

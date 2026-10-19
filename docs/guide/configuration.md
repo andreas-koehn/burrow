@@ -247,6 +247,12 @@ would collide with a service named `apps`. The relay refuses to start with such
 a combination; pick a name outside the auth domain (for example
 `apps.example.com` next to `burrow.example.com`).
 
+The services domain must not be a parent of the dashboard's host either
+(`example.com` for a dashboard on `burrow.example.com`). A page on a parent
+domain can set cookies for every name below it (cookie tossing), so a
+tunnelled app could plant cookies the dashboard reads. The relay refuses to
+start with such a combination; use a sibling name such as `apps.example.com`.
+
 While no services domain is set, approving a client sign-in (`/link`, the page
 `burrow login` opens) asks for the account password as well, and the relay logs
 a line at start recommending a services domain.

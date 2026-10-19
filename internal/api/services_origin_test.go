@@ -110,7 +110,7 @@ func TestServicesOrigin_ServicesHostServesSvc(t *testing.T) {
 func TestServicesOrigin_ServicesHostServesNothingElse(t *testing.T) {
 	rec, h := originRouter(t, originSvc)
 	for _, target := range []string{"/", "/link", "/login", "/api/v1/me", "/api/v1/auth/login", "/healthz", "/metrics",
-		"/mcp/burrow", "/openai/v1/models", "/install.sh", "/svc", "/svcx/a", "/assets/index.js",
+		"/mcp/burrow", "/openai/v1/models", "/install.sh", "/svc", "/svc/", "/svc//x", "/svcx/a", "/assets/index.js",
 		// Encoded forms of the two prefixes: chi routes on the raw path, so
 		// they would reach the dashboard's catch-all.
 		"/%73vc/x", "/svc%2Fx", "/%5F_burrow/x", "/%5f%5fburrow/login", "/__burrow%2Flogin",

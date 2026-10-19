@@ -1583,6 +1583,12 @@ func checkServicesDomain(servicesDomain, dashboardHost string, hostRouting bool)
 	if strings.EqualFold(servicesDomain, dashboardHost) {
 		return fmt.Errorf("BURROW_SERVICES_DOMAIN must differ from the dashboard's host %q", dashboardHost)
 	}
+	if strings.HasSuffix(strings.ToLower(dashboardHost), "."+strings.ToLower(servicesDomain)) {
+		return fmt.Errorf("BURROW_SERVICES_DOMAIN %q is a parent of the dashboard's host %q; "+
+			"a page on %q is same-site with the dashboard and can set cookies for the whole %q domain (cookie tossing), "+
+			"planting cookies the dashboard would read. Choose a services domain that is not above the dashboard's host (for example a sibling such as apps.%s)",
+			servicesDomain, dashboardHost, servicesDomain, servicesDomain, servicesDomain)
+	}
 	if hostRouting && strings.HasSuffix(strings.ToLower(servicesDomain), "."+strings.ToLower(dashboardHost)) {
 		return fmt.Errorf("BURROW_SERVICES_DOMAIN %q lies under %q while the host-routed ingress (BURROW_HTTP_PROXY_LISTEN) is on; "+
 			"that ingress serves <slug>.%s as the service with that slug, so the services host would collide with a service name. "+

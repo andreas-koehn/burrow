@@ -1334,4 +1334,14 @@ func TestCheckServicesDomain(t *testing.T) {
 	if err := checkServicesDomain("apps.burrow.example.com", "burrow.example.com", false); err != nil {
 		t.Fatalf("under the auth domain without host routing: %v", err)
 	}
+	// A parent of the dashboard's host could set cookies for it.
+	for _, parent := range []string{"example.com", "EXAMPLE.com"} {
+		err := checkServicesDomain(parent, "burrow.example.com", false)
+		if err == nil || !strings.Contains(err.Error(), "cookie") {
+			t.Fatalf("services domain %q above the dashboard host: %v", parent, err)
+		}
+	}
+	if err := checkServicesDomain("ample.com", "burrow.example.com", false); err != nil {
+		t.Fatalf("a name that only ends the same way: %v", err)
+	}
 }
