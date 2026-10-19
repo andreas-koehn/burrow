@@ -390,6 +390,19 @@ func newRouter(d Deps) http.Handler {
 				Post("/client/login/requests/{user_code}/approve", d.PostClientLoginApprove)
 			r.With(d.requireDashboardSession).
 				Post("/client/login/requests/{user_code}/deny", d.PostClientLoginDeny)
+			// OAuth: consent decisions and connected apps (a dashboard
+			// session, any role), pre-registered clients. The approval takes
+			// the password while no services domain is set (inline or a
+			// recent confirmation, checked by the handler) and is limited
+			// per address like the sign-in.
+			r.With(d.requireOAuth).Get("/oauth/requests/{id}", d.GetOAuthRequest)
+			r.With(d.requireOAuth, approveLimit).Post("/oauth/requests/{id}/approve", d.PostOAuthRequestApprove)
+			r.With(d.requireOAuth).Post("/oauth/requests/{id}/deny", d.PostOAuthRequestDeny)
+			r.With(d.requireOAuth).Get("/oauth/grants", d.GetOAuthGrants)
+			r.With(d.requireOAuth).Delete("/oauth/grants/{id}", d.DeleteOAuthGrant)
+			r.With(d.requireOAuth).Get("/oauth/clients", d.GetOAuthClients)
+			r.With(d.requireOAuth, recent).Post("/oauth/clients", d.PostOAuthClient)
+			r.With(d.requireOAuth).Delete("/oauth/clients/{id}", d.DeleteOAuthClient)
 			r.Get("/tunnels", d.ListTunnels)
 			r.Get("/sessions", d.ListSessions)
 			r.With(recent).Delete("/sessions/{id}", d.RevokeSession)
@@ -720,6 +733,10 @@ func newRouter(d Deps) http.Handler {
 	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
 		r.Method(method, "/mcp/{slug}", toolsHandler)
 	}
+
+	// The OAuth authorization server's endpoints for MCP clients: no
+	// session, rate-limited per address. Before the SPA catch-all.
+	d.mountOAuthEndpoints(r)
 
 	// AI data plane. Registered before the SPA catch-all. The dashboard's own
 	// AI pages live under /gateway/, so /ai/ is free for it.

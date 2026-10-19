@@ -185,7 +185,10 @@ func TestEveryRouteDeclaresItsAccess(t *testing.T) {
 				t.Errorf("%s: an allow-listed route names permissions %v", r.key(), a.perms)
 			}
 		case accessPerm, accessDashboard:
-			if len(a.perms) == 0 {
+			if a.anyRole && (a.kind != accessDashboard || len(a.perms) != 0) {
+				t.Errorf("%s: anyRole is for a dashboard route without permissions", r.key())
+			}
+			if len(a.perms) == 0 && !a.anyRole {
 				t.Errorf("%s: no permission named", r.key())
 			}
 		}

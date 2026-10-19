@@ -44,6 +44,7 @@ import (
 	"github.com/ankoehn/burrow/internal/events"
 	"github.com/ankoehn/burrow/internal/logging"
 	"github.com/ankoehn/burrow/internal/mcpgw"
+	"github.com/ankoehn/burrow/internal/oauth"
 	"github.com/ankoehn/burrow/internal/proxy"
 	"github.com/ankoehn/burrow/internal/proxy/customdomain"
 	"github.com/ankoehn/burrow/internal/retention"
@@ -997,6 +998,17 @@ func newRootCmd() *cobra.Command {
 				proxyTLSCfg.GetConfigForClient = proxyHandler.GetConfigForClient
 			}
 
+			// The OAuth authorization server for MCP clients. Its issuer is
+			// the dashboard's origin; without a public name it is taken
+			// from each request.
+			oauthIssuer := ""
+			if proxyAuthDomain != "" {
+				oauthIssuer = "https://" + proxyAuthDomain
+			}
+			oauthServer := oauth.New(oauth.Config{
+				Store: db.Wrap(database), Issuer: oauthIssuer, Audit: v04.AuditAppender, Log: log,
+			})
+
 			apiRouter := api.NewRouter(api.Deps{
 				Users: st, Tunnels: tunnelListerAdapter{s: srv, access: st, services: st, slugs: st, authDomain: proxyAuthDomain, servicesDomain: cfg.ServicesDomain}, Events: bus,
 				Log: log, SecureCookies: effectiveSecureCookies, HTTPSEnabled: httpsEnabled,
@@ -1024,6 +1036,7 @@ func newRootCmd() *cobra.Command {
 				MCPSources:  st,
 				MCPGateway:  mcpGatewayParts{Pool: mcpPool, tools: mcpTools},
 				MCPTools:    mcpTools,
+				OAuth:       oauthServer,
 				AILimiter:   aiLimiter,
 				AIBreaker:   aiBreaker,
 				AIAttempts:  st,

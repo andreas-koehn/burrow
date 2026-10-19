@@ -243,6 +243,8 @@ var permissionInfoTable = map[authz.Permission]permissionInfo{
 	// MCP gateway tool sources
 	authz.PermMcpSourcesRead:   {Group: "MCP", Description: "Read tool sources and their tools"},
 	authz.PermMcpSourcesManage: {Group: "MCP", Description: "Create, change, sync and delete tool sources, approve and override their tools. A source sends a stored upstream credential to the address it names: give it like admin rights"},
+	// OAuth authorization server
+	authz.PermOAuthClientsManage: {Group: "MCP", Description: "Register and delete OAuth clients, and see and revoke every user's connected apps"},
 	// Quotas + cost
 	authz.PermQuotasReadOwn:     {Group: "Quotas", Description: "Read own usage + limits"},
 	authz.PermQuotasReadAny:     {Group: "Quotas", Description: "Read all usage + limits"},

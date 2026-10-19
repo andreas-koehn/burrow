@@ -171,6 +171,16 @@ const (
 	// A user changed their own password (result "ok") or tried to and gave the
 	// wrong current one (result "denied"). Never holds a password.
 	ActionAuthPasswordChange = "auth.password_change"
+
+	// OAuth authorization server (spec D30). A client was pre-registered or
+	// deleted; a user approved a consent request or a grant was revoked (by
+	// its user, an admin or its client); a refresh token or code came back a
+	// second time and its grant was revoked. Never a code or token.
+	ActionOAuthClientCreate = "oauth.client.create"
+	ActionOAuthClientDelete = "oauth.client.delete"
+	ActionOAuthGrantApprove = "oauth.grant.approve"
+	ActionOAuthGrantRevoke  = "oauth.grant.revoke"
+	ActionOAuthRefreshReuse = "oauth.refresh.reuse"
 )
 
 // AllActions is the closed set of every audit action Burrow defines, in a
@@ -211,6 +221,8 @@ var AllActions = []string{
 	ActionClientLoginApproved, ActionClientLoginDenied,
 	ActionRedactionSettingsUpdate,
 	ActionAuthHandoff, ActionAuthReauth, ActionAuthPasswordChange,
+	ActionOAuthClientCreate, ActionOAuthClientDelete,
+	ActionOAuthGrantApprove, ActionOAuthGrantRevoke, ActionOAuthRefreshReuse,
 }
 
 // aggregatedActions is the set of actions that are sample-rated at 1/hour

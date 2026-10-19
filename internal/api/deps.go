@@ -12,6 +12,7 @@ import (
 	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/mcpgw"
+	"github.com/ankoehn/burrow/internal/oauth"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -411,6 +412,10 @@ type Deps struct {
 	MCPTools MCPToolServer
 	// MCPToolsRateLimitPerIP overrides MCPRateLimitPerIP for /mcp/<slug>.
 	MCPToolsRateLimitPerIP int
+	// OAuth is the authorization server for MCP clients (/oauth/*, the
+	// metadata document, consent decisions, clients and grants). nil: those
+	// routes answer 404.
+	OAuth *oauth.Server
 	// AILimiter tells how many requests a provider with a concurrency limit
 	// is serving now (the gateway's limiter). nil = reported as 0.
 	AILimiter interface{ InUse(slug string) int }

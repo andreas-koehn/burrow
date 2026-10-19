@@ -82,6 +82,9 @@ const (
 	// unless a custom role names them.
 	PermMcpSourcesRead   Permission = "mcp:sources:read"
 	PermMcpSourcesManage Permission = "mcp:sources:manage"
+	// PermOAuthClientsManage: pre-registered OAuth clients, and every user's
+	// connected apps (grants). Admin only by default.
+	PermOAuthClientsManage Permission = "oauth:clients:manage"
 )
 
 // Role is a named permission set (built-in only in v0.2.0).
@@ -115,6 +118,7 @@ var adminPerms = []Permission{
 	PermAIProvidersManage, PermBudgetsManage, PermCostPricingManage,
 	// v0.12.0
 	PermMcpSourcesRead, PermMcpSourcesManage,
+	PermOAuthClientsManage,
 }
 
 // userPerms is the standard-user :own subset.
@@ -194,6 +198,7 @@ func AllPermissions() []Permission {
 		PermAIProvidersManage, PermBudgetsManage, PermCostPricingManage,
 		// v0.12.0
 		PermMcpSourcesRead, PermMcpSourcesManage,
+		PermOAuthClientsManage,
 	}
 }
 

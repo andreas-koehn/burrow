@@ -47,6 +47,10 @@ type access struct {
 	// every: the caller must hold every permission there is (which includes
 	// perms). For what amounts to owning the relay.
 	every bool
+	// anyRole: a dashboard route open to the session of every role that
+	// holds any permission at all (perms is empty); the handler decides the
+	// rest. A role that holds nothing is refused like everywhere else.
+	anyRole bool
 }
 
 func public() access                                 { return access{kind: accessPublic} }
@@ -54,6 +58,11 @@ func self() access                                   { return access{kind: acces
 func needs(p ...authz.Permission) access             { return access{kind: accessPerm, perms: p} }
 func dashboard(p ...authz.Permission) access         { return access{kind: accessDashboard, perms: p} }
 func anyOf(p ...authz.Permission) []authz.Permission { return p }
+
+// dashboardSession: a dashboard session whose role holds any permission; an
+// automation token gets 403. For a decision only a person in the dashboard
+// may take about their own account (an OAuth consent, their connected apps).
+func dashboardSession() access { return access{kind: accessDashboard, anyRole: true} }
 
 // andEveryPermission asks the caller for every permission of
 // authz.AllPermissions() on top of the route's own.
@@ -77,6 +86,9 @@ func (a access) covers(p authz.Permission) bool {
 func (a access) denied() string {
 	if a.every {
 		return "every permission required"
+	}
+	if a.anyRole {
+		return "a role with a permission required"
 	}
 	names := make([]string, len(a.perms))
 	for i, p := range a.perms {
@@ -136,6 +148,15 @@ var routeAccess = map[string]access{
 	"POST /api/v1/client/login/requests/{user_code}/deny":    dashboard(clientTokens...),
 	"POST /api/v1/ai/keys":                                   dashboard(aiConfigure...), // no token mints a credential that outlives it
 	"GET /api/v1/ai/requests/{requestID}/attempts":           dashboard(authz.PermAIReadAny),
+	// OAuth consent and connected apps: a person in the dashboard, any role.
+	// What a consent may grant is the handler's to decide (scopes within the
+	// role; gateway tools need ai:configure:own or :any); every user's grants
+	// need oauth:clients:manage.
+	"GET /api/v1/oauth/requests/{id}":          dashboardSession(),
+	"POST /api/v1/oauth/requests/{id}/approve": dashboardSession(), // the password while no services domain is set
+	"POST /api/v1/oauth/requests/{id}/deny":    dashboardSession(),
+	"GET /api/v1/oauth/grants":                 dashboardSession(),
+	"DELETE /api/v1/oauth/grants/{id}":         dashboardSession(),
 
 	// --- Client tokens, browser sessions, tunnels -----------------------
 	"GET /api/v1/clients/connect-info":     needs(clientTokens...),
@@ -299,6 +320,11 @@ var routeAccess = map[string]access{
 	"POST /api/v1/settings/test-email":      needs(authz.PermSettingsManage),
 	"GET /api/v1/settings/retention":        needs(authz.PermSettingsManage),
 	"PUT /api/v1/settings/retention":        needs(authz.PermSettingsManage),
+
+	// --- OAuth clients ----------------------------------------------------
+	"GET /api/v1/oauth/clients":         needs(authz.PermOAuthClientsManage),
+	"POST /api/v1/oauth/clients":        needs(authz.PermOAuthClientsManage),
+	"DELETE /api/v1/oauth/clients/{id}": needs(authz.PermOAuthClientsManage),
 }
 
 // allow returns the gate of a declaration. It runs after the session
@@ -333,6 +359,17 @@ func (d Deps) allow(a access) func(http.Handler) http.Handler {
 					return
 				}
 				writeErr(w, http.StatusInternalServerError, "lookup failed")
+				return
+			}
+			if a.anyRole {
+				// Tokens were refused above: the session's role decides.
+				for _, p := range authz.AllPermissions() {
+					if effectivePerms(r.Context(), role, p) {
+						next.ServeHTTP(w, r)
+						return
+					}
+				}
+				writeErr(w, http.StatusForbidden, a.denied())
 				return
 			}
 			if a.every {

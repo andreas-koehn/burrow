@@ -17,6 +17,7 @@ import (
 	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/events"
+	"github.com/ankoehn/burrow/internal/oauth"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -128,6 +129,7 @@ func newAuthzHarness(t *testing.T, mods ...func(*Deps)) *authzHarness {
 		CacheServices: owners, InspectorServices: owners,
 		BackupDir: t.TempDir(), RestoreTracker: NewRestoreTracker(),
 		AuthDomain: "relay.test",
+		OAuth:      oauth.New(oauth.Config{Store: x}),
 	}
 	for _, mod := range mods {
 		mod(&d)

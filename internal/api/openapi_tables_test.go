@@ -189,6 +189,18 @@ var openAPIOperationIDs = map[string]string{
 	"GET /api/v1/ai/requests":                                                   "aiRequestsList",
 	"GET /api/v1/ai/requests/{requestID}/attempts":                              "aiRequestAttemptsList",
 	"GET /api/v1/database":                                                      "databaseGet",
+	"GET /.well-known/oauth-authorization-server":                               "oauthMetadataGet",
+	"GET /oauth/authorize":                                                      "oauthAuthorize",
+	"POST /oauth/token":                                                         "oauthToken",
+	"POST /oauth/revoke":                                                        "oauthRevoke",
+	"GET /api/v1/oauth/requests/{id}":                                           "oauthRequestGet",
+	"POST /api/v1/oauth/requests/{id}/approve":                                  "oauthRequestApprove",
+	"POST /api/v1/oauth/requests/{id}/deny":                                     "oauthRequestDeny",
+	"GET /api/v1/oauth/grants":                                                  "oauthGrantsList",
+	"DELETE /api/v1/oauth/grants/{id}":                                          "oauthGrantDelete",
+	"GET /api/v1/oauth/clients":                                                 "oauthClientsList",
+	"POST /api/v1/oauth/clients":                                                "oauthClientCreate",
+	"DELETE /api/v1/oauth/clients/{id}":                                         "oauthClientDelete",
 }
 
 // openAPIReservedOperationIDs are ids that belong to operations other plans
@@ -232,6 +244,11 @@ var openAPIMCPDisabled = map[string]string{
 	"backupRestoreGet":          "GET /api/v1/backups/restores/{id}",
 	"openapiViewerGet":          "GET /api/v1/openapi/viewer/",
 	"openapiViewerStaticGet":    "GET /api/v1/openapi/viewer/static/{file}",
+	// An agent must not consent in a person's name, nor read what it would
+	// consent to.
+	"oauthRequestGet":     "GET /api/v1/oauth/requests/{id}",
+	"oauthRequestApprove": "POST /api/v1/oauth/requests/{id}/approve",
+	"oauthRequestDeny":    "POST /api/v1/oauth/requests/{id}/deny",
 }
 
 // openAPINonJSONBodies are the request bodies that are not application/json,
@@ -260,6 +277,8 @@ type openAPIRequestBody struct {
 var openAPIRequestBodies = map[string]openAPIRequestBody{
 	// auth, sessions, tokens, clients, users, roles (O03)
 	"authLogin":                 {typ: oaType[loginReq]()},
+	"oauthRequestApprove":       {typ: oaType[oauthApproveReq]()},
+	"oauthClientCreate":         {typ: oaType[postOAuthClientReq]()},
 	"authReauth":                {typ: oaType[reauthReq]()},
 	"authChangePassword":        {typ: oaType[changePasswordReq]()},
 	"clientTokenCreate":         {typ: oaType[createTokenReq]()},
@@ -359,6 +378,12 @@ type openAPIResponseBody struct {
 var openAPIResponses = map[string]openAPIResponseBody{
 	// auth, sessions, tokens, clients, users, roles (O03)
 	"authLogin":            {status: "200", typ: oaType[userResp]()},
+	"oauthRequestGet":      {status: "200", typ: oaType[oauthRequestResp]()},
+	"oauthRequestApprove":  {status: "200", typ: oaType[oauthRedirectResp]()},
+	"oauthRequestDeny":     {status: "200", typ: oaType[oauthRedirectResp]()},
+	"oauthGrantsList":      {status: "200", typ: oaType[oauthGrantResp](), list: true},
+	"oauthClientsList":     {status: "200", typ: oaType[oauthClientResp](), list: true},
+	"oauthClientCreate":    {status: "201", typ: oaType[oauthClientResp]()},
 	"authReauth":           {status: "200", typ: oaType[reauthResp]()},
 	"meGet":                {status: "200", typ: oaType[meResp]()},
 	"sessionsList":         {status: "200", typ: oaType[sessionResp](), list: true},

@@ -68,6 +68,10 @@ var reauthGuarded = []apiRoute{
 	{http.MethodPut, "/api/v1/mcp/sources/{slug}/tools/{name}"},
 	{http.MethodPost, "/api/v1/mcp/sources/{slug}/tools/{name}/approve"},
 	{http.MethodPost, "/api/v1/mcp/sources/{slug}/approve-all"},
+	// OAuth: a consent approval (the password inline or a recent
+	// confirmation, like a client sign-in) and a new client's redirect URIs.
+	{http.MethodPost, "/api/v1/oauth/requests/{id}/approve"},
+	{http.MethodPost, "/api/v1/oauth/clients"},
 }
 
 func errorOf(rec *httptest.ResponseRecorder) string {
