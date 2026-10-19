@@ -14,6 +14,8 @@ const SCOPE_OPTIONS = [
   { value: "both", label: "Request and response" },
   { value: "request_body", label: "Request body" },
   { value: "response_body", label: "Response body" },
+  { value: "tool_arguments", label: "Tool arguments" },
+  { value: "tool_result", label: "Tool results" },
 ];
 
 export interface RedactionRuleDialogProps {
@@ -90,7 +92,11 @@ export function RedactionRuleDialog({ open, onClose }: RedactionRuleDialogProps)
           <FormField label="Action" htmlFor="rr-action">
             <Select id="rr-action" options={ACTION_OPTIONS} value={action} onChange={(v) => setAction(v as RedactionRule["action"])} />
           </FormField>
-          <FormField label="Scope" htmlFor="rr-scope">
+          <FormField
+            label="Scope"
+            htmlFor="rr-scope"
+            help="Tool arguments and tool results apply to tool calls on the tool gateway (MCP). Request and response also cover them when set to both."
+          >
             <Select id="rr-scope" options={SCOPE_OPTIONS} value={scope} onChange={(v) => setScope(v as RedactionRule["scope"])} />
           </FormField>
         </FormFieldGroup>

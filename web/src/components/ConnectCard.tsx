@@ -7,6 +7,7 @@ import {
   claudeCodeSettings, codexConfig, genericProvider, openAiSdkPython, openAiSdkTypeScript, pickTier, KEY_ENV,
 } from "@/lib/connectSnippets";
 import { dialectBaseUrl } from "@/lib/serviceUrl";
+import { GATEWAY_KEY_CLIENT, mcpOAuthSnippets, mcpSnippets } from "@/lib/mcpSnippets";
 import { Badge } from "@/components/ds";
 import { towardMessages } from "@/lib/translation";
 import type { AiModel, Dialect, DialectMode, GatewayInfo } from "@/lib/contract";
@@ -85,6 +86,69 @@ function BaseUrl({ url }: { url: string }) {
   );
 }
 
+/** The relay's origin as the endpoints show it; the page's own when the relay has no auth domain. */
+function relayOrigin(endpoints: GatewayInfo["endpoints"]): string {
+  for (const e of endpoints) {
+    try {
+      if (e.base_url) return new URL(e.base_url).origin;
+    } catch { /* not a URL: try the next */ }
+  }
+  return window.location.origin;
+}
+
+/** The two ways to connect an MCP client to /mcp: by URL (OAuth) or with a gateway key as a header. */
+function McpTab({ url }: { url: string }) {
+  const [client, setClient] = useState("claude-code");
+  const oauth = mcpOAuthSnippets(url);
+  const key = mcpSnippets(url, GATEWAY_KEY_CLIENT);
+  const both = (o: string, k: string, label: string) => (
+    <>
+      <p className="muted small">If the client can sign in (OAuth), give it the address alone. It opens a browser and asks you to approve the tools.</p>
+      <CopyableCode text={o} label={`Copy ${label} for sign-in`} wrap />
+      <p className="muted small">Otherwise send a gateway key as a header. Put the key into <code>{GATEWAY_KEY_CLIENT.env}</code> first.</p>
+      <CopyableCode text={k} label={`Copy ${label} with a gateway key`} wrap />
+    </>
+  );
+  return (
+    <>
+      <BaseUrl url={url} />
+      <Tabs
+        label="MCP clients"
+        value={client}
+        onChange={setClient}
+        tabs={[
+          { value: "claude-code", label: "Claude Code", content: both(oauth.claudeCode, key.claudeCode, "Claude Code command") },
+          {
+            value: "cursor",
+            label: "Cursor",
+            content: (<><p className="muted small mono">~/.cursor/mcp.json</p>{both(oauth.cursor, key.cursor, "Cursor configuration")}</>),
+          },
+          {
+            value: "vscode",
+            label: "VS Code",
+            content: (<><p className="muted small mono">.vscode/mcp.json</p>{both(oauth.vscode, key.vscode, "VS Code configuration")}</>),
+          },
+          {
+            value: "other",
+            label: "Other",
+            content: (
+              <>
+                <p className="muted small">A client that speaks MCP over Streamable HTTP takes the address, and either signs in or sends this header.</p>
+                <CopyableCode text={"Authorization: Bearer <your gateway key>"} label="Copy the header" />
+              </>
+            ),
+          },
+        ]}
+      />
+      <p className="muted small">
+        A key reaches only the tools it lists; a key with no tools reaches none. Set the tools when you create the key, or edit them on the{" "}
+        <Link className="link-inline" to="/gateway/keys">Gateway keys</Link> page. Tool sources are on the{" "}
+        <Link className="link-inline" to="/gateway/tools">Tools</Link> page.
+      </p>
+    </>
+  );
+}
+
 /**
  * Ready configurations for the apps people point at the gateway. Every one
  * carries a placeholder or an environment variable where the key goes: the
@@ -93,6 +157,7 @@ function BaseUrl({ url }: { url: string }) {
 export function ConnectCard({ endpoints, models, canCreate = true }: ConnectCardProps) {
   const titleId = useId();
   const [tab, setTab] = useState("claude-code");
+  const mcpUrl = `${relayOrigin(endpoints)}/mcp`;
   const base = (d: Dialect) => dialectBaseUrl(d, endpoints.find((e) => e.dialect === d)?.base_url);
   // A model is offered where it is served: by a target of that format, or translated into it.
   const anthropic = offers(models, "anthropic");
@@ -247,6 +312,7 @@ export function ConnectCard({ endpoints, models, canCreate = true }: ConnectCard
                 </>
               )),
             },
+            { value: "mcp", label: "MCP", content: <McpTab url={mcpUrl} /> },
           ]}
         />
       )}

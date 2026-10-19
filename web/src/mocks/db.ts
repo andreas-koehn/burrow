@@ -319,7 +319,7 @@ function seed(): MockDb {
     },
     aiGatewayKeys: [
       {
-        id: "gk_laptop1", name: "laptop", key_prefix: "bgw_Ab3d", user_id: meId, allowed_models: [], system_text: "",
+        id: "gk_laptop1", name: "laptop", key_prefix: "bgw_Ab3d", user_id: meId, allowed_models: [], allowed_tools: [], tools_read_only: false, system_text: "",
         last_used: "2026-05-18T09:00:00Z", created_at: "2026-05-10T08:00:00Z", revoked_at: null,
       },
     ],

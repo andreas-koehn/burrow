@@ -2440,6 +2440,12 @@ button.metric-tile-link {
 .slot-list > li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); }
 .target-group + p,
 .key-models { margin-top: var(--space-md); }
+.key-tools { border: 0; padding: 0; margin: var(--space-md) 0 0; min-width: 0; }
+.key-tool-chips { display: flex; flex-wrap: wrap; gap: var(--space-xs, 4px); list-style: none; margin: 0; padding: 0; }
+.key-tool-chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--hover);
+}
 /* The provider pages carry two or three header controls; on a narrow screen
    they drop under the title instead of squeezing it. */
 @media (max-width: 560px) {

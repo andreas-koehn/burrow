@@ -515,6 +515,16 @@ function allowEntryOk(entry: string): boolean {
   return model === "*" || (!model.includes("*") && !/\s/.test(model) && !hasControl(model));
 }
 
+// The store's tool allow-list rule: "<source>__<tool>" or "<source>__*", at most 64 entries. Absent = none.
+function toolListOf(v: unknown): string[] | string {
+  if (v === undefined) return [];
+  if (!Array.isArray(v) || v.length > 64) return "at most 64 allowed tools";
+  if (v.some((e) => typeof e !== "string" || !/^[a-z0-9-]{1,24}__\S+$/.test(e) || e.length > 160)) {
+    return 'an allowed tool must be "<source>__<tool>" or "<source>__*"';
+  }
+  return v as string[];
+}
+
 export const handlers = [
   // ---- auth / identity ----
   http.get("/api/v1/me", ({ request }) => gate(request) ?? json(db.me)),
@@ -1347,7 +1357,7 @@ export const handlers = [
     if (!b.pattern) return err(400, "pattern is required");
     try { new RegExp(b.pattern); } catch { return err(400, "invalid regex"); }
     if (!b.action || !["mask", "drop", "hash"].includes(b.action)) return err(400, "invalid action");
-    if (!b.scope || !["request_body", "response_body", "both"].includes(b.scope)) return err(400, "invalid scope");
+    if (!b.scope || !["request_body", "response_body", "both", "tool_arguments", "tool_result"].includes(b.scope)) return err(400, "invalid scope");
     const rule: RedactionRule = {
       id: crypto.randomUUID(), name: b.name.trim(), pattern: b.pattern,
       action: b.action, scope: b.scope,
@@ -1846,9 +1856,9 @@ export const handlers = [
     gate(request) ?? json(db.aiGatewayKeys.filter((k) => holds("ai:read:any", "ai:configure:any") || k.user_id === db.me.id))),
   http.post("/api/v1/ai/keys", async ({ request }) => {
     const g = gate(request); if (g) return g;
-    const b = await body<{ name?: unknown; allowed_models?: unknown; system_text?: unknown }>(request);
+    const b = await body<{ name?: unknown; allowed_models?: unknown; allowed_tools?: unknown; tools_read_only?: unknown; system_text?: unknown }>(request);
     if (!b || typeof b !== "object") return err(400, "invalid JSON body");
-    const extra = Object.keys(b).find((k) => k !== "name" && k !== "allowed_models" && k !== "system_text");
+    const extra = Object.keys(b).find((k) => !["name", "allowed_models", "allowed_tools", "tools_read_only", "system_text"].includes(k));
     if (extra) return err(400, `unknown field "${extra}"`);
     const name = typeof b.name === "string" ? b.name.trim() : "";
     if (name === "" || byteLen(name) > 120 || hasControl(name)) return err(400, "name must be 1-120 characters without control characters");
@@ -1861,12 +1871,17 @@ export const handlers = [
     if (allowed.some((e) => typeof e !== "string" || !allowEntryOk(e))) {
       return err(400, 'an allowed model must be a model name, "<provider>/<model>" or "<provider>/*"');
     }
+    const tools = toolListOf(b.allowed_tools);
+    if (typeof tools === "string") return err(400, tools);
+    if (b.tools_read_only !== undefined && typeof b.tools_read_only !== "boolean") return err(400, "invalid JSON body");
     const row: AiGatewayKey = {
       id: `gk_${Math.random().toString(36).slice(2, 10)}`,
       name,
       key_prefix: "bgw_xxxx",
       user_id: db.me.id,
       allowed_models: allowed as string[],
+      allowed_tools: tools,
+      tools_read_only: b.tools_read_only === true,
       system_text: systemText,
       last_used: null,
       created_at: new Date().toISOString(),
@@ -1881,10 +1896,27 @@ export const handlers = [
     const g = gate(request); if (g) return g;
     const k = db.aiGatewayKeys.find((x) => x.id === params.id);
     if (!k || (!db.me.permissions?.includes("ai:configure:any") && k.user_id !== db.me.id)) return err(404, "key not found");
-    const b = await body<{ name?: unknown; system_text?: unknown }>(request);
+    const b = await body<{ name?: unknown; system_text?: unknown; allowed_models?: unknown; allowed_tools?: unknown; tools_read_only?: unknown }>(request);
     if (!b || typeof b !== "object") return err(400, "invalid JSON body");
-    const extra = Object.keys(b).find((f) => f !== "name" && f !== "system_text");
+    const extra = Object.keys(b).find((f) => !["name", "system_text", "allowed_models", "allowed_tools", "tools_read_only"].includes(f));
     if (extra) return err(400, `unknown field "${extra}"`);
+    // Absent = keep; a list that is given replaces the stored one.
+    if (b.allowed_models !== undefined) {
+      if (!Array.isArray(b.allowed_models) || b.allowed_models.length > 64) return err(400, "at most 64 allowed models");
+      if (b.allowed_models.some((e) => typeof e !== "string" || !allowEntryOk(e))) {
+        return err(400, 'an allowed model must be a model name, "<provider>/<model>" or "<provider>/*"');
+      }
+      k.allowed_models = b.allowed_models as string[];
+    }
+    if (b.allowed_tools !== undefined) {
+      const tools = toolListOf(b.allowed_tools);
+      if (typeof tools === "string") return err(400, tools);
+      k.allowed_tools = tools;
+    }
+    if (b.tools_read_only !== undefined) {
+      if (typeof b.tools_read_only !== "boolean") return err(400, "invalid JSON body");
+      k.tools_read_only = b.tools_read_only;
+    }
     if (b.name !== undefined) {
       const name = typeof b.name === "string" ? b.name.trim() : "";
       if (name === "" || byteLen(name) > 120 || hasControl(name)) return err(400, "name must be 1-120 characters without control characters");

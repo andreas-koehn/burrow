@@ -484,7 +484,7 @@ export interface InspectorEntry {
   redactions: { rule: string; count: number }[];
   trace_id: string;
   remote_ip: string;
-  mcp?: { method: string; tool: string; params: unknown };
+  mcp?: { method: string; tool?: string; params?: unknown };
   /** The pair that translated the request (e.g. "messages-chat"); "" when it was served in its own format. */
   translated: string;
   /**
@@ -720,6 +720,10 @@ export interface AiGatewayKey {
   user_id: string;
   /** Empty: every model. Else synthetic names, "<provider>/<model>" or "<provider>/*". */
   allowed_models: string[];
+  /** MCP tools the key may call: "<source>__<tool>" or "<source>__*". Empty: NO tools (the opposite of allowed_models). */
+  allowed_tools: string[];
+  /** The key reaches only the tools their operator classed as read-only. */
+  tools_read_only: boolean;
   /** Put before the app's own system text for every request made with the key; "" for none. At most 8192 bytes. */
   system_text: string;
   last_used: string | null;
@@ -762,7 +766,7 @@ export interface RedactionRule {
   name: string;
   pattern: string;
   action: "mask" | "drop" | "hash";
-  scope: "request_body" | "response_body" | "both";
+  scope: "request_body" | "response_body" | "both" | "tool_arguments" | "tool_result";
   builtin?: boolean;
 }
 

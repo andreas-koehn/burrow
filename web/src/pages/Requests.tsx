@@ -8,6 +8,7 @@ import { useDebounced } from "@/lib/use-debounced";
 import { useUrlParams } from "@/lib/use-url-params";
 import { droppedNames, pairWords } from "@/lib/translation";
 import { guardrailMarks } from "@/lib/guardrailMarks";
+import { isToolCall, toolOf } from "@/lib/mcpCall";
 import { InspectorOffHint } from "@/components/InspectorOffHint";
 import { Badge, Button, EmptyState, ErrorNotice, PageHeader, Select, type SelectOption } from "@/components/ds";
 import { RelativeTime } from "@/components/RelativeTime";
@@ -32,6 +33,7 @@ const poll = (q: Query<AiCapturedRequest[]>) => {
 };
 
 const ALL: SelectOption = { value: "", label: "All" };
+const KINDS: SelectOption[] = [ALL, { value: "models", label: "Models" }, { value: "tools", label: "Tools" }];
 
 /** The list query: period, search and the pickers are applied by the relay, before its limit. */
 function listQuery(range: TimeRange, search: string, pickers: Record<string, string> = {}): string {
@@ -74,6 +76,9 @@ export default function Requests() {
   const query = useDebounced(search, 250);
   const model = params.get("model") ?? "";
   const gatewayKey = params.get("gateway_key") ?? "";
+  // The relay has no kind filter on this list: a tool call is told by its mcp member.
+  const kindParam = params.get("kind");
+  const kind = kindParam === "models" || kindParam === "tools" ? kindParam : "";
 
   const setRange = (r: TimeRange) => setParam("range", r === "24h" ? "" : r);
 
@@ -151,13 +156,17 @@ export default function Requests() {
 
   const list = olderRelay ? ofOne : across;
   // A provider the older relay does not know has no requests; without the providers there is nothing to ask.
-  const rows = olderRelay && !single ? (providers.data ? [] : undefined) : list.data;
+  const listed = olderRelay && !single ? (providers.data ? [] : undefined) : list.data;
+  const rows = useMemo(
+    () => (kind && listed ? listed.filter((r) => isToolCall(r) === (kind === "tools")) : listed),
+    [listed, kind],
+  );
   const failed = olderRelay && !single && providers.isError ? providers : list;
   const shownProvider = single?.slug ?? provider;
 
   // Why a list is empty: capture may be switched off. Asked only when there is nothing to show.
   const inScope = shownProvider ? providerList.filter((p) => p.slug === shownProvider) : providerList;
-  const isEmpty = rows?.length === 0;
+  const isEmpty = listed?.length === 0;
   const configs = useQueries({
     queries: inScope.map((p) => ({
       queryKey: ["service", p.service_id, "ai-config"],
@@ -168,7 +177,7 @@ export default function Requests() {
     })),
   });
   // With all providers, capture is the reason only when it is off for every one of them.
-  const captureOff = inScope.length > 0 && configs.every((c) => c.data && !c.data.inspector.enabled);
+  const captureOff = !kind && inScope.length > 0 && configs.every((c) => c.data && !c.data.inspector.enabled);
 
   const header = (
     <PageHeader
@@ -196,14 +205,22 @@ export default function Requests() {
   }
 
   const providerName = new Map(providerList.map((p) => [p.slug, p.name || p.slug]));
+  const keyName = new Map((Array.isArray(keys.data) ? keys.data : []).map((k) => [k.id, k.name || k.id]));
 
   // Tokens and cost are left out: the relay records neither on a captured request.
   const columns: LogColumn<AiCapturedRequest>[] = [
     { id: "time", header: "When", cell: (r) => <RelativeTime value={r.ts} /> },
     // A provider renamed since keeps its old slug here.
-    { id: "provider", header: "Provider", cell: (r) => (r.provider ? providerName.get(r.provider) ?? r.provider : "—") },
-    // Only a request made with a gateway key names a model.
-    { id: "model", header: "Model", cell: (r) => r.model || "—" },
+    // A tool call names its source here.
+    { id: "provider", header: "Provider or source", cell: (r) => (r.provider ? providerName.get(r.provider) ?? r.provider : "—") },
+    // Only a request made with a gateway key names a model; a tool call names its tool.
+    {
+      id: "model",
+      header: "Model or tool",
+      cell: (r) => isToolCall(r)
+        ? <span className="format-mode"><span>{toolOf(r) || "—"}</span><Badge nodot kind="status-idle">tool</Badge></span>
+        : r.model || "—",
+    },
     { id: "path", header: "Path", cell: (r) => <Link className="mono" to={`/gateway/requests/${r.service_id}/${r.id}`}>{r.path}</Link> },
     { id: "status", header: "Status", cell: (r) => <Badge nodot kind={`status-${Math.floor(r.status / 100)}xx`}>{r.status}</Badge> },
     { id: "latency", header: "Latency", cell: (r) => <Latency ms={r.duration_ms} /> },
@@ -240,12 +257,13 @@ export default function Requests() {
         );
       },
     },
+    { id: "key", header: "Gateway key", cell: (r) => (r.gateway_key_id ? keyName.get(r.gateway_key_id) ?? r.gateway_key_id : "—") },
   ];
 
   // What the pickers and the Filter box narrow; the older relay knows neither model nor gateway key.
-  const filtered = Boolean(provider || query || (!olderRelay && (model || gatewayKey)));
+  const filtered = Boolean(provider || query || kind || (!olderRelay && (model || gatewayKey)));
   const clearFilters = () => {
-    for (const name of ["service", "provider", "model", "gateway_key", "q"]) setParam(name, "");
+    for (const name of ["service", "provider", "model", "gateway_key", "kind", "q"]) setParam(name, "");
   };
 
   const wider = widerRange(range);
@@ -287,7 +305,7 @@ export default function Requests() {
   );
   // A request can ask for a model the list does not hold: by provider and catalog id, or one removed since.
   const known = (Array.isArray(models.data) ? models.data : []).map((m) => m.name);
-  const asked = [...new Set((rows ?? []).map((r) => r.model))].filter((name) => name && !known.includes(name)).sort();
+  const asked = [...new Set((rows ?? []).filter((r) => !isToolCall(r)).map((r) => r.model))].filter((name) => name && !known.includes(name)).sort();
   const modelOptions = withChosen([ALL, ...[...known, ...asked].map((name) => ({ value: name, label: name }))], model);
   const keyOptions = withChosen(
     [ALL, ...(Array.isArray(keys.data) ? keys.data : []).map((k) => ({ value: k.id, label: k.name || k.id }))],
@@ -325,6 +343,7 @@ export default function Requests() {
         onSearchChange={(s) => setParam("q", s)}
         filters={
           <>
+            <Picker label="Kind" value={kind} options={KINDS} onChange={(v) => setParam("kind", v)} />
             <Picker label="Provider" value={shownProvider} options={providerOptions} onChange={setProvider} />
             {!olderRelay && <Picker label="Model" value={model} options={modelOptions} onChange={(v) => setParam("model", v)} />}
             {!olderRelay && <Picker label="Gateway key" value={gatewayKey} options={keyOptions} onChange={(v) => setParam("gateway_key", v)} />}

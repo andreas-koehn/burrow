@@ -355,3 +355,49 @@ describe("Request inspector (§4.23)", () => {
     });
   });
 });
+
+describe("Request inspector: MCP tool calls", () => {
+  function toolEntry() {
+    const e = db.inspectorEntries.svc_ai001![0]!;
+    e.path = "/mcp/github";
+    e.req_body = '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"list_issues","arguments":{"repo":"[REDACTED]"}}}';
+    e.resp_body = '{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"3 open issues"}],"isError":false}}';
+    e.mcp = { method: "tools/call", tool: "list_issues", params: { name: "list_issues", arguments: { repo: "[REDACTED]" } } };
+    e.provider = "github";
+    return e;
+  }
+
+  it("shows method, tool, arguments and result", async () => {
+    const e = toolEntry();
+    mount(`/gateway/requests/svc_ai001/${e.id}`);
+    const panel = await screen.findByRole("group", { name: "MCP call" });
+    expect(within(panel).getByText("tools/call")).toBeInTheDocument();
+    expect(within(panel).getByText("list_issues")).toBeInTheDocument();
+    expect(within(panel).getByText("github")).toBeInTheDocument();
+    expect(within(panel).getByRole("region", { name: "Arguments" })).toHaveTextContent('"repo": "[REDACTED]"');
+    expect(within(panel).getByRole("region", { name: "Result" })).toHaveTextContent("3 open issues");
+  });
+
+  it("says when the result is an error", async () => {
+    const e = toolEntry();
+    e.resp_body = '{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"boom"}],"isError":true}}';
+    mount(`/gateway/requests/svc_ai001/${e.id}`);
+    const panel = await screen.findByRole("group", { name: "MCP call" });
+    expect(within(panel).getByText("The tool reported an error.")).toBeInTheDocument();
+  });
+
+  it("an ordinary request has no MCP panel", async () => {
+    const e = db.inspectorEntries.svc_ai001![1]!;
+    e.mcp = undefined;
+    mount(`/gateway/requests/svc_ai001/${e.id}`);
+    await screen.findByRole("tab", { name: /^request$/i });
+    expect(screen.queryByRole("group", { name: "MCP call" })).toBeNull();
+  });
+
+  it("lists a tool call by its tool name in the path column", async () => {
+    toolEntry();
+    mount();
+    const table = await screen.findByRole("table", { name: /requests/i });
+    expect(await within(table).findByText("tools/call · list_issues")).toBeInTheDocument();
+  });
+});

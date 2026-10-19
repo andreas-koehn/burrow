@@ -13,6 +13,7 @@ import { InspectorOffHint } from "@/components/InspectorOffHint";
 import { RelativeTime } from "@/components/RelativeTime";
 import { droppedNames, pairWords } from "@/lib/translation";
 import { binaryBodyNote, guardrailMarks } from "@/lib/guardrailMarks";
+import { isToolCall, toolArguments, toolOf, toolResult } from "@/lib/mcpCall";
 
 function RedactedHeaders({ headers }: { headers: Record<string, string> }) {
   const entries = Object.entries(headers);
@@ -85,6 +86,33 @@ function GuardrailNote({ entry }: { entry: InspectorEntry }) {
           </div>
         ))}
       </dl>
+    </div>
+  );
+}
+
+/**
+ * A tools/call served by the tool gateway: the source, the tool, its arguments and
+ * its result, as the inspector stored them (the redaction rules have already run).
+ */
+function McpCallNote({ entry }: { entry: InspectorEntry }) {
+  if (!isToolCall(entry)) return null;
+  const args = toolArguments(entry.mcp?.params);
+  const result = toolResult(entry.resp_body ?? "");
+  return (
+    <div className="translation-note" role="group" aria-label="MCP call">
+      <dl className="def-list">
+        <div className="def-row"><dt className="def-key">Method</dt><dd className="def-val mono">{entry.mcp?.method}</dd></div>
+        {entry.provider && <div className="def-row"><dt className="def-key">Source</dt><dd className="def-val">{entry.provider}</dd></div>}
+        <div className="def-row"><dt className="def-key">Tool</dt><dd className="def-val mono">{toolOf(entry)}</dd></div>
+      </dl>
+      {args && <><h3>Arguments</h3><BodyView body={args} label="Arguments" /></>}
+      {result.text && (
+        <>
+          <h3>Result</h3>
+          {result.isError && <p className="small">The tool reported an error.</p>}
+          <BodyView body={result.text} label="Result" />
+        </>
+      )}
     </div>
   );
 }
@@ -288,7 +316,7 @@ export default function RequestInspector() {
                           to={`/gateway/requests/${serviceId}/${r.id}`}
                           aria-current={selected === r.id ? "true" : undefined}
                         >
-                          {r.path}
+                          {isToolCall(r) ? `tools/call · ${toolOf(r)}` : r.path}
                         </Link>
                       </td>
                       <td>
@@ -322,6 +350,7 @@ export default function RequestInspector() {
               </div>
               <GuardrailNote entry={detail.data} />
               <TranslationNote entry={detail.data} />
+              <McpCallNote entry={detail.data} />
               <Tabs
                 value={tab}
                 onChange={setTab}

@@ -1,20 +1,22 @@
-import { useId, useState } from "react";
+import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, KeyRound } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Badge, Button, Checkbox, Dialog, Disclosure, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, SkeletonRows, SubmitHint, firstMissing } from "@/components/ds";
+import { Badge, Button, Dialog, Disclosure, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, SkeletonRows, SubmitHint, firstMissing } from "@/components/ds";
 import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/auth/useAuth";
 import { useCan } from "@/auth/useCan";
 import { P } from "@/auth/permissions";
 import { RelativeTime } from "@/components/RelativeTime";
 import { EditGatewayKeyDialog } from "@/components/EditGatewayKeyDialog";
+import { KeyModelsField, useModelEntries } from "@/components/KeyModelsField";
+import { KeyToolsField } from "@/components/KeyToolsField";
 import { SystemTextField } from "@/components/SystemTextField";
 import { MAX_SYSTEM_TEXT_BYTES, byteLength } from "@/lib/systemText";
-import type { AiGatewayKey, AiModel, AiProvider, CreatedAiGatewayKey } from "@/lib/contract";
+import type { AiGatewayKey, CreatedAiGatewayKey } from "@/lib/contract";
 
 const KEYS = ["ai", "keys"] as const;
 
@@ -34,37 +36,24 @@ interface NewKeyDialogProps {
  */
 function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
   const qc = useQueryClient();
-  const scopeId = useId();
   const [name, setName] = useState("");
   const [restricted, setRestricted] = useState(provider !== undefined);
   // What the reader ticked; null until they tick or untick something.
   const [picked, setPicked] = useState<string[] | null>(provider !== undefined ? null : []);
+  const [tools, setTools] = useState<string[]>([]);
+  const [toolsReadOnly, setToolsReadOnly] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [systemText, setSystemText] = useState("");
   // Closed, so the dialog's default state keeps to a name and one choice.
   const [textOpen, setTextOpen] = useState(false);
   const [secret, setSecret] = useState<string | null>(null);
   const [formErr, setFormErr] = useState<string | null>(null);
 
-  // Same keys and fetches as the Models and the Providers page.
-  const models = useQuery({
-    queryKey: ["ai", "models"],
-    queryFn: () => apiFetch<AiModel[]>("/ai/models"),
-    retry: false,
-  });
-  const providers = useQuery({
-    queryKey: ["ai", "providers"],
-    queryFn: () => apiFetch<AiProvider[]>("/ai/providers"),
-    retry: false,
-  });
-  // In list order, so the request carries the entries as the dialog shows them.
-  const entries = [
-    ...(Array.isArray(models.data) ? models.data : []).map((m) => ({ value: m.name, label: m.name })),
-    ...(Array.isArray(providers.data) ? providers.data : []).map((p) => ({ value: `${p.slug}/*`, label: `Everything from ${p.slug}` })),
-  ];
+  const { entries, models: modelList, loading: modelsLoading } = useModelEntries();
   // Opened for a provider, the key also allows the models that provider serves alone: "Everything
   // from" a provider allows its catalog ids, not the names of models, and a model made a step
   // earlier in the guided flow would otherwise be refused with this key.
-  const servedAlone = (Array.isArray(models.data) ? models.data : [])
+  const servedAlone = modelList
     .filter((m) => m.targets.length > 0 && m.targets.every((t) => t.provider === provider))
     .map((m) => m.name);
   const allowed = picked ?? (provider !== undefined ? [...servedAlone, `${provider}/*`] : []);
@@ -78,6 +67,9 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
         body: JSON.stringify({
           name: name.trim(),
           ...(restricted ? { allowed_models: chosen } : {}),
+          // No list means no tools; only a key that gets some sends them.
+          ...(tools.length > 0 ? { allowed_tools: tools } : {}),
+          ...(tools.length > 0 && toolsReadOnly ? { tools_read_only: true } : {}),
           ...(systemText !== "" ? { system_text: systemText } : {}),
         }),
       });
@@ -176,55 +168,24 @@ function NewKeyDialog({ onClose, provider }: NewKeyDialogProps) {
           help="Sent before the app's own system text for every request made with this key."
         />
       </Disclosure>
-      <div role="radiogroup" aria-labelledby={scopeId} className="col gap-2">
-        <span id={scopeId} className="muted small">Models the key may use</span>
-        {([
-          [false, "All models"],
-          [true, "Only these models"],
-        ] as const).map(([value, label]) => (
-          <label key={label} className="row row-center gap-2">
-            <input
-              type="radio"
-              name={scopeId}
-              checked={restricted === value}
-              onChange={() => { setRestricted(value); setFormErr(null); }}
-            />
-            <span>{label}</span>
-          </label>
-        ))}
-      </div>
-      {restricted && (
-        <div className="col gap-2 key-models" role="group" aria-label="Allowed models">
-          {models.isLoading || providers.isLoading ? (
-            <p className="muted small">Loading models…</p>
-          ) : entries.length === 0 ? (
-            <p className="muted small">There are no models or providers to choose from yet.</p>
-          ) : (
-            <>
-              {entries.map((e, i) => {
-                const id = `${scopeId}-entry-${i}`;
-                return (
-                  <div key={e.value} className="row row-center gap-2">
-                    <Checkbox
-                      id={id}
-                      checked={allowed.includes(e.value)}
-                      onChange={(on) => {
-                        setPicked(on ? [...allowed, e.value] : allowed.filter((v) => v !== e.value));
-                        setFormErr(null);
-                      }}
-                    />
-                    <label htmlFor={id}>{e.label}</label>
-                  </div>
-                );
-              })}
-              <p className="muted small">A model allows that name on <code>/openai/v1</code> and <code>/anthropic</code>.</p>
-              <p className="muted small">
-                Everything from a provider also allows the provider's own address <code>/ai/&lt;provider&gt;/…</code>.
-              </p>
-            </>
-          )}
-        </div>
-      )}
+      <KeyModelsField
+        restricted={restricted}
+        onRestrictedChange={(r) => { setRestricted(r); setFormErr(null); }}
+        entries={entries}
+        loading={modelsLoading}
+        allowed={allowed}
+        onAllowedChange={(v) => { setPicked(v); setFormErr(null); }}
+      />
+      {/* Closed, like the system text: the default state keeps to a name and one choice. */}
+      <Disclosure label="Tools" open={toolsOpen || tools.length > 0} onOpenChange={setToolsOpen}>
+        <KeyToolsField
+          idPrefix="gateway-key"
+          value={tools}
+          onChange={(v) => { setTools(v); setFormErr(null); }}
+          readOnly={toolsReadOnly}
+          onReadOnlyChange={setToolsReadOnly}
+        />
+      </Disclosure>
       {formErr && <ErrorNotice>{formErr}</ErrorNotice>}
     </Dialog>
   );
@@ -314,6 +275,7 @@ export default function GatewayKeys() {
                 <th scope="col">Name</th>
                 <th scope="col">Key</th>
                 <th scope="col">Models</th>
+                <th scope="col">Tools</th>
                 <th scope="col">Last used</th>
                 <th scope="col">Status</th>
                 {seesOwners && <th scope="col">Owner</th>}
@@ -337,6 +299,17 @@ export default function GatewayKeys() {
                         <span title={k.allowed_models.join(", ")}>
                           {k.allowed_models.length === 1 ? "1 entry" : `${k.allowed_models.length} entries`}
                           <span className="visually-hidden">: {k.allowed_models.join(", ")}</span>
+                        </span>
+                      )}
+                  </td>
+                  <td>
+                    {k.allowed_tools.length === 0
+                      ? "none"
+                      : (
+                        <span title={k.allowed_tools.join(", ")}>
+                          {k.allowed_tools.length === 1 ? "1 entry" : `${k.allowed_tools.length} entries`}
+                          {k.tools_read_only && " · read-only"}
+                          <span className="visually-hidden">: {k.allowed_tools.join(", ")}</span>
                         </span>
                       )}
                   </td>

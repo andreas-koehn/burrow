@@ -62,6 +62,8 @@ const RULE_SCOPE: Record<RedactionRule["scope"], string> = {
   both: "Requests and responses",
   request_body: "Requests",
   response_body: "Responses",
+  tool_arguments: "Tool arguments",
+  tool_result: "Tool results",
 };
 
 /** A rule's name, with its pattern behind it: a regular expression is for whoever asks for it. */

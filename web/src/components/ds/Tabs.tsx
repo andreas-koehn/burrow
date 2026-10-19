@@ -11,9 +11,11 @@ export interface TabsProps {
   tabs: TabItem[];
   value: string;
   onChange: (value: string) => void;
+  /** Names the tab list when a page holds more than one. */
+  label?: string;
 }
 
-export function Tabs({ tabs, value, onChange }: TabsProps) {
+export function Tabs({ tabs, value, onChange, label }: TabsProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const uid = useId();
   // Selection follows focus: the arrow keys select the neighbouring tab and
@@ -45,7 +47,7 @@ export function Tabs({ tabs, value, onChange }: TabsProps) {
   const active = tabs[at];
   return (
     <div className="tabs">
-      <div role="tablist" className="tabs-list" ref={listRef} onKeyDown={onKey}>
+      <div role="tablist" aria-label={label} className="tabs-list" ref={listRef} onKeyDown={onKey}>
         {tabs.map((t, i) => (
           <button
             key={t.value}

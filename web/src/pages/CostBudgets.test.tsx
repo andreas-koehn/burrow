@@ -388,8 +388,8 @@ describe("Cost & budgets (§4.24)", () => {
 
   it("labels keys in the picker: revoked, and same names told apart by prefix", async () => {
     db.aiGatewayKeys.push(
-      { id: "gk_old", name: "old", key_prefix: "bgw_Old1", user_id: db.me.id, allowed_models: [], system_text: "", last_used: null, created_at: "2026-05-10T08:00:00Z", revoked_at: "2026-05-11T08:00:00Z" },
-      { id: "gk_l2", name: "laptop", key_prefix: "bgw_Lap2", user_id: db.me.id, allowed_models: [], system_text: "", last_used: null, created_at: "2026-05-10T08:00:00Z", revoked_at: null },
+      { id: "gk_old", name: "old", key_prefix: "bgw_Old1", user_id: db.me.id, allowed_models: [], allowed_tools: [], tools_read_only: false, system_text: "", last_used: null, created_at: "2026-05-10T08:00:00Z", revoked_at: "2026-05-11T08:00:00Z" },
+      { id: "gk_l2", name: "laptop", key_prefix: "bgw_Lap2", user_id: db.me.id, allowed_models: [], allowed_tools: [], tools_read_only: false, system_text: "", last_used: null, created_at: "2026-05-10T08:00:00Z", revoked_at: null },
     );
     mount();
     await userEvent.click(await screen.findByRole("button", { name: "New budget" }));

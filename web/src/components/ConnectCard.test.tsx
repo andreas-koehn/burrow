@@ -43,7 +43,7 @@ describe("ConnectCard", () => {
   it("has one tab per client and starts on Claude Code", () => {
     mount();
     expect(screen.getByRole("heading", { name: "Connect a client" })).toBeInTheDocument();
-    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Claude Code", "Codex", "OpenAI SDK", "Other"]);
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Claude Code", "Codex", "OpenAI SDK", "Other", "MCP"]);
     expect(screen.getByRole("tab", { name: "Claude Code" })).toHaveAttribute("aria-selected", "true");
   });
 
@@ -233,5 +233,37 @@ describe("ConnectCard", () => {
     expect(screen.getByText(line)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("tab", { name: "Other" }));
     expect(screen.getByText(line)).toBeInTheDocument();
+  });
+});
+
+describe("ConnectCard: MCP tab", () => {
+  async function openMcp() {
+    mount();
+    await userEvent.click(screen.getByRole("tab", { name: "MCP" }));
+  }
+
+  it("shows the URL for clients that sign in, and the header form with a gateway key", async () => {
+    await openMcp();
+    expect(screen.getByText("https://b.example.com/mcp")).toBeInTheDocument();
+    expect(screen.getByText("claude mcp add --transport http burrow-tools https://b.example.com/mcp")).toBeInTheDocument();
+    expect(screen.getByText(/Authorization: Bearer \$BURROW_GATEWAY_KEY/)).toBeInTheDocument();
+    expect(screen.getByText(/sign in/i)).toBeInTheDocument();
+  });
+
+  it("has a snippet per client: Claude Code, Cursor, VS Code, generic", async () => {
+    await openMcp();
+    const clients = within(screen.getByRole("tablist", { name: "MCP clients" }));
+    expect(clients.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Claude Code", "Cursor", "VS Code", "Other"]);
+    await userEvent.click(clients.getByRole("tab", { name: "Cursor" }));
+    expect(screen.getByText(/~\/\.cursor\/mcp\.json/)).toBeInTheDocument();
+    await userEvent.click(clients.getByRole("tab", { name: "VS Code" }));
+    expect(screen.getByText(/\.vscode\/mcp\.json/)).toBeInTheDocument();
+    await userEvent.click(clients.getByRole("tab", { name: "Other" }));
+    expect(screen.getByText("Authorization: Bearer <your gateway key>")).toBeInTheDocument();
+  });
+
+  it("says a key sees only the tools it is allowed, and none by default", async () => {
+    await openMcp();
+    expect(screen.getByText(/A key reaches only the tools it lists; a key with no tools reaches none\./)).toBeInTheDocument();
   });
 });

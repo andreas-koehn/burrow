@@ -84,7 +84,7 @@ describe("Requests page", () => {
     mount();
     const t = await table();
     expect(within(t).getAllByRole("columnheader").map((h) => h.textContent))
-      .toEqual(["When", "Provider", "Model", "Path", "Status", "Latency", "Cache", "Guardrail", "Translation"]);
+      .toEqual(["When", "Provider or source", "Model or tool", "Path", "Status", "Latency", "Cache", "Guardrail", "Translation", "Gateway key"]);
     for (const h of within(t).getAllByRole("columnheader")) expect(h).toHaveAttribute("scope", "col");
   });
 
@@ -724,5 +724,56 @@ describe("Requests page", () => {
       mount();
       expect(await screen.findByRole("link", { name: "/v1/audio/speech" })).toBeInTheDocument();
     });
+  });
+});
+
+describe("Requests page: tool calls", () => {
+  afterEach(() => { resetDb(); });
+
+  /** A tool call as the gateway's inspector captures it: the source in provider, the served name in model. */
+  const toolCall = (over: Partial<InspectorEntry> = {}): Partial<InspectorEntry> => ({
+    path: "/mcp/github", provider: "github", model: "list_issues", gateway_key_id: "gk_laptop1",
+    mcp: { method: "tools/call", tool: "list_issues", params: { repo: "x" } }, duration_ms: 42, ...over,
+  });
+
+  it("a tool row shows source, tool, key, status and latency", async () => {
+    capture("svc_ai001", [1], toolCall());
+    mount();
+    const t = await table();
+    const row = bodyRows(t)[0]!;
+    const cells = Array.from(row.querySelectorAll("td")).map((c) => c.textContent);
+    expect(cells[PROVIDER]).toBe("github");
+    expect(cells[MODEL]).toContain("list_issues");
+    expect(cells[MODEL]).toContain("tool");
+    expect(cells[4]).toBe("200");
+    expect(cells[5]).toBe("42 ms");
+    expect(cells[9]).toBe("laptop");
+  });
+
+  it("the Kind filter narrows to tools or to models, and lives in the URL", async () => {
+    capture("svc_ai001", [1], { provider: "ollama", model: "burrow-simple" });
+    capture("prov-zai", [2], toolCall());
+    mount();
+    expect(column(await table(), PROVIDER)).toEqual(["ollama", "github"]);
+    await choose("Kind", "Tools");
+    await waitFor(async () => expect(column(await table(), PROVIDER)).toEqual(["github"]));
+    expect(screen.getByTestId("path")).toHaveTextContent("kind=tools");
+    await choose("Kind", "Models");
+    await waitFor(async () => expect(column(await table(), PROVIDER)).toEqual(["ollama"]));
+    await choose("Kind", "All");
+    await waitFor(async () => expect(column(await table(), PROVIDER)).toEqual(["ollama", "github"]));
+  });
+
+  it("opens with the kind from the link", async () => {
+    capture("svc_ai001", [1], { provider: "ollama", model: "burrow-simple" });
+    capture("prov-zai", [2], toolCall());
+    mount("/gateway/requests?kind=tools");
+    expect(column(await table(), PROVIDER)).toEqual(["github"]);
+  });
+
+  it("a Tools list with nothing in it says so", async () => {
+    capture("svc_ai001", [1], { provider: "ollama", model: "burrow-simple" });
+    mount("/gateway/requests?kind=tools");
+    expect(await screen.findByText("No requests match these filters.")).toBeInTheDocument();
   });
 });

@@ -34,7 +34,7 @@ function mountAs(role: "admin" | "user") {
 }
 
 const otherUsersKey = () => db.aiGatewayKeys.push({
-  id: "gk_bob", name: "bobs-ci", key_prefix: "bgw_Zz9y", user_id: "bur_usr_bob0002", allowed_models: ["burrow-simple", "ollama/*"],
+  id: "gk_bob", name: "bobs-ci", key_prefix: "bgw_Zz9y", user_id: "bur_usr_bob0002", allowed_models: ["burrow-simple", "ollama/*"], allowed_tools: [], tools_read_only: false,
   system_text: "", last_used: null, created_at: "2026-05-11T08:00:00Z", revoked_at: null,
 });
 
@@ -495,5 +495,59 @@ describe("Gateway keys page", () => {
       expect(within(bob).getByRole("button", { name: "Edit bobs-ci" })).toBeInTheDocument();
       expect(within(bob).getByRole("button", { name: "Revoke bobs-ci" })).toBeInTheDocument();
     });
+  });
+});
+
+describe("Gateway keys: tools", () => {
+  it("creates a key with tools: a source, a pattern, read-only", async () => {
+    let posted: Record<string, unknown> | null = null;
+    server.use(http.post("/api/v1/ai/keys", async ({ request }) => {
+      posted = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ id: "gk9", name: "agent", key: "bgw_" + "y".repeat(43), allowed_models: [], allowed_tools: [], tools_read_only: true }, { status: 201 });
+    }));
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New key" }));
+    const dialog = await screen.findByRole("dialog", { name: "New gateway key" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "agent");
+    // Closed until asked for, so the default state stays short.
+    expect(within(dialog).queryByLabelText("Tool pattern")).toBeNull();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Tools" }));
+    expect(within(dialog).getByText(/No tools selected\. A key without tools cannot call any tool\./)).toBeInTheDocument();
+    await userEvent.click(await within(dialog).findByRole("combobox", { name: "Tool source" }));
+    await userEvent.click(await screen.findByRole("option", { name: "github" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add all tools of source" }));
+    await userEvent.type(within(dialog).getByLabelText("Tool pattern"), "files__read_file{Enter}");
+    await userEvent.click(within(dialog).getByRole("switch", { name: "Read-only tools only" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create key" }));
+    await waitFor(() => expect(posted).toEqual({
+      name: "agent", allowed_tools: ["github__*", "files__read_file"], tools_read_only: true,
+    }));
+  });
+
+  it("a key without tools sends no tool fields", async () => {
+    let posted: Record<string, unknown> | null = null;
+    server.use(http.post("/api/v1/ai/keys", async ({ request }) => {
+      posted = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ id: "gk9", name: "plain", key: "bgw_" + "y".repeat(43) }, { status: 201 });
+    }));
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "New key" }));
+    const dialog = await screen.findByRole("dialog", { name: "New gateway key" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "plain");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create key" }));
+    await waitFor(() => expect(posted).toEqual({ name: "plain" }));
+  });
+
+  it("the table says which tools a key reaches", async () => {
+    db.aiGatewayKeys[0]!.allowed_tools = ["github__*", "files__read_file"];
+    db.aiGatewayKeys[0]!.tools_read_only = true;
+    db.aiGatewayKeys.push({ ...db.aiGatewayKeys[0]!, id: "gk_none", name: "no-tools", allowed_tools: [], tools_read_only: false });
+    mount();
+    const table = await screen.findByRole("table", { name: "Gateway keys" });
+    expect(within(table).getByRole("columnheader", { name: "Tools" })).toBeInTheDocument();
+    const laptop = within(table).getByRole("row", { name: /laptop/ });
+    expect(laptop).toHaveTextContent("2 entries");
+    expect(laptop).toHaveTextContent("read-only");
+    expect(within(table).getByRole("row", { name: /no-tools/ })).toHaveTextContent("none");
   });
 });
