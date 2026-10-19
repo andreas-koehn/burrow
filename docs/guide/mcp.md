@@ -172,6 +172,34 @@ connected app, as with an automation token: review or delete those
 separately. OAuth needs a public name for the relay (`BURROW_AUTH_DOMAIN`
 or `BURROW_ACME_DOMAIN`); without one the relay takes automation tokens only.
 
+**The approval page.** The browser opens `/oauth/consent` on the dashboard.
+It names the app, shows in large type the host your browser goes back to after
+you decide, and says what the app asks for. Check that host: approve only an
+app you just started connecting. An app that returns to `localhost` or
+`127.0.0.1` gets an extra warning, because only an app on your own computer
+can receive that answer.
+
+- At `/mcp/burrow` an app that asks for `burrow:write` gets a **Read-only
+  access** switch, so you can give it less. An app that asks for
+  `burrow:read` is shown as read-only and gets no switch: the page never gives
+  more than the app asked for.
+- At `/mcp` and `/mcp/<source>` you tick the tool sources the app may use, and
+  **Read-only tools only** is on by default. Your role must allow configuring
+  the AI gateway.
+- Without a [services domain](/guide/configuration#services-domain) the page
+  asks for your password before **Approve**.
+
+**Settings → Connected apps** lists the apps you approved, with what each may
+reach, and revokes one at once. A holder of `oauth:clients:manage` can switch
+to **All users**.
+
+**Settings → OAuth clients** (`oauth:clients:manage`) registers an app that
+cannot publish its own client metadata document: give it a name and its
+redirect addresses, one per line (https, http on a loopback address with any
+port, or an app scheme such as `com.example.app:/callback`). The page shows
+the client ID to enter in the app; there is no secret. Deleting a client ends
+its connected apps.
+
 ---
 
 ## Tools {#tools}

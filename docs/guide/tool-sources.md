@@ -9,7 +9,7 @@ apps and agents. Two kinds exist:
   publishes it through a tunnel, and the relay never needs to reach that
   machine.
 
-This page covers local sources. Callers reach every source's tools the same
+This page covers local sources, with a short note on remote ones. Callers reach every source's tools the same
 way: at `/mcp/<source>` with the tools' own names, or at `/mcp` together with
 the tools of every other source, named `<source>__<tool>`. They authenticate
 with a gateway key whose tools allow-list names the source (for example
@@ -42,7 +42,18 @@ command to run.
    definition changes later, it stops being served until it is approved
    again. The source's page shows the old and the new definition side by side.
 6. Give a gateway key the tools: in the key's **Tools** section, pick the
-   source (`files__*`) or name single tools (`files__read_file`).
+   source and choose **Add all tools of source** (`files__*`), or name single
+   tools (`files__read_file`). **Read-only tools only** limits the key to the
+   tools classed read-only. A key without tools cannot call any. Both can be
+   changed later in the key's **Edit** dialog.
+
+A **remote** source starts with **Add remote source** on the same page: a
+name, the server's https address, and optionally the name of a credential
+slot. The relay sends the value of `BURROW_UPSTREAM_KEY_<SLOT>` to the server
+in the header you choose (`Authorization: Bearer {key}` by default); the
+caller's own key never reaches it. The relay reads the tools at once, and they
+wait for approval as above. An address on a private network is refused unless
+`BURROW_AI_ALLOW_PRIVATE_UPSTREAMS` is set.
 
 `burrow mcp` changes nothing in the protocol between the client and the relay.
 It registers an ordinary http tunnel named after the source, and that tunnel
