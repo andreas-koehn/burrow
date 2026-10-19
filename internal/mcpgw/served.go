@@ -45,3 +45,34 @@ func ServedSet(rows []db.MCPTool) (tools []Tool, conflicts map[string]string) {
 	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 	return tools, conflicts
 }
+
+// Issues that keep a tool off the aggregated endpoint (D11). A tool in a name
+// conflict has the issue IssueNameConflict there as well.
+const (
+	// IssueNameTooLong: "<slug>__<served name>" is over 64 characters.
+	IssueNameTooLong = "name_too_long"
+	// IssueNameInvalid: the name has characters outside [A-Za-z0-9_-].
+	IssueNameInvalid = "name_invalid"
+	// MaxAggregatedNameLen is the longest name offered on /mcp.
+	MaxAggregatedNameLen = 64
+)
+
+// AggregatedName returns the name under which a tool of source slug, served
+// as served on /mcp/<slug>, is offered on /mcp: "<slug>__<served>". When that
+// name is over 64 characters or has characters outside [A-Za-z0-9_-] it
+// returns "" and the issue; the tool is then offered on /mcp/<slug> only,
+// until a rename fixes it (D11).
+func AggregatedName(slug, served string) (name, issue string) {
+	name = slug + "__" + served
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' {
+			continue
+		}
+		return "", IssueNameInvalid
+	}
+	if len(name) > MaxAggregatedNameLen {
+		return "", IssueNameTooLong
+	}
+	return name, ""
+}

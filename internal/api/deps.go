@@ -327,10 +327,11 @@ type MCPGateway interface {
 	Invalidate(slug string)
 }
 
-// MCPToolServer serves one tool source to MCP clients behind gateway keys
-// (/mcp/<slug>). *mcpgw.Gateway satisfies it.
+// MCPToolServer serves tool sources to MCP clients behind gateway keys: one
+// source on /mcp/<slug>, every source on /mcp. *mcpgw.Gateway satisfies it.
 type MCPToolServer interface {
 	ServeSource(w http.ResponseWriter, r *http.Request, slug string)
+	ServeAggregated(w http.ResponseWriter, r *http.Request)
 }
 
 // AIModelStore is the synthetic-model surface of the management API.

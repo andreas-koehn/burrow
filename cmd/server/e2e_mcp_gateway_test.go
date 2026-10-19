@@ -285,3 +285,55 @@ func TestE2E_MCPGatewayTunnel(t *testing.T) {
 		t.Fatalf("upstream calls = %d", n)
 	}
 }
+
+// /mcp serves a remote and a tunnel source together, through the real router
+// and wiring: each tool is named <slug>__<tool>, both sources have an "echo",
+// and each call reaches its own upstream.
+func TestE2E_MCPGatewayAggregated(t *testing.T) {
+	remote := mcptest.NewServer(t, mcptest.Opts{TLS: true, Authorize: func(r *http.Request) bool {
+		return r.Header.Get("Authorization") == "Bearer "+gwAlphaSecret
+	}})
+	local := mcptest.NewServer(t, mcptest.Opts{})
+	tunnels := &gwTunnels{}
+	e := bootMCPGatewayE2E(t, tunnels, remote)
+	ctx := context.Background()
+	admin, err := e.st.GetUserByEmail(ctx, e.adminEmail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const serviceID = "svc-notes"
+	if err := db.Wrap(e.sqldb).CreateService(ctx, db.Service{ID: serviceID, UserID: admin.ID, Name: "notes", Type: "http", AccessMode: "api_key"}); err != nil {
+		t.Fatalf("create service: %v", err)
+	}
+	tunnels.connect(serviceID, local.Listener.Addr().String())
+	e.source(t, map[string]any{"slug": "gh", "kind": "remote", "url": remote.URL, "credential_slot": "ALPHA"})
+	e.source(t, map[string]any{"slug": "notes", "kind": "tunnel", "service_id": serviceID})
+
+	key := e.key(t, []string{"gh__echo", "notes__*"}, false)
+	cs := mcpConnectAs(t, e.srv.URL+"/mcp", mcpBearerTransport{token: key, userAgent: "gw-e2e"}, "")
+	names := toolNames(t, cs)
+	if !strings.HasPrefix(names, "gh__echo,notes__") || strings.Contains(names, "gh__mutate") {
+		t.Fatalf("tools = %s", names)
+	}
+	if got := mcpCall(t, cs, false, "gh__echo", map[string]any{"text": "remote"}); got != "echo: remote" {
+		t.Fatalf("gh__echo = %q", got)
+	}
+	if got := mcpCall(t, cs, false, "notes__echo", map[string]any{"text": "local"}); got != "echo: local" {
+		t.Fatalf("notes__echo = %q", got)
+	}
+	if len(remote.CallsTo("echo")) != 1 || len(local.CallsTo("echo")) != 1 {
+		t.Fatalf("upstream calls: remote %d, local %d", len(remote.CallsTo("echo")), len(local.CallsTo("echo")))
+	}
+	// No key, no tools.
+	req, _ := http.NewRequest(http.MethodPost, e.srv.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no key: %d", resp.StatusCode)
+	}
+}

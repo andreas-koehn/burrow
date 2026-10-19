@@ -79,6 +79,8 @@ var protocolVersions = []string{"2026-07-28", "2025-11-25", "2025-06-18", "2025-
 type ServeStore interface {
 	MCPSourceBySlug(ctx context.Context, slug string) (db.MCPSource, error)
 	ListMCPTools(ctx context.Context, slug string) ([]db.MCPTool, error)
+	// ListMCPSources returns every source ordered by slug (the aggregated /mcp).
+	ListMCPSources(ctx context.Context) ([]db.MCPSource, error)
 }
 
 // KeyValidator validates a presented gateway key, owner checks included
@@ -276,24 +278,35 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-// ServeSource serves /mcp/<slug>. In order: a browser on another origin
-// (403), the gateway key (401 with a Bearer challenge), the source (404 for
-// an unknown or disabled one), the body (413 over 1 MiB, 400 for a JSON-RPC
-// batch), then the SDK.
-func (g *Gateway) ServeSource(w http.ResponseWriter, r *http.Request, slug string) {
+// perimeter is the start of every request: a browser on another origin is
+// refused (403), then the gateway key is checked (401 with a Bearer
+// challenge). It answers and returns false when the request goes no further.
+func (g *Gateway) perimeter(w http.ResponseWriter, r *http.Request) (Caller, bool) {
 	if err := g.origin.Check(r); err != nil {
 		writeJSONError(w, http.StatusForbidden, "cross-origin request refused")
-		return
+		return Caller{}, false
 	}
 	caller, err := g.Authenticate(r)
 	if errors.Is(err, errUnauthorized) {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		writeJSONError(w, http.StatusUnauthorized, errUnauthorized.Error())
-		return
+		return Caller{}, false
 	}
 	if err != nil {
 		g.log.Error("mcp gateway: gateway key validation failed", "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		return Caller{}, false
+	}
+	return caller, true
+}
+
+// ServeSource serves /mcp/<slug>. In order: a browser on another origin
+// (403), the gateway key (401 with a Bearer challenge), the source (404 for
+// an unknown or disabled one), the body (413 over 1 MiB, 400 for a JSON-RPC
+// batch), then the SDK.
+func (g *Gateway) ServeSource(w http.ResponseWriter, r *http.Request, slug string) {
+	caller, ok := g.perimeter(w, r)
+	if !ok {
 		return
 	}
 	src, err := g.source(r.Context(), slug)
@@ -474,10 +487,20 @@ func toolsOnly(next mcp.MethodHandler) mcp.MethodHandler {
 // server, so the SDK's "unknown tool" follows, as for a tool that does not
 // exist.
 func (g *Gateway) deniedCalls(c Caller, src db.MCPSource, all []Tool, info RequestInfo) mcp.Middleware {
-	served := make(map[string]bool, len(all))
+	byName := make(map[string]Tool, len(all))
 	for _, t := range all {
-		served[t.Name] = true
+		byName[t.Name] = t
 	}
+	return g.denied(c, info, func(name string) (db.MCPSource, Tool, bool) {
+		t, ok := byName[name]
+		return src, t, ok
+	})
+}
+
+// denied is the middleware behind deniedCalls: served looks a requested name
+// up among everything the endpoint serves to anybody; a name found there that
+// the caller may not use is recorded as denied.
+func (g *Gateway) denied(c Caller, info RequestInfo, served func(name string) (db.MCPSource, Tool, bool)) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (res mcp.Result, err error) {
 			defer func() {
@@ -487,14 +510,8 @@ func (g *Gateway) deniedCalls(c Caller, src db.MCPSource, all []Tool, info Reque
 				}
 			}()
 			if method == "tools/call" {
-				if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && p != nil && served[p.Name] {
-					var mine bool
-					for _, t := range all {
-						if t.Name == p.Name {
-							mine = c.May(src.Slug, t)
-						}
-					}
-					if !mine {
+				if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && p != nil {
+					if src, t, found := served(p.Name); found && !c.May(src.Slug, t) {
 						g.observe(c, src, p.Name, outcomeDenied, 0, 0)
 						g.appendAudit(ctx, c, src, info, outcomeDenied, map[string]any{"tool": p.Name, "reason": "not allowed for this key"})
 					}
@@ -827,18 +844,25 @@ type sourceLimits struct {
 // limitsIdle is how long the limits of a source nobody calls are kept.
 const limitsIdle = 10 * time.Minute
 
-func (g *Gateway) limitsFor(slug string, now time.Time) *sourceLimits {
+// takePlace finds the limits of src and acquires from them in one step under
+// the gateway lock. Forget and the pruning run under that lock and drop only
+// limits with no call running, so the limits acquired from are still the ones
+// in the map: a Forget between the lookup and the acquire would otherwise let
+// the next call build fresh limits while this one held a place on the old.
+// The lock order is gateway, then limits (as in pruneLocked).
+func (g *Gateway) takePlace(src db.MCPSource, now time.Time) (l *sourceLimits, limit string, wait time.Duration, ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	l := g.limits[slug]
+	l = g.limits[src.Slug]
 	if l == nil {
 		if len(g.limits) >= 64 {
 			g.pruneLocked(now)
 		}
 		l = &sourceLimits{rpm: -1, at: now}
-		g.limits[slug] = l
+		g.limits[src.Slug] = l
 	}
-	return l
+	limit, wait, ok = l.acquire(src, now)
+	return l, limit, wait, ok
 }
 
 // pruneLocked drops the limits of sources nobody has called for limitsIdle
@@ -926,8 +950,7 @@ func (g *Gateway) admit(ctx context.Context, req CallRequest) (func(), error) {
 		}
 	}
 	now := g.now()
-	l := g.limitsFor(req.Source.Slug, now)
-	limit, wait, ok := l.acquire(req.Source, now)
+	l, limit, wait, ok := g.takePlace(req.Source, now)
 	switch {
 	case ok:
 		return l.release, nil

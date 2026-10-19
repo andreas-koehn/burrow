@@ -729,9 +729,21 @@ func newRouter(d Deps) http.Handler {
 		}
 		d.MCPTools.ServeSource(w, r, chi.URLParam(r, "slug"))
 	})
-	toolsHandler = d.toolsAddressLimiter()(toolsHandler)
+	// The aggregated endpoint: the tools of every source behind one address.
+	// Same gateway keys, same limit (the bucket is shared with /mcp/<slug>).
+	var aggregatedHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if d.MCPTools == nil {
+			writeErr(w, http.StatusServiceUnavailable, "the tool gateway is not configured")
+			return
+		}
+		d.MCPTools.ServeAggregated(w, r)
+	})
+	toolsLimiter := d.toolsAddressLimiter()
+	toolsHandler = toolsLimiter(toolsHandler)
+	aggregatedHandler = toolsLimiter(aggregatedHandler)
 	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
 		r.Method(method, "/mcp/{slug}", toolsHandler)
+		r.Method(method, "/mcp", aggregatedHandler)
 	}
 
 	// The OAuth authorization server's endpoints for MCP clients: no

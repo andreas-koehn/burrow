@@ -213,6 +213,9 @@ var openAPIReservedOperationIDs = map[string]string{
 	// plan mcp-gateway: one tool source behind gateway keys, three
 	// operations (mcpToolSource, mcpToolSourceGet, mcpToolSourceDelete).
 	"mcpToolSource": "/mcp/{slug}",
+	// the same plan: every tool source behind /mcp (mcpAggregated,
+	// mcpAggregatedGet, mcpAggregatedDelete).
+	"mcpAggregated": "/mcp",
 }
 
 // openAPIMCPDisabled is the complete set of management-API operations that

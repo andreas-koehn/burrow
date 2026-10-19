@@ -117,6 +117,10 @@ func (g *gwFixture) newGateway(t *testing.T, eng *redact.Engine) {
 		g.srv.Close()
 	}
 	g.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mcp" {
+			g.gw.ServeAggregated(w, r)
+			return
+		}
 		g.gw.ServeSource(w, r, strings.TrimPrefix(r.URL.Path, "/mcp/"))
 	}))
 	t.Cleanup(g.srv.Close)
@@ -148,11 +152,15 @@ func (h headerRT) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func (g *gwFixture) connect(t *testing.T, key, slug, revision string) *mcp.ClientSession {
 	t.Helper()
+	endpoint := g.srv.URL + "/mcp/" + slug
+	if slug == "" {
+		endpoint = g.srv.URL + "/mcp" // the aggregated endpoint
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	c := mcp.NewClient(&mcp.Implementation{Name: "gw-test", Version: "0"}, nil)
 	cs, err := c.Connect(ctx, &mcp.StreamableClientTransport{
-		Endpoint: g.srv.URL + "/mcp/" + slug, HTTPClient: &http.Client{Transport: headerRT{key}, Timeout: 30 * time.Second},
+		Endpoint: endpoint, HTTPClient: &http.Client{Transport: headerRT{key}, Timeout: 30 * time.Second},
 		DisableStandaloneSSE: true, MaxRetries: -1,
 	}, &mcp.ClientSessionOptions{ProtocolVersion: revision})
 	if err != nil {

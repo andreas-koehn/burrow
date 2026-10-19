@@ -174,8 +174,21 @@ announces a change.
   refuse tool calls.
 - **A rename changes who may call a tool.** A key's allow-list names a tool
   by the name it is served under. When you rename a tool, keys that list the
-  old name lose it and keys that already list the new name gain it; the
-  dashboard is told which keys those are (`keys_matching_rename`).
+  old name lose it and keys that already list the new name gain it. The
+  answer to the rename counts those keys (`keys_matching_rename_count`).
+  Only a caller who also holds `ai:read:any` is told which keys they are
+  (`keys_matching_rename`), because that list shows other users' keys.
+- **One endpoint for every source.** `/mcp` lists the tools of every enabled
+  source the key may use, as `<source>__<tool>` (a renamed tool by its new
+  name), ordered by that name. The key's allow-list matches exactly that name,
+  so `files__*` and `files__read_file` work the same on `/mcp` and
+  `/mcp/files`. Two sources with a tool of the same name never collide: the
+  prefix tells them apart. A tool is left off `/mcp` when `<source>__<tool>`
+  is longer than 64 characters or has a character outside `A-Z a-z 0-9 _ -`
+  (a dot, for example). It stays available at `/mcp/<source>`, and the tool
+  list in the dashboard shows `aggregated_issue` (`name_too_long` or
+  `name_invalid`) for it. Rename the tool to fix that. A tool in a name
+  conflict is served nowhere.
 
 - **Tools only.** The bridge passes `tools/list` and `tools/call` and nothing
   else. Resources, prompts, sampling, elicitation, roots and logging are not

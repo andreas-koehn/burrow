@@ -727,6 +727,13 @@ func (s *toolServer) ServeSource(w http.ResponseWriter, r *http.Request, slug st
 	w.WriteHeader(http.StatusTeapot)
 }
 
+func (s *toolServer) ServeAggregated(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.seen = append(s.seen, r.Method+" /mcp")
+	s.mu.Unlock()
+	w.WriteHeader(http.StatusTeapot)
+}
+
 // /mcp/<slug> reaches the tool gateway with the slug, for the three methods
 // of MCP's HTTP transport; /mcp/burrow stays the management server, and
 // nothing else under /mcp/ reaches the gateway.
@@ -760,6 +767,49 @@ func TestMCPToolsMount_Routing(t *testing.T) {
 	}
 	if want := "POST github,GET github,DELETE github"; strings.Join(tools.seen, ",") != want {
 		t.Errorf("gateway saw %v", tools.seen)
+	}
+}
+
+// /mcp, with no slug, is the aggregated endpoint: the same three methods,
+// and the same per-address limit as /mcp/<slug>.
+func TestMCPToolsMount_Aggregated(t *testing.T) {
+	tools := &toolServer{}
+	spa := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "<html>dashboard</html>") })
+	hs := httptest.NewServer(NewRouter(Deps{Log: discardLog(), SPA: spa, MCPTools: tools, MCPToolsRateLimitPerIP: 1}))
+	t.Cleanup(hs.Close)
+	do := func(method, path string) int {
+		req, _ := http.NewRequest(method, hs.URL+path, strings.NewReader("{}"))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
+		if code := do(method, "/mcp"); code != http.StatusTeapot {
+			t.Errorf("%s /mcp: %d, want the tool gateway", method, code)
+		}
+	}
+	if code := do(http.MethodPut, "/mcp"); code == http.StatusTeapot {
+		t.Error("PUT /mcp reached the tool gateway")
+	}
+	if want := "POST /mcp,GET /mcp,DELETE /mcp"; strings.Join(tools.seen, ",") != want {
+		t.Errorf("gateway saw %v", tools.seen)
+	}
+	req, _ := http.NewRequest(http.MethodPost, hs.URL+"/mcp", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer bgw_x")
+	var codes []int
+	for i := 0; i < 2; i++ {
+		resp, err := http.DefaultClient.Do(req.Clone(context.Background()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		codes = append(codes, resp.StatusCode)
+	}
+	if codes[1] != http.StatusTooManyRequests {
+		t.Errorf("second request with a credential: %v, want 429", codes)
 	}
 }
 

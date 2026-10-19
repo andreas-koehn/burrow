@@ -376,7 +376,7 @@ components:
         definition changed, is pending until approved. A definition is the
         tool's name, title, description, inputSchema, outputSchema and
         annotations as the upstream sent them (untrusted text).
-      required: [name, status, current_hash, approved_hash, definition, approved_definition, hidden, rename, description_override, read_only, upstream_read_only, effective_read_only, served_name, served, serve_issue, guardrail_hits, updated_at]
+      required: [name, status, current_hash, approved_hash, definition, approved_definition, hidden, rename, description_override, read_only, upstream_read_only, effective_read_only, served_name, served, serve_issue, aggregated_name, aggregated_issue, guardrail_hits, updated_at]
       properties:
         name: { type: string, description: "The upstream's own name." }
         status: { type: string, enum: [approved, pending, removed] }
@@ -397,6 +397,14 @@ components:
         served_name: { type: string, description: 'The name on /mcp/<slug>: the rename, or the name.' }
         served: { type: boolean, description: 'Whether the gateway serves the tool now.' }
         serve_issue: { type: string, enum: ['', name_conflict], description: 'Why an approved, visible tool is not served: name_conflict when another tool of the source would be served under the same name (neither is served). Empty otherwise.' }
+        aggregated_name:
+          type: string
+          nullable: true
+          description: 'The name on the aggregated endpoint /mcp: <slug>__<served_name>. null when the tool is not served, or when aggregated_issue says why the name is unusable.'
+        aggregated_issue:
+          type: string
+          enum: ['', name_too_long, name_invalid, name_conflict]
+          description: 'Why a served tool, or one in a name conflict, is left off /mcp: name_too_long (<slug>__<name> over 64 characters), name_invalid (characters outside [A-Za-z0-9_-]) or name_conflict (see serve_issue). A rename fixes the first two; the tool stays on /mcp/<slug>. Empty otherwise.'
         guardrail_hits:
           type: array
           description: Guardrail request patterns that matched the current definition.
@@ -2421,6 +2429,114 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+  /mcp:
+    post:
+      tags: [mcp]
+      operationId: mcpAggregated
+      x-burrow-mcp: false
+      summary: Every tool source behind one address (Streamable HTTP, stateless)
+      description: |
+        The tools of every enabled tool source that the gateway key may use,
+        on one endpoint. A tool is named `<slug>__<tool>` (the tool part is
+        the operator's rename when there is one), so two sources never
+        collide, and the key's `allowed_tools` entries (`<slug>__*` or
+        `<slug>__<tool>`) match exactly that name. The list is ordered by
+        that name. An empty `allowed_tools` sees nothing.
+
+        A tool is offered here only when its name is usable: `<slug>__<tool>`
+        must be at most 64 characters, from `[A-Za-z0-9_-]`. A tool with a
+        longer name or other characters (a dot, say) is offered on
+        `/mcp/<slug>` only, and the catalog flags it (`aggregated_name`
+        null, `aggregated_issue`); a rename fixes it. A tool in a name
+        conflict is offered nowhere.
+
+        Otherwise this is `/mcp/<slug>`: the same key, the same revisions and
+        stateless handling, the same per-call pipeline (limits, redaction,
+        guardrails, timeout, result cap, metering, audit), the same refusal
+        of methods beyond tools, and the same answers for a tool that is not
+        allowed or does not exist. A call is attributed to the source the
+        name belongs to. `tools/list` is marked `cacheScope: private`, `ttlMs: 0`.
+      security:
+        - GatewayKey: []
+      parameters:
+        - name: MCP-Protocol-Version
+          in: header
+          required: false
+          schema: { type: string }
+          description: The MCP revision of the request, as the client negotiated it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: A JSON-RPC 2.0 request or notification.
+      responses:
+        '200':
+          description: The JSON-RPC response; protocol errors are responses too.
+          content:
+            application/json:
+              schema: { type: object }
+        '202': { description: A notification was accepted. No body. }
+        '400': { description: Not an MCP request (malformed JSON, a JSON-RPC batch, missing Accept, unsupported revision). }
+        '401':
+          description: No valid gateway key (missing, unknown, revoked, or its owner is suspended or may no longer configure the gateway).
+          headers:
+            WWW-Authenticate:
+              description: A Bearer challenge.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Sent by a browser from another origin.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413': { description: Body over 1 MiB. }
+        '429':
+          description: Rate-limited per client address (the bucket of `/mcp/{slug}`).
+          headers:
+            Retry-After:
+              description: Seconds until the request may be retried.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: The tool gateway is not configured on this relay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    get:
+      tags: [mcp]
+      operationId: mcpAggregatedGet
+      x-burrow-mcp: false
+      summary: Not offered (the endpoint opens no server-to-client stream)
+      security:
+        - GatewayKey: []
+      responses:
+        '401':
+          description: No valid gateway key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '405': { description: 'Always, for a valid key. `Allow: POST`.' }
+    delete:
+      tags: [mcp]
+      operationId: mcpAggregatedDelete
+      x-burrow-mcp: false
+      summary: Not offered (the endpoint keeps no session to end)
+      security:
+        - GatewayKey: []
+      responses:
+        '401':
+          description: No valid gateway key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '405': { description: 'Always, for a valid key. `Allow: POST`.' }
 
   /mcp/{slug}:
     parameters:
@@ -6477,10 +6593,12 @@ paths:
         A gateway key's allow-list names a tool by the name it is served
         under, so a rename can give the tool to keys whose allow-list
         already names the new name (and take it from keys that name the old
-        one). When the body carries `rename`, the answer lists the active
+        one). When the body carries `rename`, the answer counts the active
         keys of every user that name `<slug>__<new served name>` exactly in
-        `keys_matching_rename`, so the dashboard can warn; keys with
-        `<slug>__*` had the tool before and are not listed.
+        `keys_matching_rename_count`. A caller who also holds `ai:read:any`
+        gets those keys in `keys_matching_rename` (id, name, prefix, owner),
+        so the dashboard can warn; any other caller gets the count only.
+        Keys with `<slug>__*` had the tool before and are not counted.
       requestBody:
         required: true
         content:
@@ -6489,7 +6607,7 @@ paths:
             example: { rename: create_issue, read_only: false }
       responses:
         '200':
-          description: The tool, with keys_matching_rename when the body carried a rename.
+          description: The tool, with keys_matching_rename_count (and keys_matching_rename for a caller with ai:read:any) when the body carried a rename.
           content:
             application/json:
               schema:
@@ -6497,9 +6615,12 @@ paths:
                   - $ref: '#/components/schemas/MCPSourceTool'
                   - type: object
                     properties:
+                      keys_matching_rename_count:
+                        type: integer
+                        description: How many active gateway keys, of any user, have an allow-list that names the new served name exactly. Present whenever the body carried rename.
                       keys_matching_rename:
                         type: array
-                        description: Active gateway keys whose allow-list names the new served name exactly. Only present when the body carried rename.
+                        description: Those keys. Only present when the body carried rename and the caller holds ai:read:any (it shows other users' keys).
                         items:
                           type: object
                           required: [id, name, key_prefix, user_id]

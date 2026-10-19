@@ -406,6 +406,47 @@ func TestMCPTools_ApproveCollisionIs409(t *testing.T) {
 
 // A sync that brings a removed tool back under a name another tool is
 // renamed to by then serves neither; the catalog flags both (T05 review).
+// The catalog says what each tool is called on /mcp, and why not when it is
+// left off: a name that is too long or has other characters is flagged, a
+// rename fixes it; a tool that is not served has no aggregated name.
+func TestMCPTools_AggregatedNameAndIssue(t *testing.T) {
+	long := strings.Repeat("x", 61) // "gh__" + 61 = 65 characters
+	f := newMCPToolsFixture(t, mcptest.Opts{Tools: []mcptest.ToolSpec{mcptest.Echo("echo"), mcptest.Echo(long), mcptest.Echo("dotted.name"), mcptest.Echo("held")}})
+	f.sync(t)
+	hashes := map[string]string{}
+	for n, x := range f.tools(t) {
+		if n != "held" {
+			hashes[n] = x.CurrentHash
+		}
+	}
+	f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/approve-all", map[string]any{"hashes": hashes}, f.admin)
+	check := func(name, wantName, wantIssue string) {
+		t.Helper()
+		x := f.tools(t)[name]
+		got := ""
+		if x.AggregatedName != nil {
+			got = *x.AggregatedName
+		}
+		if got != wantName || x.AggregatedIssue != wantIssue || (wantName == "") != (x.AggregatedName == nil) {
+			t.Fatalf("%s: aggregated_name %v, aggregated_issue %q; want %q, %q", name, x.AggregatedName, x.AggregatedIssue, wantName, wantIssue)
+		}
+	}
+	check("echo", "gh__echo", "")
+	check(long, "", "name_too_long")
+	check("dotted.name", "", "name_invalid")
+	check("held", "", "") // pending: not served, no issue
+	// A rename fixes both; the answer of the PUT carries the new name.
+	rec := f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh/tools/dotted.name", map[string]any{"rename": "dotted-name"}, f.admin)
+	if got := mcpDecode[mcpSourceToolResp](t, rec); got.AggregatedName == nil || *got.AggregatedName != "gh__dotted-name" {
+		t.Fatalf("PUT answer: %+v", got.AggregatedName)
+	}
+	f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh/tools/"+long, map[string]any{"rename": "short"}, f.admin)
+	check(long, "gh__short", "")
+	check("dotted.name", "gh__dotted-name", "")
+	f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh/tools/echo", map[string]any{"hidden": true}, f.admin)
+	check("echo", "", "")
+}
+
 func TestMCPTools_NameConflictIsFlagged(t *testing.T) {
 	f := newMCPToolsFixture(t, mcptest.Opts{Tools: []mcptest.ToolSpec{mcptest.Echo("echo"), mcptest.Echo("mutate")}})
 	f.sync(t)
@@ -425,6 +466,9 @@ func TestMCPTools_NameConflictIsFlagged(t *testing.T) {
 		x := f.tools(t)[n]
 		if x.Status != "approved" || x.Served || x.ServeIssue != "name_conflict" {
 			t.Fatalf("%s: status %s, served %v, issue %q", n, x.Status, x.Served, x.ServeIssue)
+		}
+		if x.AggregatedName != nil || x.AggregatedIssue != "name_conflict" {
+			t.Fatalf("%s: aggregated_name %v, aggregated_issue %q; want none, name_conflict", n, x.AggregatedName, x.AggregatedIssue)
 		}
 	}
 	// The issue shows on a single tool's answer too, and goes with the rename.
@@ -468,12 +512,38 @@ func TestMCPTools_RenameListsKeysItWidensTo(t *testing.T) {
 		Keys       *[]struct {
 			ID, Name, KeyPrefix string
 		} `json:"keys_matching_rename"`
+		Count *int `json:"keys_matching_rename_count"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK || got.Keys == nil {
 		t.Fatalf("rename: %d %s", rec.Code, rec.Body.String())
 	}
 	if len(*got.Keys) != 1 || (*got.Keys)[0].ID != named.ID || (*got.Keys)[0].Name != "named" || got.ServedName != "say" {
 		t.Fatalf("keys_matching_rename = %+v", *got.Keys)
+	}
+	if got.Count == nil || *got.Count != 1 {
+		t.Fatalf("keys_matching_rename_count = %v, want 1", got.Count)
+	}
+	// A caller who manages sources but does not hold ai:read:any (a token that
+	// declares only mcp:sources:manage) gets the number, not whose keys.
+	manage := f.token(t, "admin", "mcp:sources:manage")
+	rec = f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh/tools/echo", map[string]any{"rename": "say"}, manage)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rename with a narrow token: %d %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "keys_matching_rename\"") || strings.Contains(rec.Body.String(), "named") || strings.Contains(rec.Body.String(), named.ID) {
+		t.Fatalf("a caller without ai:read:any is shown the keys: %s", rec.Body.String())
+	}
+	var narrow struct {
+		Count *int `json:"keys_matching_rename_count"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &narrow); err != nil || narrow.Count == nil || *narrow.Count != 1 {
+		t.Fatalf("count for a caller without ai:read:any: %s", rec.Body.String())
+	}
+	// With ai:read:any declared as well, the list is there.
+	both := f.token(t, "admin", "mcp:sources:manage", "ai:read:any")
+	rec = f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh/tools/echo", map[string]any{"rename": "say"}, both)
+	if !strings.Contains(rec.Body.String(), named.ID) {
+		t.Fatalf("a caller with ai:read:any is not shown the keys: %s", rec.Body.String())
 	}
 	rec = f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh/tools/echo", map[string]any{"hidden": false}, f.admin)
 	if strings.Contains(rec.Body.String(), "keys_matching_rename") {

@@ -27,6 +27,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/mcpgw"
 	"github.com/ankoehn/burrow/internal/store"
@@ -64,6 +65,15 @@ type mcpSourceToolResp struct {
 	// "name_conflict" when another tool of the source would be served under
 	// the same name (neither is served). "" otherwise.
 	ServeIssue string `json:"serve_issue"`
+	// AggregatedName is the name on the aggregated endpoint /mcp:
+	// "<slug>__<served name>". null when the tool is not offered there: it is
+	// not served at all, or AggregatedIssue says why its name is unusable.
+	AggregatedName *string `json:"aggregated_name"`
+	// AggregatedIssue is why a served-or-approved tool is left off /mcp:
+	// "name_too_long" (over 64 characters), "name_invalid" (characters outside
+	// [A-Za-z0-9_-]) or "name_conflict" (see ServeIssue). "" otherwise. A
+	// rename fixes the first two.
+	AggregatedIssue string `json:"aggregated_issue"`
 	// GuardrailHits are the guardrail request patterns that matched the
 	// current definition's title, description or schemas.
 	GuardrailHits []mcpgw.GuardrailHit `json:"guardrail_hits"`
@@ -92,6 +102,16 @@ func mcpToolView(t db.MCPTool, conflicts map[string]string) mcpSourceToolResp {
 	_, v.Served = mcpgw.Served(t)
 	if _, clash := conflicts[t.Name]; clash && v.Served {
 		v.Served, v.ServeIssue = false, mcpgw.IssueNameConflict
+	}
+	switch {
+	case v.Served:
+		if name, issue := mcpgw.AggregatedName(t.SourceSlug, v.ServedName); issue == "" {
+			v.AggregatedName = &name
+		} else {
+			v.AggregatedIssue = issue
+		}
+	case v.ServeIssue != "":
+		v.AggregatedIssue = v.ServeIssue
 	}
 	return v
 }
@@ -308,7 +328,13 @@ func (d Deps) PutMCPSourceTool(w http.ResponseWriter, r *http.Request) {
 			d.Log.Warn("tool rename: keys not read", "source", slug, "err", err)
 			keys = []mcpKeyRef{}
 		}
-		out.KeysMatchingRename = &keys
+		// Who owns the keys is for the caller who may read every user's keys
+		// (ai:read:any); mcp:sources:manage alone gets the number.
+		n := len(keys)
+		out.KeysMatchingRenameCount = &n
+		if d.mayReadAllKeys(r) {
+			out.KeysMatchingRename = &keys
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -317,11 +343,16 @@ func (d Deps) PutMCPSourceTool(w http.ResponseWriter, r *http.Request) {
 // rename in the body the keys the new name may hand the tool to.
 type putMCPToolResp struct {
 	mcpSourceToolResp
-	// KeysMatchingRename lists the active gateway keys whose allow-list
-	// names "<slug>__<new served name>" exactly: the rename gives them the
-	// tool if they did not have it. Keys with "<slug>__*" had it before and
-	// are not listed. Only present when the body changed the rename.
+	// KeysMatchingRename lists the active gateway keys, of every user, whose
+	// allow-list names "<slug>__<new served name>" exactly: the rename gives
+	// them the tool if they did not have it. Keys with "<slug>__*" had it
+	// before and are not listed. Only present when the body changed the
+	// rename, and only for a caller who also holds ai:read:any: the list
+	// shows other users' keys.
 	KeysMatchingRename *[]mcpKeyRef `json:"keys_matching_rename,omitempty"`
+	// KeysMatchingRenameCount is the number of those keys, for every caller
+	// that renames. Only present when the body changed the rename.
+	KeysMatchingRenameCount *int `json:"keys_matching_rename_count,omitempty"`
 }
 
 // mcpKeyRef names a gateway key without its secret.
@@ -330,6 +361,18 @@ type mcpKeyRef struct {
 	Name      string `json:"name"`
 	KeyPrefix string `json:"key_prefix"`
 	UserID    string `json:"user_id"`
+}
+
+// mayReadAllKeys reports whether the caller holds ai:read:any, the right to
+// see every user's gateway keys (a token needs to declare it and its user's
+// role to still grant it, see effectivePerms). Unlike keysReach it does not
+// count ai:configure:any: this answer is about reading.
+func (d Deps) mayReadAllKeys(r *http.Request) bool {
+	role, err := d.callerRoleForAuth(r)
+	if err != nil {
+		return false
+	}
+	return effectivePerms(r.Context(), role, authz.PermAIReadAny)
 }
 
 // keysNaming returns the active keys of every user whose allow-list holds
