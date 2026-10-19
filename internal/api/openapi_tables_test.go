@@ -208,9 +208,11 @@ var openAPIMCPDisabled = map[string]string{
 	"authLogout":         "POST /api/v1/auth/logout",
 	"authReauth":         "POST /api/v1/auth/reauth",
 	"authChangePassword": "POST /api/v1/auth/change-password",
-	// An agent must not approve tool text that may have been written to steer it.
+	// An agent must not approve tool text that may have been written to steer
+	// it, nor rename or reclassify tools.
 	"mcpSourceToolApprove":      "POST /api/v1/mcp/sources/{slug}/tools/{name}/approve",
 	"mcpSourceApproveAll":       "POST /api/v1/mcp/sources/{slug}/approve-all",
+	"mcpSourceToolUpdate":       "PUT /api/v1/mcp/sources/{slug}/tools/{name}",
 	"clientDiscoveryGet":        "GET /api/v1/client/discovery",
 	"clientLoginStart":          "POST /api/v1/client/login/start",
 	"clientLoginPoll":           "POST /api/v1/client/login/poll",

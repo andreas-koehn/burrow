@@ -120,9 +120,9 @@ admin POST /api/v1/client/login/requests/{user_code}/approve 400
 admin POST /api/v1/client/login/requests/{user_code}/deny 404
 admin POST /api/v1/client/login/start 200
 admin POST /api/v1/mcp/sources 400
-admin POST /api/v1/mcp/sources/{slug}/approve-all 404
+admin POST /api/v1/mcp/sources/{slug}/approve-all 400
 admin POST /api/v1/mcp/sources/{slug}/sync 503
-admin POST /api/v1/mcp/sources/{slug}/tools/{name}/approve 404
+admin POST /api/v1/mcp/sources/{slug}/tools/{name}/approve 400
 admin POST /api/v1/rate-limits 400
 admin POST /api/v1/redaction/preview 200
 admin POST /api/v1/redaction/rules 400

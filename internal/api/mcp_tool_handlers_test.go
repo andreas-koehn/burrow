@@ -109,10 +109,21 @@ func TestMCPTools_SyncApproveAndServe(t *testing.T) {
 	if got := mcpDecode[mcpSourceToolResp](t, rec); got.Status != "approved" || !got.Served || got.ApprovedHash != echo.CurrentHash {
 		t.Fatalf("approved echo: %+v", got)
 	}
-	if rec = f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/tools/echo/approve", nil, f.admin); rec.Code != http.StatusConflict {
+	if rec = f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/tools/echo/approve", map[string]any{"hash": echo.CurrentHash}, f.admin); rec.Code != http.StatusConflict {
 		t.Fatalf("approve twice: %d %s", rec.Code, rec.Body.String())
 	}
-	if rec = f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/tools/ghost/approve", nil, f.admin); rec.Code != http.StatusNotFound {
+	// The hash of the reviewed definition is required.
+	for _, body := range []any{nil, map[string]any{}, map[string]any{"hash": ""}} {
+		if rec = f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/tools/mutate/approve", body, f.admin); rec.Code != http.StatusBadRequest {
+			t.Fatalf("approve without a hash (%v): %d %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	for _, body := range []any{nil, map[string]any{}} {
+		if rec = f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/approve-all", body, f.admin); rec.Code != http.StatusBadRequest {
+			t.Fatalf("approve-all without hashes (%v): %d %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	if rec = f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/tools/ghost/approve", map[string]any{"hash": "x"}, f.admin); rec.Code != http.StatusNotFound {
 		t.Fatalf("approve unknown: %d", rec.Code)
 	}
 
@@ -141,8 +152,14 @@ func TestMCPTools_SyncApproveAndServe(t *testing.T) {
 	if got := mcpDecode[mcpApproveAllResp](t, rec); strings.Join(got.Approved, ",") != "echo" {
 		t.Fatalf("approved %v", got.Approved)
 	}
-	rec = f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/approve-all", nil, f.admin)
-	if got := mcpDecode[mcpApproveAllResp](t, rec); rec.Code != http.StatusOK || len(got.Approved) != 4 {
+	rest := map[string]string{}
+	for n, x := range f.tools(t) {
+		if x.Status == "pending" {
+			rest[n] = x.CurrentHash
+		}
+	}
+	rec = f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/approve-all", map[string]any{"hashes": rest}, f.admin)
+	if got := mcpDecode[mcpApproveAllResp](t, rec); rec.Code != http.StatusOK || len(got.Approved) != 4 || len(got.Conflicts) != 0 {
 		t.Fatalf("approve-all: %d %s", rec.Code, rec.Body.String())
 	}
 	for name, x := range f.tools(t) {
@@ -187,7 +204,6 @@ func TestMCPTools_Overrides(t *testing.T) {
 	for name, body := range map[string]map[string]any{
 		"bad characters":   {"rename": "say it"},
 		"too long":         {"rename": strings.Repeat("a", 61)},
-		"taken":            {"rename": "mutate"},
 		"control":          {"description_override": "a\x00b"},
 		"unknown field":    {"enabled": true},
 		"read_only string": {"read_only": "yes"},
@@ -195,6 +211,9 @@ func TestMCPTools_Overrides(t *testing.T) {
 		if rec := put("echo", body); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: %d %s", name, rec.Code, rec.Body.String())
 		}
+	}
+	if rec := put("echo", map[string]any{"rename": "mutate"}); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "mutate") {
+		t.Fatalf("rename onto another tool: %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := put("ghost", map[string]any{"hidden": true}); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown tool: %d", rec.Code)
@@ -361,5 +380,26 @@ func TestMCPSources_URLErrorsSayURL(t *testing.T) {
 	rec := f.do(t, http.MethodPost, "/api/v1/mcp/sources", map[string]any{"slug": "gh", "kind": "remote", "url": "http://mcp.example.com/mcp"}, admin)
 	if rec.Code != http.StatusBadRequest || strings.Contains(rec.Body.String(), "base URL") || !strings.Contains(rec.Body.String(), "url ") {
 		t.Fatalf("http url: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMCPTools_ApproveCollisionIs409(t *testing.T) {
+	f := newMCPToolsFixture(t, mcptest.Opts{Tools: []mcptest.ToolSpec{mcptest.Echo("echo")}})
+	f.sync(t)
+	echo := f.tools(t)["echo"]
+	f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/tools/echo/approve", map[string]any{"hash": echo.CurrentHash}, f.admin)
+	if rec := f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh/tools/echo", map[string]any{"rename": "say"}, f.admin); rec.Code != http.StatusOK {
+		t.Fatalf("rename: %d %s", rec.Code, rec.Body.String())
+	}
+	f.up.SetTools(mcptest.Echo("echo"), mcptest.Echo("say"))
+	f.sync(t)
+	say := f.tools(t)["say"]
+	rec := f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/tools/say/approve", map[string]any{"hash": say.CurrentHash}, f.admin)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "echo") {
+		t.Fatalf("approve a colliding tool: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/approve-all", map[string]any{"hashes": map[string]string{"say": say.CurrentHash}}, f.admin)
+	if got := mcpDecode[mcpApproveAllResp](t, rec); rec.Code != http.StatusOK || len(got.Approved) != 0 || strings.Join(got.Conflicts, ",") != "say" {
+		t.Fatalf("approve-all with a collision: %d %s", rec.Code, rec.Body.String())
 	}
 }

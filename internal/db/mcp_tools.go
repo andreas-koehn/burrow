@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -18,6 +19,10 @@ const (
 // ErrMCPToolNotPending is returned by ApproveMCPTool for a tool that has no
 // definition waiting for approval (already approved, or removed upstream).
 var ErrMCPToolNotPending = errors.New("db: tool is not waiting for approval")
+
+// ErrMCPToolNameTaken is wrapped (with the other tool's name) when a tool
+// would be served under a name another tool of the source already has.
+var ErrMCPToolNameTaken = errors.New("db: tool name already taken in the source")
 
 // ErrMCPToolChanged is returned by ApproveMCPTool when the tool's current
 // definition is no longer the one the approver saw (its hash differs).
@@ -223,85 +228,133 @@ func (x *DB) SetMCPSourceSyncError(ctx context.Context, slug string, at time.Tim
 	return notFoundIfNoRows(res, "set tool sync error")
 }
 
-// ApproveMCPTool approves the current definition of a pending tool. A
-// non-empty hash must equal the tool's current hash: the approver saw that
-// definition, and a newer one is refused with ErrMCPToolChanged. ErrNotFound,
-// ErrMCPToolNotPending.
-func (x *DB) ApproveMCPTool(ctx context.Context, slug, name, hash string, at time.Time) (MCPTool, error) {
-	res, err := x.sqlDB.ExecContext(ctx,
-		`UPDATE mcp_tools SET approved_hash=current_hash, approved_definition=definition, status=?, updated_at=?
-		  WHERE source_slug=? AND name=? AND status=? AND (?='' OR current_hash=?)`,
-		MCPToolApproved, at, slug, name, MCPToolPending, hash, hash)
+// lockSource serialises the writes that check served names across a source's
+// tools: the no-op UPDATE takes the source row's lock (Postgres) or the
+// write lock (SQLite) until the transaction ends. ErrNotFound.
+func lockSource(ctx context.Context, tx *sql.Tx, slug string) error {
+	res, err := tx.ExecContext(ctx, `UPDATE mcp_sources SET updated_at=updated_at WHERE slug=?`, slug)
 	if err != nil {
-		return MCPTool{}, fmt.Errorf("approve tool: %w", err)
+		return fmt.Errorf("lock tool source: %w", err)
 	}
-	n, err := res.RowsAffected()
+	return notFoundIfNoRows(res, "lock tool source")
+}
+
+// servedNameTaken returns the native name of another tool of the source
+// that is served under served (approved, not removed), or "".
+func servedNameTaken(ctx context.Context, tx *sql.Tx, slug, name, served string) (string, error) {
+	var other string
+	err := tx.QueryRowContext(ctx,
+		`SELECT name FROM mcp_tools WHERE source_slug=? AND name<>? AND status=?
+		   AND (CASE WHEN rename<>'' THEN rename ELSE name END)=? LIMIT 1`,
+		slug, name, MCPToolApproved, served).Scan(&other)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
 	if err != nil {
-		return MCPTool{}, fmt.Errorf("approve tool rows affected: %w", err)
+		return "", fmt.Errorf("check served name: %w", err)
 	}
-	t, gerr := x.GetMCPTool(ctx, slug, name)
-	if gerr != nil {
-		return MCPTool{}, gerr
+	return other, nil
+}
+
+func getMCPToolTx(ctx context.Context, tx *sql.Tx, slug, name string) (MCPTool, error) {
+	t, err := scanMCPTool(tx.QueryRowContext(ctx, `SELECT `+mcpToolCols+` FROM mcp_tools WHERE source_slug=? AND name=?`, slug, name))
+	if errors.Is(err, sql.ErrNoRows) {
+		return MCPTool{}, ErrNotFound
 	}
-	if n == 0 {
-		if t.Status != MCPToolPending {
-			return t, ErrMCPToolNotPending
-		}
-		return t, ErrMCPToolChanged
+	if err != nil {
+		return MCPTool{}, fmt.Errorf("get tool: %w", err)
 	}
 	return t, nil
 }
 
-// ApproveAllMCPTools approves every pending tool of a source and returns the
-// names it approved, sorted. With hashes non-nil only the tools it names are
-// approved, and only while their current hash is the one given.
-func (x *DB) ApproveAllMCPTools(ctx context.Context, slug string, hashes map[string]string, at time.Time) ([]string, error) {
+// approveTx approves one pending tool at hash inside tx: ErrMCPToolNotPending,
+// ErrMCPToolChanged, or ErrMCPToolNameTaken when another approved tool is
+// served under the name this one would be served under.
+func approveTx(ctx context.Context, tx *sql.Tx, slug, name, hash string, at time.Time) error {
+	t, err := getMCPToolTx(ctx, tx, slug, name)
+	if err != nil {
+		return err
+	}
+	if t.Status != MCPToolPending {
+		return ErrMCPToolNotPending
+	}
+	if t.CurrentHash != hash {
+		return ErrMCPToolChanged
+	}
+	served := t.Name
+	if t.Rename != "" {
+		served = t.Rename
+	}
+	if other, err := servedNameTaken(ctx, tx, slug, name, served); err != nil {
+		return err
+	} else if other != "" {
+		return fmt.Errorf("%w: %q is already served under the name %q", ErrMCPToolNameTaken, other, served)
+	}
+	_, err = tx.ExecContext(ctx,
+		`UPDATE mcp_tools SET approved_hash=current_hash, approved_definition=definition, status=?, updated_at=?
+		  WHERE source_slug=? AND name=? AND status=? AND current_hash=?`,
+		MCPToolApproved, at, slug, name, MCPToolPending, hash)
+	if err != nil {
+		return fmt.Errorf("approve tool: %w", err)
+	}
+	return nil
+}
+
+// ApproveMCPTool approves the current definition of a pending tool; hash
+// must equal the tool's current hash (the definition the approver saw).
+// ErrNotFound, ErrMCPToolNotPending, ErrMCPToolChanged, ErrMCPToolNameTaken.
+func (x *DB) ApproveMCPTool(ctx context.Context, slug, name, hash string, at time.Time) (MCPTool, error) {
 	tx, err := x.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("begin approve-all tx: %w", err)
+		return MCPTool{}, fmt.Errorf("begin approve tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `SELECT name, current_hash FROM mcp_tools WHERE source_slug=? AND status=? ORDER BY name`, slug, MCPToolPending)
+	if err := lockSource(ctx, tx, slug); err != nil {
+		return MCPTool{}, err
+	}
+	if err := approveTx(ctx, tx, slug, name, hash, at); err != nil {
+		return MCPTool{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return MCPTool{}, fmt.Errorf("commit approve tx: %w", err)
+	}
+	return x.GetMCPTool(ctx, slug, name)
+}
+
+// ApproveAllMCPTools approves the pending tools hashes names, each only
+// while its current hash is the one given, and returns the names it
+// approved and those it left because another approved tool is served under
+// their name (both sorted).
+func (x *DB) ApproveAllMCPTools(ctx context.Context, slug string, hashes map[string]string, at time.Time) (approved, conflicts []string, err error) {
+	tx, err := x.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("approve-all: read: %w", err)
+		return nil, nil, fmt.Errorf("begin approve-all tx: %w", err)
 	}
-	type cand struct{ name, hash string }
-	var cands []cand
-	for rows.Next() {
-		var c cand
-		if err := rows.Scan(&c.name, &c.hash); err != nil {
-			_ = rows.Close()
-			return nil, fmt.Errorf("approve-all: scan: %w", err)
-		}
-		cands = append(cands, c)
+	defer func() { _ = tx.Rollback() }()
+	if err := lockSource(ctx, tx, slug); err != nil {
+		return nil, nil, err
 	}
-	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("approve-all: read: %w", err)
+	names := make([]string, 0, len(hashes))
+	for n := range hashes {
+		names = append(names, n)
 	}
-	out := make([]string, 0, len(cands))
-	for _, c := range cands {
-		if hashes != nil {
-			if h, ok := hashes[c.name]; !ok || h != c.hash {
-				continue
-			}
-		}
-		// The hash read above is a condition too: a sync that changed the
-		// tool in between leaves it pending.
-		res, err := tx.ExecContext(ctx,
-			`UPDATE mcp_tools SET approved_hash=current_hash, approved_definition=definition, status=?, updated_at=?
-			  WHERE source_slug=? AND name=? AND status=? AND current_hash=?`,
-			MCPToolApproved, at, slug, c.name, MCPToolPending, c.hash)
-		if err != nil {
-			return nil, fmt.Errorf("approve-all: %w", err)
-		}
-		if n, _ := res.RowsAffected(); n > 0 {
-			out = append(out, c.name)
+	sort.Strings(names)
+	approved, conflicts = []string{}, []string{}
+	for _, n := range names {
+		switch err := approveTx(ctx, tx, slug, n, hashes[n], at); {
+		case err == nil:
+			approved = append(approved, n)
+		case errors.Is(err, ErrMCPToolNameTaken):
+			conflicts = append(conflicts, n)
+		case errors.Is(err, ErrNotFound), errors.Is(err, ErrMCPToolNotPending), errors.Is(err, ErrMCPToolChanged):
+		default:
+			return nil, nil, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit approve-all tx: %w", err)
+		return nil, nil, fmt.Errorf("commit approve-all tx: %w", err)
 	}
-	return out, nil
+	return approved, conflicts, nil
 }
 
 // MCPToolOverrides are the operator's settings of one tool.
@@ -313,49 +366,52 @@ type MCPToolOverrides struct {
 }
 
 // ModifyMCPToolOverrides reads the tool, hands it to modify and stores the
-// overrides it returns, as one step: the UPDATE applies only while the row
-// still holds the overrides that were read, and modify runs again on the
-// fresh row otherwise, so concurrent edits cannot lose each other's fields.
-// modify's error is returned as is. ErrNotFound; ErrMCPSourceBusy when the
-// row changed under every attempt.
+// overrides it returns, in one transaction that holds the source's lock: a
+// new rename is refused with ErrMCPToolNameTaken when another tool of the
+// source (not removed) is named or served under it, and no concurrent write
+// can slip in between the check and the update. modify's error is returned
+// as is. ErrNotFound.
 func (x *DB) ModifyMCPToolOverrides(ctx context.Context, slug, name string, at time.Time, modify func(MCPTool) (MCPToolOverrides, error)) (MCPTool, error) {
-	tri := func(b *bool) int {
+	tx, err := x.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return MCPTool{}, fmt.Errorf("begin tool overrides tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockSource(ctx, tx, slug); err != nil {
+		return MCPTool{}, err
+	}
+	old, err := getMCPToolTx(ctx, tx, slug, name)
+	if err != nil {
+		return MCPTool{}, err
+	}
+	o, err := modify(old)
+	if err != nil {
+		return MCPTool{}, err
+	}
+	if o.Rename != "" && o.Rename != old.Rename {
+		var other string
+		err := tx.QueryRowContext(ctx,
+			`SELECT name FROM mcp_tools WHERE source_slug=? AND name<>? AND status<>?
+			   AND (name=? OR rename=?) LIMIT 1`,
+			slug, name, MCPToolRemoved, o.Rename, o.Rename).Scan(&other)
 		switch {
-		case b == nil:
-			return -1
-		case *b:
-			return 1
-		}
-		return 0
-	}
-	for i := 0; i < modifyUpstreamAttempts; i++ {
-		old, err := x.GetMCPTool(ctx, slug, name)
-		if err != nil {
-			return MCPTool{}, err
-		}
-		o, err := modify(old)
-		if err != nil {
-			return MCPTool{}, err
-		}
-		var ro any
-		if o.ReadOnly != nil {
-			ro = boolToInt(*o.ReadOnly)
-		}
-		res, err := x.sqlDB.ExecContext(ctx,
-			`UPDATE mcp_tools SET hidden=?, rename=?, description_override=?, read_only=?, updated_at=?
-			  WHERE source_slug=? AND name=? AND hidden=? AND rename=? AND description_override=? AND COALESCE(read_only,-1)=?`,
-			boolToInt(o.Hidden), o.Rename, o.DescriptionOverride, ro, at,
-			slug, name, boolToInt(old.Hidden), old.Rename, old.DescriptionOverride, tri(old.ReadOnly))
-		if err != nil {
-			return MCPTool{}, fmt.Errorf("modify tool overrides: %w", err)
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return MCPTool{}, fmt.Errorf("modify tool overrides rows affected: %w", err)
-		}
-		if n > 0 {
-			return x.GetMCPTool(ctx, slug, name)
+		case err == nil:
+			return MCPTool{}, fmt.Errorf("%w: rename %q is already the name of the tool %q", ErrMCPToolNameTaken, o.Rename, other)
+		case !errors.Is(err, sql.ErrNoRows):
+			return MCPTool{}, fmt.Errorf("check rename: %w", err)
 		}
 	}
-	return MCPTool{}, fmt.Errorf("modify tool %s/%s: %w", slug, name, ErrMCPSourceBusy)
+	var ro any
+	if o.ReadOnly != nil {
+		ro = boolToInt(*o.ReadOnly)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE mcp_tools SET hidden=?, rename=?, description_override=?, read_only=?, updated_at=? WHERE source_slug=? AND name=?`,
+		boolToInt(o.Hidden), o.Rename, o.DescriptionOverride, ro, at, slug, name); err != nil {
+		return MCPTool{}, fmt.Errorf("modify tool overrides: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return MCPTool{}, fmt.Errorf("commit tool overrides tx: %w", err)
+	}
+	return x.GetMCPTool(ctx, slug, name)
 }

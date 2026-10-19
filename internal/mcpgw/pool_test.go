@@ -568,3 +568,75 @@ func TestTunnelSource_HostIsTheLocalAddress(t *testing.T) {
 		mu.Unlock()
 	}
 }
+
+// A JSON-RPC error answered on the shared session is the tool's business,
+// not a broken session: the session is kept for the next caller.
+func TestCallTool_JSONRPCErrorKeepsTheSession(t *testing.T) {
+	up := mcptest.NewServer(t, mcptest.Opts{TLS: true, Stateful: true})
+	f := newFixture(t, up)
+	src := f.remote(t, "gh", up.URL)
+	if _, err := echo(t, f.pool, src, "a"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := f.pool.CallTool(ctx, src, &mcp.CallToolParams{Name: "no_such_tool", Arguments: map[string]any{}})
+	var rpc *jsonrpcError
+	if !errors.As(err, &rpc) {
+		t.Fatalf("unknown tool err = %v, want a JSON-RPC error", err)
+	}
+	if _, err := echo(t, f.pool, src, "b"); err != nil {
+		t.Fatal(err)
+	}
+	calls := up.CallsTo("echo")
+	if len(calls) != 2 || calls[0].SessionID != calls[1].SessionID || countRPC(up, "initialize") != 1 {
+		t.Fatalf("session changed after a JSON-RPC error: %+v, %d initialize", calls, countRPC(up, "initialize"))
+	}
+}
+
+// The call's context bounds a call (up to 300 s), not the shared transport's
+// response-header timeout.
+func TestCallTool_SlowToolOutlivesTheHeaderTimeout(t *testing.T) {
+	up := mcptest.NewServer(t, mcptest.Opts{TLS: true})
+	f := newFixture(t, up, func(o *Options) {
+		tr := o.Remote.(*http.Transport).Clone()
+		tr.ResponseHeaderTimeout = 200 * time.Millisecond
+		o.Remote = tr
+	})
+	src := f.remote(t, "gh", up.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := f.pool.CallTool(ctx, src, &mcp.CallToolParams{Name: "slow", Arguments: map[string]any{"ms": 600}})
+	if err != nil || res.IsError {
+		t.Fatalf("slow call: %v %+v", err, res)
+	}
+}
+
+// The guard survives the pool's copy of the transport.
+func TestRemote_GuardSurvivesTheTransportCopy(t *testing.T) {
+	tr := aiprovider.NewTransport(false)
+	p := New(Options{Remote: tr})
+	defer p.Close()
+	c, ok := p.opts.Remote.(*http.Transport)
+	if !ok || c == tr || c.ResponseHeaderTimeout != 0 || c.DialContext == nil || c.Proxy != nil {
+		t.Fatalf("pool transport %+v", c)
+	}
+	if _, err := c.DialContext(context.Background(), "tcp", "127.0.0.1:1"); !errors.Is(err, aiprovider.ErrBlockedAddress) {
+		t.Fatalf("dial through the copy: %v", err)
+	}
+}
+
+func TestPool_UseAfterCloseFails(t *testing.T) {
+	up := mcptest.NewServer(t, mcptest.Opts{TLS: true, Stateful: true})
+	f := newFixture(t, up)
+	src := f.remote(t, "gh", up.URL)
+	if _, err := echo(t, f.pool, src, "x"); err != nil {
+		t.Fatal(err)
+	}
+	f.pool.Close()
+	if _, err := echo(t, f.pool, src, "x"); !errors.Is(err, ErrClosed) {
+		t.Fatalf("call after close: %v", err)
+	}
+	// A drop after Close closes at once instead of joining the wait group.
+	f.pool.closeLater(nil)
+}

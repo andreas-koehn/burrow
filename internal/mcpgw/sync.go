@@ -168,14 +168,17 @@ func (p *Pool) inspect(ctx context.Context, def string) string {
 	hits := []GuardrailHit{}
 	if p.opts.InspectText != nil {
 		if d, err := ParseDefinition(def); err == nil {
+			// Schemas and annotations are inspected as the text a model
+			// reads: their keys and string values, unescaped, one per line.
 			for _, f := range []struct {
 				field string
 				text  []byte
 			}{
 				{"title", []byte(d.Title)},
 				{"description", []byte(d.Description)},
-				{"input_schema", d.InputSchema},
-				{"output_schema", d.OutputSchema},
+				{"input_schema", jsonText(d.InputSchema)},
+				{"output_schema", jsonText(d.OutputSchema)},
+				{"annotations", jsonText(d.Annotations)},
 			} {
 				if len(f.text) == 0 {
 					continue
@@ -188,6 +191,39 @@ func (p *Pool) inspect(ctx context.Context, def string) string {
 	}
 	b, _ := json.Marshal(hits)
 	return string(b)
+}
+
+// jsonText returns the object keys and string values of a JSON document,
+// decoded (no \u003c escapes), one per line.
+func jsonText(raw json.RawMessage) []byte {
+	if len(raw) == 0 {
+		return nil
+	}
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return raw
+	}
+	var b strings.Builder
+	var walk func(any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case string:
+			b.WriteString(x)
+			b.WriteByte('\n')
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			for k, e := range x {
+				b.WriteString(k)
+				b.WriteByte('\n')
+				walk(e)
+			}
+		}
+	}
+	walk(v)
+	return []byte(b.String())
 }
 
 // Start runs the background sync until ctx ends or the pool is closed: every

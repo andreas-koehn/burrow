@@ -11,9 +11,9 @@ package api
 //
 // Reads need mcp:sources:read or :manage; sync, approve and overrides need
 // mcp:sources:manage and, while no services domain is set, a recent password
-// confirmation. Approving is not offered as a management MCP tool
-// (x-burrow-mcp: false): an agent must not be able to approve tool text that
-// may have been written to steer it.
+// confirmation. Approving and overrides are not offered as management MCP
+// tools (x-burrow-mcp: false): an agent must not be able to approve tool text
+// that may have been written to steer it, or rename and reclassify tools.
 
 import (
 	"bytes"
@@ -106,14 +106,14 @@ type putMCPToolReq struct {
 	ReadOnly            json.RawMessage `json:"read_only"`
 }
 
-// approveMCPToolReq is the optional body of POST …/tools/{name}/approve:
-// hash is the current_hash the approver saw.
+// approveMCPToolReq is the body of POST …/tools/{name}/approve: hash is the
+// current_hash the approver reviewed (required).
 type approveMCPToolReq struct {
 	Hash string `json:"hash"`
 }
 
-// approveAllMCPToolsReq is the optional body of POST …/approve-all: with
-// hashes, only the tools it names are approved, and only at those hashes.
+// approveAllMCPToolsReq is the body of POST …/approve-all: the tools to
+// approve, each with the current_hash that was reviewed (required).
 type approveAllMCPToolsReq struct {
 	Hashes map[string]string `json:"hashes"`
 }
@@ -121,6 +121,9 @@ type approveAllMCPToolsReq struct {
 // mcpApproveAllResp is the answer of POST …/approve-all.
 type mcpApproveAllResp struct {
 	Approved []string `json:"approved"`
+	// Conflicts are the tools left pending because another approved tool
+	// of the source is served under their name.
+	Conflicts []string `json:"conflicts"`
 }
 
 // mcpSyncTimeout bounds a sync started from the API.
@@ -134,6 +137,8 @@ func mapMCPToolErr(w http.ResponseWriter, err error) bool {
 		writeErr(w, http.StatusConflict, "the tool has no definition waiting for approval")
 	case errors.Is(err, store.ErrMCPToolChanged):
 		writeErr(w, http.StatusConflict, "the tool's definition changed since it was read; review it again")
+	case errors.Is(err, store.ErrMCPToolNameTaken):
+		writeErr(w, http.StatusConflict, strings.TrimPrefix(err.Error(), store.ErrMCPToolNameTaken.Error()+": "))
 	case errors.Is(err, store.ErrInvalidMCPTool):
 		writeErr(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), store.ErrInvalidMCPTool.Error()+": "))
 	default:
@@ -291,6 +296,10 @@ func (d Deps) PostMCPSourceToolApprove(w http.ResponseWriter, r *http.Request) {
 	if !decodeOptionalJSON(w, r, &in) {
 		return
 	}
+	if in.Hash == "" {
+		writeErr(w, http.StatusBadRequest, "hash is required: the current_hash of the definition that was reviewed")
+		return
+	}
 	t, err := st.ApproveMCPTool(r.Context(), slug, name, in.Hash)
 	if err != nil {
 		if !mapMCPToolErr(w, err) {
@@ -314,7 +323,11 @@ func (d Deps) PostMCPSourceApproveAll(w http.ResponseWriter, r *http.Request) {
 	if !decodeOptionalJSON(w, r, &in) {
 		return
 	}
-	names, err := st.ApproveAllMCPTools(r.Context(), slug, in.Hashes)
+	if in.Hashes == nil {
+		writeErr(w, http.StatusBadRequest, "hashes is required: tool name → the current_hash that was reviewed")
+		return
+	}
+	names, conflicts, err := st.ApproveAllMCPTools(r.Context(), slug, in.Hashes)
 	if err != nil {
 		if !mapMCPToolErr(w, err) {
 			writeErr(w, http.StatusInternalServerError, "internal error")
@@ -324,5 +337,5 @@ func (d Deps) PostMCPSourceApproveAll(w http.ResponseWriter, r *http.Request) {
 	if len(names) > 0 {
 		d.auditMCPTool(r, audit.ActionMCPToolApprove, slug, "ok", map[string]any{"tools": names, "all": true})
 	}
-	writeJSON(w, http.StatusOK, mcpApproveAllResp{Approved: names})
+	writeJSON(w, http.StatusOK, mcpApproveAllResp{Approved: names, Conflicts: conflicts})
 }

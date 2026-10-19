@@ -314,7 +314,7 @@ type MCPSourceStore interface {
 
 	ListMCPTools(ctx context.Context, slug string) ([]db.MCPTool, error)
 	ApproveMCPTool(ctx context.Context, slug, name, hash string) (db.MCPTool, error)
-	ApproveAllMCPTools(ctx context.Context, slug string, hashes map[string]string) ([]string, error)
+	ApproveAllMCPTools(ctx context.Context, slug string, hashes map[string]string) (approved, conflicts []string, err error)
 	UpdateMCPToolOverrides(ctx context.Context, slug, name string, u store.MCPToolOverridesUpdate) (db.MCPTool, error)
 }
 

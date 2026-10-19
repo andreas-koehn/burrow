@@ -151,7 +151,7 @@ func Served(t db.MCPTool) (Tool, bool) {
 // GuardrailHit is one guardrail pattern that matched a field of a tool's
 // definition during a sync (D9). Stored as JSON in mcp_tools.guardrail_hits.
 type GuardrailHit struct {
-	Field   string `json:"field"` // "title", "description", "input_schema" or "output_schema"
+	Field   string `json:"field"` // "title", "description", "input_schema", "output_schema" or "annotations"
 	Pattern string `json:"pattern"`
 }
 

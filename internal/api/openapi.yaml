@@ -393,7 +393,7 @@ components:
             type: object
             required: [field, pattern]
             properties:
-              field: { type: string, enum: [title, description, input_schema, output_schema] }
+              field: { type: string, enum: [title, description, input_schema, output_schema, annotations] }
               pattern: { type: string }
         updated_at: { type: string, format: date-time }
     MCPSourceToolUpdate:
@@ -5860,12 +5860,14 @@ paths:
       tags: [mcp]
       operationId: mcpSourceToolUpdate
       x-burrow-permission: {kind: needs, any_of: ["mcp:sources:manage"]}
+      x-burrow-mcp: false
       summary: Change a tool's overrides (admin)
       description: |
         A field that is left out keeps its value. A rename fixes a tool
         name that is too long or not allowed on the aggregated endpoint
-        `/mcp`. The same recent-confirmation rule as for creating a source
-        applies.
+        `/mcp`; it must not be the name or rename of another tool of the
+        source (409). Not offered as a management MCP tool. The same
+        recent-confirmation rule as for creating a source applies.
       requestBody:
         required: true
         content:
@@ -5883,7 +5885,7 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: The tool was changed by someone else at the same time (try again).
+          description: The rename is already the name or rename of another tool of the source.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -5906,18 +5908,20 @@ paths:
       summary: Approve a pending tool (admin)
       description: |
         Approves the tool's current definition, which is served from then
-        on. Send the `current_hash` you reviewed as `hash`: when the
-        upstream changed the definition since, the approval is refused with
-        409. Not offered as a management MCP tool: an agent must not approve
+        on. `hash` (required) is the `current_hash` that was reviewed: when
+        the upstream changed the definition since, the approval is refused
+        with 409. It is refused with 409 as well while another approved
+        tool of the source is served under the same name (a rename). Not offered as a management MCP tool: an agent must not approve
         tool text that may have been written to steer it. The same
         recent-confirmation rule as for creating a source applies.
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
               additionalProperties: false
+              required: [hash]
               properties:
                 hash: { type: string, description: 'The current_hash that was reviewed.' }
       responses:
@@ -5931,7 +5935,7 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: The tool is not pending, or its definition changed since it was reviewed.
+          description: The tool is not pending, its definition changed since it was reviewed, or another approved tool is served under its name.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -5949,18 +5953,20 @@ paths:
       x-burrow-mcp: false
       summary: Approve every pending tool of a source (admin)
       description: |
-        Without a body every pending tool is approved. With `hashes`
-        (tool name → reviewed `current_hash`) only those tools are approved,
-        and only while their definition is still the one reviewed. Not
-        offered as a management MCP tool. The same recent-confirmation rule
+        `hashes` (required) maps each tool to approve to the `current_hash`
+        that was reviewed; a tool is approved only while its definition is
+        still that one. Tools that are not pending or changed are left out;
+        tools another approved tool is served under the name of are listed
+        in `conflicts`. Not offered as a management MCP tool. The same recent-confirmation rule
         as for creating a source applies.
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
               additionalProperties: false
+              required: [hashes]
               properties:
                 hashes:
                   type: object
@@ -5972,9 +5978,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [approved]
+                required: [approved, conflicts]
                 properties:
                   approved:
+                    type: array
+                    items: { type: string }
+                  conflicts:
                     type: array
                     items: { type: string }
         '400': { $ref: '#/components/responses/BadRequest' }

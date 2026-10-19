@@ -58,8 +58,8 @@ func TestMCPTools_Postgres(t *testing.T) {
 	if s, _ := x.GetMCPSource(ctx, "pg-tools"); s.LastSyncError != "warn" || s.PendingCount != 1 {
 		t.Fatalf("source after sync: %+v", s)
 	}
-	if names, err := x.ApproveAllMCPTools(ctx, "pg-tools", nil, now); err != nil || len(names) != 1 {
-		t.Fatalf("approve-all: %v %v", names, err)
+	if names, conflicts, err := x.ApproveAllMCPTools(ctx, "pg-tools", map[string]string{"a": "h1b"}, now); err != nil || len(names) != 1 || len(conflicts) != 0 {
+		t.Fatalf("approve-all: %v %v %v", names, conflicts, err)
 	}
 	ro := true
 	got, err := x.ModifyMCPToolOverrides(ctx, "pg-tools", "a", now, func(MCPTool) (MCPToolOverrides, error) {
@@ -71,6 +71,13 @@ func TestMCPTools_Postgres(t *testing.T) {
 	got, err = x.ModifyMCPToolOverrides(ctx, "pg-tools", "a", now, func(MCPTool) (MCPToolOverrides, error) { return MCPToolOverrides{}, nil })
 	if err != nil || got.ReadOnly != nil || got.Hidden {
 		t.Fatalf("cleared overrides: %+v %v", got, err)
+	}
+	// A rename onto another tool's name is refused inside the locked transaction.
+	if _, err := x.ApplyMCPToolSync(ctx, "pg-tools", []MCPToolSeen{{Name: "a", Hash: "h1b", Definition: `{"name":"a","description":"x"}`, GuardrailHits: "[]"}, {Name: "c", Hash: "h3", Definition: `{"name":"c"}`, GuardrailHits: "[]"}}, now, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := x.ModifyMCPToolOverrides(ctx, "pg-tools", "a", now, func(MCPTool) (MCPToolOverrides, error) { return MCPToolOverrides{Rename: "c"}, nil }); !errors.Is(err, ErrMCPToolNameTaken) {
+		t.Fatalf("rename onto c: %v", err)
 	}
 	if err := x.SetMCPSourceSyncError(ctx, "pg-tools", now, "down"); err != nil {
 		t.Fatal(err)

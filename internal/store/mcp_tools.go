@@ -22,6 +22,9 @@ var (
 	ErrMCPToolNotPending = errors.New("store: tool is not waiting for approval")
 	// ErrMCPToolChanged: the tool's definition changed since the approver read it.
 	ErrMCPToolChanged = errors.New("store: tool definition changed since it was read")
+	// ErrMCPToolNameTaken is wrapped with a message naming the other tool:
+	// another tool of the source has or is served under that name.
+	ErrMCPToolNameTaken = errors.New("store: tool name already taken in the source")
 	// ErrInvalidMCPTool is wrapped with the reason an override was refused;
 	// the reason is safe to show to an admin.
 	ErrInvalidMCPTool = errors.New("store: invalid tool override")
@@ -106,9 +109,9 @@ func (s *Store) RecordMCPSyncError(ctx context.Context, slug string, at time.Tim
 	return nil
 }
 
-// ApproveMCPTool approves the pending definition of a tool. A non-empty hash
-// must be the tool's current hash (the definition the approver saw).
-// ErrMCPToolNotFound, ErrMCPToolNotPending, ErrMCPToolChanged.
+// ApproveMCPTool approves the pending definition of a tool; hash must be the
+// tool's current hash (the definition the approver saw). ErrMCPToolNotFound,
+// ErrMCPToolNotPending, ErrMCPToolChanged, ErrMCPToolNameTaken.
 func (s *Store) ApproveMCPTool(ctx context.Context, slug, name, hash string) (db.MCPTool, error) {
 	t, err := s.q.ApproveMCPTool(ctx, slug, name, hash, time.Now().UTC())
 	switch {
@@ -118,18 +121,26 @@ func (s *Store) ApproveMCPTool(ctx context.Context, slug, name, hash string) (db
 		return t, ErrMCPToolNotPending
 	case errors.Is(err, db.ErrMCPToolChanged):
 		return t, ErrMCPToolChanged
+	case errors.Is(err, db.ErrMCPToolNameTaken):
+		return t, nameTaken(err)
 	}
 	return t, err
 }
 
-// ApproveAllMCPTools approves the pending tools of a source (with hashes
-// non-nil: those it names, at the hash given) and returns their names.
-// ErrMCPSourceNotFound.
-func (s *Store) ApproveAllMCPTools(ctx context.Context, slug string, hashes map[string]string) ([]string, error) {
-	if err := s.sourceExists(ctx, slug); err != nil {
-		return nil, err
+// nameTaken turns the db error into ErrMCPToolNameTaken with the same reason.
+func nameTaken(err error) error {
+	return fmt.Errorf("%w: %s", ErrMCPToolNameTaken, strings.TrimPrefix(err.Error(), db.ErrMCPToolNameTaken.Error()+": "))
+}
+
+// ApproveAllMCPTools approves the pending tools hashes names, each at the
+// hash given, and returns the names approved and those left because another
+// approved tool is served under their name. ErrMCPSourceNotFound.
+func (s *Store) ApproveAllMCPTools(ctx context.Context, slug string, hashes map[string]string) (approved, conflicts []string, err error) {
+	approved, conflicts, err = s.q.ApproveAllMCPTools(ctx, slug, hashes, time.Now().UTC())
+	if errors.Is(err, db.ErrNotFound) {
+		return nil, nil, ErrMCPSourceNotFound
 	}
-	return s.q.ApproveAllMCPTools(ctx, slug, hashes, time.Now().UTC())
+	return approved, conflicts, err
 }
 
 // MCPToolOverridesUpdate holds the overrides PUT changes: a nil field keeps
@@ -144,9 +155,10 @@ type MCPToolOverridesUpdate struct {
 }
 
 // UpdateMCPToolOverrides changes a tool's overrides. A rename must be valid
-// (ValidToolRename) and must not give the tool the name another tool of the
-// source is served under; a rename equal to the upstream name clears it.
-// ErrMCPToolNotFound, ErrInvalidMCPTool, ErrMCPSourceBusy.
+// (ValidToolRename) and must not be the name, or the rename, of another tool
+// of the source (ErrMCPToolNameTaken; checked and written in one step); a
+// rename equal to the upstream name clears it. ErrMCPToolNotFound,
+// ErrInvalidMCPTool.
 func (s *Store) UpdateMCPToolOverrides(ctx context.Context, slug, name string, u MCPToolOverridesUpdate) (db.MCPTool, error) {
 	if u.Rename != nil && *u.Rename != "" && *u.Rename != name {
 		if err := ValidToolRename(slug, *u.Rename); err != nil {
@@ -175,40 +187,13 @@ func (s *Store) UpdateMCPToolOverrides(ctx context.Context, slug, name string, u
 		if u.ReadOnlySet {
 			o.ReadOnly = u.ReadOnly
 		}
-		if o.Rename != "" && o.Rename != cur.Rename {
-			if err := s.renameFree(ctx, slug, name, o.Rename); err != nil {
-				return o, err
-			}
-		}
 		return o, nil
 	})
 	switch {
 	case errors.Is(err, db.ErrNotFound):
 		return db.MCPTool{}, ErrMCPToolNotFound
-	case errors.Is(err, db.ErrMCPSourceBusy):
-		return db.MCPTool{}, ErrMCPSourceBusy
+	case errors.Is(err, db.ErrMCPToolNameTaken):
+		return db.MCPTool{}, nameTaken(err)
 	}
 	return t, err
-}
-
-// renameFree refuses a rename that is the served name of another tool of the
-// source (its rename, or its upstream name when it has none).
-func (s *Store) renameFree(ctx context.Context, slug, name, rename string) error {
-	tools, err := s.q.ListMCPTools(ctx, slug)
-	if err != nil {
-		return err
-	}
-	for _, t := range tools {
-		if t.Name == name {
-			continue
-		}
-		served := t.Name
-		if t.Rename != "" {
-			served = t.Rename
-		}
-		if served == rename || t.Name == rename {
-			return invalidTool(fmt.Sprintf("rename %q is already the name of the tool %q", rename, t.Name))
-		}
-	}
-	return nil
 }

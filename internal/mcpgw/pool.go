@@ -148,8 +148,11 @@ type Pool struct {
 	syncing map[string]bool
 	closed  bool
 
-	// bg tracks goroutines the pool started (session closes, the sync loop).
+	// bg tracks goroutines the pool started (session closes, the sync loop);
+	// bgMu and bgDone keep Add from racing with Close's Wait.
 	bg       sync.WaitGroup
+	bgMu     sync.Mutex
+	bgDone   bool
 	stopLoop context.CancelFunc
 }
 
@@ -178,6 +181,14 @@ func New(opts Options) *Pool {
 	}
 	if opts.MaxResponseBytes <= 0 {
 		opts.MaxResponseBytes = DefaultMaxResponseBytes
+	}
+	// The pool's own copy of the guarded transport (same dialer and guard):
+	// a tool call may run up to 300 s and is bounded by its context, so the
+	// shared response-header timeout must not cut it off.
+	if tr, ok := opts.Remote.(*http.Transport); ok && tr != nil {
+		c := tr.Clone()
+		c.ResponseHeaderTimeout = 0
+		opts.Remote = c
 	}
 	log := opts.Log
 	if log == nil {
@@ -238,11 +249,24 @@ func (p *Pool) closeLater(cs *mcp.ClientSession) {
 	if cs == nil {
 		return
 	}
+	p.bgMu.Lock()
+	if p.bgDone {
+		p.bgMu.Unlock()
+		_ = cs.Close() // after Close: nobody waits any more, close here
+		return
+	}
 	p.bg.Add(1)
+	p.bgMu.Unlock()
 	go func() {
 		defer p.bg.Done()
 		_ = cs.Close()
 	}()
+}
+
+func (p *Pool) isClosed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.closed
 }
 
 // Invalidate drops the session of a source; the next call connects anew with
@@ -274,7 +298,13 @@ func (p *Pool) Close() {
 		delete(p.entries, slug)
 	}
 	p.mu.Unlock()
+	p.bgMu.Lock()
+	p.bgDone = true
+	p.bgMu.Unlock()
 	p.bg.Wait()
+	if tr, ok := p.opts.Remote.(interface{ CloseIdleConnections() }); ok {
+		tr.CloseIdleConnections()
+	}
 }
 
 // CallTool calls a tool of the source by its upstream (native) name. The
@@ -317,7 +347,9 @@ func (p *Pool) withSession(ctx context.Context, src db.MCPSource, fn func(*mcp.C
 		if err == nil {
 			return nil
 		}
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || !sessionBroken(err) {
+			// The caller gave up, or the upstream answered with a JSON-RPC
+			// error: the session itself is fine and stays for the others.
 			return mapErr(err)
 		}
 		p.drop(e, cs)
@@ -327,6 +359,18 @@ func (p *Pool) withSession(ctx context.Context, src db.MCPSource, fn func(*mcp.C
 		}
 		return mapErr(err)
 	}
+}
+
+// sessionBroken reports whether err means the shared session can no longer
+// be used: the upstream lost it, the connection is closed, a response was
+// over the cap, or the request failed in transport. A JSON-RPC error the
+// upstream answered with (unknown tool, invalid params, …) leaves it intact.
+func sessionBroken(err error) bool {
+	if errors.Is(err, mcp.ErrSessionMissing) || errors.Is(err, mcp.ErrConnectionClosed) || errors.Is(err, ErrResponseTooLarge) {
+		return true
+	}
+	var rpc *jsonrpcError
+	return !errors.As(err, &rpc)
 }
 
 // drop forgets cs as the entry's session (if it still is) and closes it.
@@ -342,6 +386,9 @@ func (p *Pool) drop(e *entry, cs *mcp.ClientSession) {
 // acquire returns a session: the shared one of a stateful upstream (shared
 // = true), or a fresh one the caller closes.
 func (p *Pool) acquire(ctx context.Context, e *entry, src db.MCPSource) (cs *mcp.ClientSession, shared bool, err error) {
+	if p.isClosed() {
+		return nil, false, ErrClosed
+	}
 	e.mu.Lock()
 	cs, stateless := e.cs, e.stateless
 	e.mu.Unlock()
@@ -387,6 +434,10 @@ func (p *Pool) acquire(ctx context.Context, e *entry, src db.MCPSource) (cs *mcp
 		return cs, false, nil
 	}
 	e.stateless = false
+	if p.isClosed() {
+		p.closeLater(cs)
+		return nil, false, ErrClosed
+	}
 	if e.dead {
 		// The source was changed while this connect ran: serve this one call
 		// and close the session after it.
