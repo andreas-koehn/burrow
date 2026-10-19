@@ -13,8 +13,8 @@ describe("destinationsFor — the navigation description, flattened", () => {
     expect(byGroup(admin, "Services")).toEqual(["Services overview", "Services", "Clients", "Traffic"]);
     expect(byGroup(admin, "AI Gateway")).toEqual(["AI Gateway overview", "Providers", "Tools", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
     expect(byGroup(admin, "Settings")).toEqual([
-      "General", "Email", "Retention", "Database", "Backups", "Users", "Roles", "Audit log",
-      "Webhooks", "MCP", "API reference", "Profile & password", "Sessions", "Automation tokens",
+      "General", "Email", "Retention", "Database", "Backups", "Users", "Roles", "Audit log", "OAuth clients",
+      "Webhooks", "MCP", "API reference", "Profile & password", "Sessions", "Automation tokens", "Connected apps",
     ]);
     expect(new Set(destinationsFor(admin).map((d) => d.group))).toEqual(new Set(["Services", "AI Gateway", "Settings"]));
   });
@@ -50,7 +50,7 @@ describe("destinationsFor — the navigation description, flattened", () => {
   it("a reader with the user permissions and no AI gateway gets the Services entries, no AI Gateway group, and the Personal settings", () => {
     expect(byGroup(plain, "Services")).toEqual(["Services overview", "Services", "Clients"]);
     expect(byGroup(plain, "AI Gateway")).toEqual([]);
-    expect(byGroup(plain, "Settings")).toEqual(["Profile & password", "Sessions", "Automation tokens"]);
+    expect(byGroup(plain, "Settings")).toEqual(["Profile & password", "Sessions", "Automation tokens", "Connected apps"]);
   });
 
   it("a non-admin with AI access sees the gateway entries, Requests included", () => {

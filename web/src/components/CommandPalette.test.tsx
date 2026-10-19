@@ -163,7 +163,7 @@ describe("CommandPalette — P6A.1: destinations", () => {
     const settings = screen.getAllByRole("option")
       .filter((o) => o.querySelector(".shortcut")?.textContent === "Settings")
       .map((o) => o.querySelector("span")?.textContent);
-    expect(settings).toEqual(["Profile & password", "Sessions", "Automation tokens"]);
+    expect(settings).toEqual(["Profile & password", "Sessions", "Automation tokens", "Connected apps"]);
   });
 
   it("typing 'zzz' shows 'No matches'", async () => {

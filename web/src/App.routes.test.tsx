@@ -77,6 +77,8 @@ describe("App routes", () => {
     ["/settings/profile",    /^Profile & password$/, "Profile & password"],
     ["/settings/sessions",   /^Sessions$/,           "Sessions"],
     ["/settings/automation", /^Automation tokens$/,  "Automation tokens"],
+    ["/settings/apps",       /^Connected apps$/,     "Connected apps"],
+    ["/settings/oauth-clients", /^OAuth clients$/,   "OAuth clients"],
   ])("%s renders its page inside the Settings navigation", async (path, heading, entry) => {
     renderAt(path);
     expect(await screen.findByRole("heading", { name: heading, level: 1 })).toBeInTheDocument();
@@ -124,7 +126,7 @@ describe("App routes", () => {
       // Only the Personal group is offered, without the page itself.
       const nav = within(screen.getByRole("navigation", { name: "Settings" }));
       expect(nav.getAllByRole("link").map((a) => a.getAttribute("aria-label")))
-        .toEqual(["Profile & password", "Sessions", "Automation tokens"].filter((l) => l !== label));
+        .toEqual(["Profile & password", "Sessions", "Automation tokens", "Connected apps"].filter((l) => l !== label));
     },
   );
 

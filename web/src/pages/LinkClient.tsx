@@ -6,7 +6,8 @@ import { AlertTriangle } from "lucide-react";
 import { apiFetch, ApiError, REAUTH_CANCELLED } from "@/lib/api";
 import { useAuth } from "@/auth/useAuth";
 import { Button, FormField, Input } from "@/components/ds";
-import { BurrowMark } from "@/pages/Login";
+import { Result, Shell } from "@/components/ApprovalShell";
+import { isFramed } from "@/lib/framed";
 import type { ClientLoginRequest } from "@/lib/contract";
 
 const INVALID_CODE = "This code is not valid or has expired. Run burrow login again.";
@@ -39,41 +40,6 @@ function ageText(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 1) return "less than a minute ago";
   return minutes === 1 ? "1 minute ago" : `${minutes} minutes ago`;
-}
-
-// A page inside somebody else's frame can be dressed up so that a click lands
-// on Approve. The session cookie is not sent there anyway; this is the second lock.
-function isFramed(): boolean {
-  try {
-    return window.top !== window.self;
-  } catch {
-    return true;
-  }
-}
-
-function Shell({ children }: { children: ReactNode }) {
-  return (
-    <div className="signin-page">
-      <main className="signin-container">
-        <div className="signin-brand">
-          <BurrowMark size={26} />
-          <span>Burrow</span>
-        </div>
-        {children}
-      </main>
-    </div>
-  );
-}
-
-/** What happened, said once and given the focus so that it is read out. */
-function Result({ kind, children }: { kind: "status" | "alert"; children: ReactNode }) {
-  const ref = useRef<HTMLParagraphElement>(null);
-  useEffect(() => { ref.current?.focus(); }, []);
-  return (
-    <p ref={ref} tabIndex={-1} role={kind} className={`notice-inline linkpage-result ${kind === "status" ? "ok" : "error"}`}>
-      <span className="body">{children}</span>
-    </p>
-  );
 }
 
 function InvalidCode() {

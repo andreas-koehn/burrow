@@ -87,3 +87,27 @@ describe("Settings / General / Privacy — connection_logs.rollup_include_top_ip
     expect(qc.getQueryData(["settings"])).toBeUndefined();
   });
 });
+
+describe("General settings: services address", () => {
+  it("says nothing when the relay does not report a services domain", async () => {
+    renderApp(<GeneralSettings />, "/settings/general");
+    await screen.findByRole("heading", { name: "Privacy" });
+    expect(screen.queryByRole("heading", { name: "Services address" })).toBeNull();
+  });
+
+  it("names the services domain when one is set", async () => {
+    db.settings["services_domain"] = "apps.example.com";
+    renderApp(<GeneralSettings />, "/settings/general");
+    const sec = (await screen.findByRole("heading", { name: "Services address" })).closest("section")!;
+    expect(sec).toHaveTextContent("apps.example.com");
+    expect(sec.querySelector(".notice-inline.warn")).toBeNull();
+  });
+
+  it("recommends setting one when it is empty", async () => {
+    db.settings["services_domain"] = "";
+    renderApp(<GeneralSettings />, "/settings/general");
+    const sec = (await screen.findByRole("heading", { name: "Services address" })).closest("section")!;
+    expect(sec).toHaveTextContent("BURROW_SERVICES_DOMAIN");
+    expect(sec.querySelector(".notice-inline.warn")).not.toBeNull();
+  });
+});

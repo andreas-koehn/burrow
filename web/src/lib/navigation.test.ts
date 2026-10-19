@@ -41,18 +41,18 @@ describe("navigation description", () => {
   it("Settings navigation for an admin", () => {
     expect(labels("settings")).toEqual([
       ["Relay", ["General", "Email", "Retention", "Database", "Backups"]],
-      ["Access", ["Users", "Roles", "Audit log"]],
+      ["Access", ["Users", "Roles", "Audit log", "OAuth clients"]],
       ["Integrations", ["Webhooks", "MCP", "API reference"]],
-      ["Personal", ["Profile & password", "Sessions", "Automation tokens"]],
+      ["Personal", ["Profile & password", "Sessions", "Automation tokens", "Connected apps"]],
     ]);
   });
   it("a non-admin sees only the Personal group in Settings", () => {
-    expect(labels("settings", user)).toEqual([["Personal", ["Profile & password", "Sessions", "Automation tokens"]]]);
+    expect(labels("settings", user)).toEqual([["Personal", ["Profile & password", "Sessions", "Automation tokens", "Connected apps"]]]);
   });
   it("someone who may only read the audit log sees that page beside the profile", () => {
     expect(labels("settings", auditor)).toEqual([
       ["Access", ["Audit log"]],
-      ["Personal", ["Profile & password"]],
+      ["Personal", ["Profile & password", "Connected apps"]],
     ]);
   });
   it("MCP sits in Integrations after Webhooks and needs mcp:tools:read", () => {
@@ -282,6 +282,8 @@ describe("reachability", () => {
       "/login": "outside the shell: where a signed-out visitor is sent",
       // Reached from a terminal: `burrow login` prints and opens /link?code=…; no entry leads there.
       "/link": "outside the shell: where burrow login sends the browser to approve a sign-in",
+      // Reached from /oauth/authorize: the relay sends the browser there to approve an app.
+      "/oauth/consent": "outside the shell: where an app asking for access sends the browser to approve it",
       "*": "catch-all, sends unknown paths to the overview",
       "/settings": "the Settings index: sends an admin to General, everyone else to their profile",
     };

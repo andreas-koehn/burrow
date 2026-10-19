@@ -290,15 +290,15 @@ describe("Layout workspace shell", () => {
     expect(await nav.findByRole("link", { name: "Email" })).toHaveAttribute("aria-current", "page");
     expect(nav.getAllByRole("link").filter((a) => a.getAttribute("aria-current") === "page")).toHaveLength(1);
     expect(sidebarLinks("Settings")).toEqual([
-      "General", "Email", "Retention", "Database", "Backups", "Users", "Roles", "Audit log",
-      "Webhooks", "MCP", "API reference", "Profile & password", "Sessions", "Automation tokens",
+      "General", "Email", "Retention", "Database", "Backups", "Users", "Roles", "Audit log", "OAuth clients",
+      "Webhooks", "MCP", "API reference", "Profile & password", "Sessions", "Automation tokens", "Connected apps",
     ]);
   });
 
   it("a non-admin sees only the Personal group in Settings", async () => {
     renderLayout("user", { path: "/settings/sessions" });
     await chip();
-    expect(sidebarLinks("Settings")).toEqual(["Profile & password", "Sessions", "Automation tokens"]);
+    expect(sidebarLinks("Settings")).toEqual(["Profile & password", "Sessions", "Automation tokens", "Connected apps"]);
     const nav = within(screen.getByRole("navigation", { name: "Settings" }));
     expect(nav.getByRole("link", { name: "Sessions" })).toHaveAttribute("aria-current", "page");
     expect(nav.queryByText("Relay")).toBeNull();

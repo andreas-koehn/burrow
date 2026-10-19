@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Checkbox, PageHeader } from "@/components/ds";
+import { Checkbox, ErrorNotice, PageHeader } from "@/components/ds";
 import type { SettingsMap } from "@/lib/contract";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
@@ -12,6 +12,7 @@ export default function GeneralSettings() {
   // v0.5.1 Q12 (UI landed in v0.5.2): connection-log privacy toggle for the
   // per-day top-source-IPs aggregation. Default-true policy applied client-
   // side when the key is absent (matches the backend reader).
+  const servicesDomain = data?.["services_domain"];
   const topIPsEnabled =
     (data?.["connection_logs.rollup_include_top_ips"] ?? "true") !== "false";
   const togglePrivacy = useMutation({
@@ -59,6 +60,25 @@ export default function GeneralSettings() {
           </p>
         </div>
       </section>
+
+      {/* D27. The relay only reports its services domain on newer versions: no field, no line. */}
+      {servicesDomain !== undefined && (
+        <section className="account-section" aria-labelledby="sec-services-address">
+          <div className="section-head"><div className="left"><h2 id="sec-services-address">Services address</h2></div></div>
+          {servicesDomain !== "" ? (
+            <p>
+              Published services are served from <code className="mono">{servicesDomain}</code>, apart from the dashboard.
+              A page of a service cannot act as the signed-in dashboard user.
+            </p>
+          ) : (
+            <ErrorNotice variant="warn" role="note">
+              Published services share the dashboard&apos;s address, so a page one of them serves can act as the signed-in
+              user. Set <code className="mono">BURROW_SERVICES_DOMAIN</code> to a separate name to keep them apart. Until then,
+              approving a machine or an app asks for your password.
+            </ErrorNotice>
+          )}
+        </section>
+      )}
       <Toaster />
     </div>
   );

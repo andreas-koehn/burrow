@@ -2,7 +2,7 @@ import { http, HttpResponse } from "msw";
 import { ALL_PERMISSIONS } from "@/auth/permissions";
 import { modelNameError } from "@/lib/modelNames";
 import { db, NO_MODES, mockToolHash, MOCK_TOOL_PATTERN, type MockDb, type CacheSettingsPayload, type AiProviderRow, type ServiceRow } from "@/mocks/db";
-import type { AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, ClientView, CostGroupBy, CostSummary, Dialect, DialectMode, KnownClient, Service, ServiceAIConfig, ToolSource, ToolSourceCreate, ToolSourceUpdate, ToolSourceTool, ToolSourceToolUpdate, ToolSyncResult, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
+import type { OAuthApprove, OAuthClient, AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, ClientView, CostGroupBy, CostSummary, Dialect, DialectMode, KnownClient, Service, ServiceAIConfig, ToolSource, ToolSourceCreate, ToolSourceUpdate, ToolSourceTool, ToolSourceToolUpdate, ToolSyncResult, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
 
 const json = (body: unknown, status = 200) => HttpResponse.json(body as object, { status });
 const err = (status: number, message: string) => HttpResponse.json({ error: message }, { status });
@@ -17,6 +17,8 @@ const WHITELIST = [
   "smtp.tls",
   // v0.5.1 Q12 (UI toggle landed in v0.5.2): connection-log privacy toggle.
   "connection_logs.rollup_include_top_ips",
+  // Read-only on the relay: BURROW_SERVICES_DOMAIN ("" = unset). Absent here until a test sets it.
+  "services_domain",
 ];
 
 // As the relay sorts them: usd descending, the "" group (remainder / not attributed) last.
@@ -2125,6 +2127,80 @@ export const handlers = [
       status: 200,
       headers: { "Content-Type": "text/plain" },
     });
+  }),
+
+  // ---- OAuth: consent, connected apps, pre-registered clients ----
+  http.get("/api/v1/oauth/requests/:id", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const r = db.oauthRequests.find((x) => x.id === params.id);
+    return r ? json(r) : err(404, "not found");
+  }),
+  http.post("/api/v1/oauth/requests/:id/approve", async ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const r = db.oauthRequests.find((x) => x.id === params.id);
+    if (!r) return err(404, "not found");
+    const b = (await body<OAuthApprove>(request)) ?? {};
+    if (r.password_required) {
+      if (typeof b.password === "string" && b.password !== "") {
+        if (b.password !== "password123") return err(403, "password is incorrect");
+      } else if (!db.reauthConfirmed) {
+        return err(403, "reauth_required");
+      }
+    }
+    if (r.resource_kind !== "burrow" && !r.can_grant_tools) return err(403, "ai:configure required to grant tools");
+    db.oauthRequests = db.oauthRequests.filter((x) => x !== r);
+    db.oauthGrants.push({
+      id: `og_${db.oauthGrants.length + 1}`, client_id: r.client_id, client_name: r.client_name, user_id: db.me.id, user_email: db.me.email,
+      resource: r.resource, scopes: b.scopes ?? r.scopes, allowed_tools: b.allowed_tools ?? [], tools_read_only: b.tools_read_only ?? true,
+      created_at: new Date().toISOString(), last_used: null,
+    });
+    return json({ redirect_url: `${r.redirect_uri}?code=abc&state=xyz&iss=https%3A%2F%2Frelay.example.com` });
+  }),
+  http.post("/api/v1/oauth/requests/:id/deny", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const r = db.oauthRequests.find((x) => x.id === params.id);
+    if (!r) return err(404, "not found");
+    db.oauthRequests = db.oauthRequests.filter((x) => x !== r);
+    return json({ redirect_url: `${r.redirect_uri}?error=access_denied&state=xyz&iss=https%3A%2F%2Frelay.example.com` });
+  }),
+  http.get("/api/v1/oauth/grants", ({ request }) => {
+    const g = gate(request); if (g) return g;
+    const all = ["1", "true"].includes(new URL(request.url).searchParams.get("all") ?? "");
+    if (all && !db.me.permissions?.includes("oauth:clients:manage")) return err(403, "forbidden");
+    return json(db.oauthGrants.filter((x) => all || x.user_id === db.me.id));
+  }),
+  http.delete("/api/v1/oauth/grants/:id", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const x = db.oauthGrants.find((v) => v.id === params.id);
+    if (!x || (x.user_id !== db.me.id && !db.me.permissions?.includes("oauth:clients:manage"))) return err(404, "not found");
+    db.oauthGrants = db.oauthGrants.filter((v) => v !== x);
+    return noContent();
+  }),
+  http.get("/api/v1/oauth/clients", ({ request }) => {
+    const g = gate(request, { admin: true, needs: ["oauth:clients:manage"] }); if (g) return g;
+    return json(db.oauthClients);
+  }),
+  http.post("/api/v1/oauth/clients", async ({ request }) => {
+    const g = gate(request, { admin: true, needs: ["oauth:clients:manage"] }); if (g) return g;
+    const b = await body<{ name?: string; redirect_uris?: string[] }>(request);
+    if (!b?.name?.trim()) return err(400, "name is required");
+    if (!Array.isArray(b.redirect_uris) || b.redirect_uris.length === 0) return err(400, "redirect_uris is required");
+    const bad = b.redirect_uris.find((u) => !/^(https:\/\/|http:\/\/(127\.0\.0\.1|localhost|\[::1\])|[a-z][a-z0-9+-]*\.[a-z0-9.+-]*:\/)/i.test(u));
+    if (bad) return err(400, `redirect URI ${bad} must be https, http on a loopback address or an app scheme`);
+    const row: OAuthClient = {
+      client_id: `bcl_${(db.oauthClients.length + 1).toString(16).padStart(32, "0")}`, name: b.name.trim(), redirect_uris: b.redirect_uris,
+      created_by: db.me.email, created_at: new Date().toISOString(),
+    };
+    db.oauthClients.push(row);
+    return json(row, 201);
+  }),
+  http.delete("/api/v1/oauth/clients/:id", ({ request, params }) => {
+    const g = gate(request, { admin: true, needs: ["oauth:clients:manage"] }); if (g) return g;
+    const c = db.oauthClients.find((x) => x.client_id === params.id);
+    if (!c) return err(404, "not found");
+    db.oauthClients = db.oauthClients.filter((x) => x !== c);
+    db.oauthGrants = db.oauthGrants.filter((x) => x.client_id !== c.client_id);
+    return noContent();
   }),
 
   // ---- Tool sources (MCP gateway) ----

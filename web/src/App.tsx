@@ -18,6 +18,9 @@ import Clients from "@/pages/Clients";
 import ClientDetail from "@/pages/ClientDetail";
 import ConnectClient from "@/pages/ConnectClient";
 import LinkClient from "@/pages/LinkClient";
+import OAuthConsent from "@/pages/OAuthConsent";
+import ConnectedApps from "@/pages/settings/ConnectedApps";
+import OAuthClients from "@/pages/settings/OAuthClients";
 import Providers from "@/pages/Providers";
 import ToolSources from "@/pages/ToolSources";
 import ToolSourceDetail from "@/pages/ToolSourceDetail";
@@ -70,6 +73,8 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       {/* Where `burrow login` sends the browser: outside the shell, behind the login. */}
       <Route path="/link" element={<RequireAuth><LinkClient /></RequireAuth>} />
+      {/* Where /oauth/authorize sends the browser to approve an app: the same, outside the shell and behind the login. */}
+      <Route path="/oauth/consent" element={<RequireAuth><OAuthConsent /></RequireAuth>} />
       <Route element={<RequireAuth><Layout /></RequireAuth>}>
         <Route path="/" element={<ServicesOverview />} />
         <Route path="/services" element={<RequirePermission needs={needsOf("/services")}><Services /></RequirePermission>} />
@@ -108,6 +113,8 @@ export default function App() {
         <Route path="/settings/api" element={<RequirePermission needs={needsOf("/settings/api")}><OpenApiViewer /></RequirePermission>} />
         <Route path="/settings/profile" element={<Profile />} />
         <Route path="/settings/sessions" element={<RequirePermission needs={needsOf("/settings/sessions")}><Sessions /></RequirePermission>} />
+        <Route path="/settings/apps" element={<ConnectedApps />} />
+        <Route path="/settings/oauth-clients" element={<RequirePermission needs={needsOf("/settings/oauth-clients")}><OAuthClients /></RequirePermission>} />
         <Route path="/settings/automation" element={<RequirePermission needs={needsOf("/settings/automation")}><AutomationTokens /></RequirePermission>} />
         {/* Old bookmarks: every moved path lands on its new home, params, query and hash intact. */}
         {OLD_ROUTES.map((r) => <Route key={r.from} path={r.from} element={<RedirectTo to={r.to} />} />)}

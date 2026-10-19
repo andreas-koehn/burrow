@@ -10,6 +10,7 @@ import type {
   RetentionSettings, DatabaseStatus,
   ConnectionLog, ConnectionLogRollup,
   ToolSource, ToolSourceTool, ToolDefinition,
+  OAuthRequest, OAuthGrant, OAuthClient,
 } from "@/lib/contract";
 
 export interface CacheSettingsPayload {
@@ -141,6 +142,10 @@ export interface MockDb {
   toolSourceTools: Record<string, ToolSourceTool[]>;
   /** What each upstream offers right now: a sync stores this. Tests change it. */
   toolUpstream: Record<string, ToolDefinition[]>;
+  /** Pending OAuth authorization requests (GET /oauth/requests/{id}), by id. */
+  oauthRequests: OAuthRequest[];
+  oauthGrants: OAuthGrant[];
+  oauthClients: OAuthClient[];
   /** Keys a rename onto that name cuts off (answered as affected_keys), by new name. */
   toolRenameAffected: Record<string, { id: string; name: string; key_prefix: string; user_id: string }[]>;
   webhooks: Webhook[];
@@ -445,6 +450,27 @@ function seed(): MockDb {
       files: [],
     },
     toolUpstream: {},
+    oauthRequests: [],
+    oauthGrants: [
+      {
+        id: "og_1", client_id: "https://claude.example/client.json", client_name: "Claude Desktop", user_id: meId, user_email: "alice@acme.io",
+        resource: "https://relay.example.com/mcp/burrow", scopes: ["burrow:read"], allowed_tools: [], tools_read_only: false,
+        created_at: "2026-10-18T08:00:00Z", last_used: "2026-10-19T07:00:00Z",
+      },
+      {
+        id: "og_2", client_id: "bcl_0123456789abcdef0123456789abcdef", client_name: "Cursor", user_id: meId, user_email: "alice@acme.io",
+        resource: "https://relay.example.com/mcp", scopes: ["mcp:tools"], allowed_tools: ["github__*"], tools_read_only: true,
+        created_at: "2026-10-17T08:00:00Z", last_used: null,
+      },
+      {
+        id: "og_3", client_id: "bcl_0123456789abcdef0123456789abcdef", client_name: "Cursor", user_id: "u_other", user_email: "bob@acme.io",
+        resource: "https://relay.example.com/mcp/github", scopes: ["mcp:tools"], allowed_tools: ["github__search"], tools_read_only: false,
+        created_at: "2026-10-16T08:00:00Z", last_used: null,
+      },
+    ],
+    oauthClients: [
+      { client_id: "bcl_0123456789abcdef0123456789abcdef", name: "Cursor", redirect_uris: ["http://127.0.0.1/callback"], created_by: "alice@acme.io", created_at: "2026-10-15T08:00:00Z" },
+    ],
     toolRenameAffected: {},
     mcpStatus: { enabled: true, endpoint: "/mcp/burrow", operations: 131 },
     mcpTools: [

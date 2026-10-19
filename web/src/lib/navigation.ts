@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Globe, Boxes, Activity, Sparkles, ShieldAlert, Database, Search, DollarSign,
   ServerCog, Mail, Archive, HardDrive, DatabaseBackup, Users, ShieldCheck, ScrollText, Webhook,
   BookOpen, UserCircle, MonitorSmartphone, Bot, Network, Layers, KeyRound, Cable,
-  Wrench,
+  Wrench, Plug,
 } from "lucide-react";
 import { P } from "@/auth/permissions";
 import { workspaceFor, type Workspace } from "./workspace";
@@ -127,6 +127,7 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
         { id: "users", label: "Users", to: "/settings/users", icon: Users, needs: NEEDS.users },
         { id: "roles", label: "Roles", to: "/settings/roles", icon: ShieldCheck, needs: NEEDS.roles },
         { id: "audit", label: "Audit log", to: "/settings/audit", icon: ScrollText, needs: [P.auditRead] },
+        { id: "oauth-clients", label: "OAuth clients", to: "/settings/oauth-clients", icon: KeyRound, needs: [P.oauthClientsManage] },
       ] },
       { title: "Integrations", entries: [
         { id: "webhooks", label: "Webhooks", to: "/settings/webhooks", icon: Webhook, needs: [P.webhooksManage] },
@@ -137,6 +138,7 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
         PROFILE_ENTRY,
         { id: "sessions", label: "Sessions", to: "/settings/sessions", icon: MonitorSmartphone, needs: NEEDS.sessions },
         { id: "automation", label: "Automation tokens", to: "/settings/automation", icon: Bot, needs: NEEDS.automation },
+        { id: "apps", label: "Connected apps", to: "/settings/apps", icon: Plug },
       ] },
     ],
   },

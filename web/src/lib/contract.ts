@@ -1070,3 +1070,65 @@ export interface ToolApproveAllResult {
   approved: string[];
   conflicts: string[];
 }
+
+// ---- OAuth for MCP clients ----
+
+/** GET /oauth/requests/{id}: what an app asked for, as the consent page shows it. The names and the redirect are the app's own words. */
+export interface OAuthRequest {
+  id: string;
+  client_id: string;
+  client_name: string;
+  client_kind: "registered" | "metadata_document";
+  redirect_uri: string;
+  redirect_host: string;
+  /** The redirect goes to this machine only (a loopback address). */
+  localhost_redirect: boolean;
+  resource: string;
+  resource_kind: "burrow" | "gateway" | "source";
+  source: string;
+  scopes: string[];
+  /** Tool sources the grant may cover: every enabled one at /mcp, the one at /mcp/<slug>. */
+  sources: { slug: string; name: string }[];
+  /** The caller may give tools to an app (ai:configure:own or :any). */
+  can_grant_tools: boolean;
+  /** Approving takes the account password: the relay has no services domain. */
+  password_required: boolean;
+  created_at: string;
+  expires_at: string;
+}
+
+/** The answer of approve and deny: where the browser goes next. */
+export interface OAuthRedirect {
+  redirect_url: string;
+}
+
+export interface OAuthApprove {
+  scopes?: string[];
+  allowed_tools?: string[];
+  tools_read_only?: boolean;
+  password?: string;
+}
+
+/** GET /oauth/grants: a connected app. Never holds a token. */
+export interface OAuthGrant {
+  id: string;
+  client_id: string;
+  client_name: string;
+  user_id: string;
+  user_email: string;
+  resource: string;
+  scopes: string[];
+  allowed_tools: string[];
+  tools_read_only: boolean;
+  created_at: string;
+  last_used: string | null;
+}
+
+/** GET /oauth/clients: a pre-registered public client (no secret). */
+export interface OAuthClient {
+  client_id: string;
+  name: string;
+  redirect_uris: string[];
+  created_by: string;
+  created_at: string;
+}
