@@ -3,6 +3,7 @@ import {
   LayoutDashboard, Globe, Boxes, Activity, Sparkles, ShieldAlert, Database, Search, DollarSign,
   ServerCog, Mail, Archive, HardDrive, DatabaseBackup, Users, ShieldCheck, ScrollText, Webhook,
   BookOpen, UserCircle, MonitorSmartphone, Bot, Network, Layers, KeyRound, Cable,
+  Wrench,
 } from "lucide-react";
 import { P } from "@/auth/permissions";
 import { workspaceFor, type Workspace } from "./workspace";
@@ -56,6 +57,7 @@ const NEEDS = {
   services: [P.servicesConfigureOwn, P.servicesConfigureAny],
   traffic: [P.auditRead],
   providers: [P.aiReadOwn, P.aiReadAny, P.aiProvidersManage],
+  tools: [P.mcpSourcesRead, P.mcpSourcesManage],
   aiRead: [P.aiReadOwn, P.aiReadAny, P.aiConfigureOwn, P.aiConfigureAny],
   requests: [P.inspectorReadOwn, P.inspectorReadAny],
   settings: [P.settingsManage],
@@ -97,6 +99,7 @@ export const NAVIGATIONS: Record<Workspace, Navigation> = {
       ] },
       { title: "Route", entries: [
         { id: "providers", label: "Providers", to: "/gateway/providers", icon: Sparkles, needs: NEEDS.providers },
+        { id: "tools", label: "Tools", to: "/gateway/tools", icon: Wrench, needs: NEEDS.tools },
         { id: "models", label: "Models", to: "/gateway/models", icon: Layers, needs: NEEDS.aiRead },
         { id: "gateway-keys", label: "Gateway keys", to: "/gateway/keys", icon: KeyRound, needs: NEEDS.aiRead },
       ] },

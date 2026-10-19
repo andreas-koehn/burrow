@@ -11,7 +11,7 @@ const byGroup = (ctx: typeof admin, group: string) => destinationsFor(ctx).filte
 describe("destinationsFor — the navigation description, flattened", () => {
   it("lists every entry of the three navigations under its workspace label", () => {
     expect(byGroup(admin, "Services")).toEqual(["Services overview", "Services", "Clients", "Traffic"]);
-    expect(byGroup(admin, "AI Gateway")).toEqual(["AI Gateway overview", "Providers", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
+    expect(byGroup(admin, "AI Gateway")).toEqual(["AI Gateway overview", "Providers", "Tools", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
     expect(byGroup(admin, "Settings")).toEqual([
       "General", "Email", "Retention", "Database", "Backups", "Users", "Roles", "Audit log",
       "Webhooks", "MCP", "API reference", "Profile & password", "Sessions", "Automation tokens",

@@ -947,3 +947,121 @@ export const WEBHOOK_EVENT_FIELDS: Record<string, string[]> = {
   "service.deleted": ["service_id", "name"],
   "connection.session_summary": ["service_id", "kind", "window_start", "window_end", "sessions", "bytes_in", "bytes_out", "avg_duration_ms", "p95_duration_ms", "top_source_ips"],
 };
+
+// ---- Tool sources (MCP gateway; docs/openapi.yaml, /mcp/sources) ----
+
+/** One tool source. The credential is never part of it: credential_slot names a vault slot. */
+export interface ToolSource {
+  slug: string;
+  name: string;
+  kind: "remote" | "tunnel";
+  service_id: string;
+  /** https://<auth_domain>/mcp/<slug>; empty while the relay has no auth domain. */
+  endpoint_url: string;
+  url: string;
+  credential_slot: string;
+  credential_present: boolean;
+  auth_header: string;
+  auth_format: string;
+  protocol_version: string;
+  rpm: number;
+  max_concurrent: number;
+  timeout_s: number;
+  enabled: boolean;
+  last_sync_at: string | null;
+  last_sync_error: string;
+  tool_count: number;
+  pending_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ToolSourceCreate {
+  slug: string;
+  name?: string;
+  kind: "remote" | "tunnel";
+  service_id?: string;
+  url?: string;
+  credential_slot?: string;
+  auth_header?: string;
+  auth_format?: string;
+  protocol_version?: string;
+  rpm?: number;
+  max_concurrent?: number;
+  timeout_s?: number;
+  enabled?: boolean;
+}
+
+export type ToolSourceUpdate = Partial<Pick<ToolSource,
+  "name" | "url" | "credential_slot" | "auth_header" | "auth_format" | "protocol_version" | "rpm" | "max_concurrent" | "timeout_s" | "enabled">>;
+
+/** A tool definition as the upstream sent it: untrusted text. */
+export interface ToolDefinition {
+  name?: string;
+  title?: string;
+  description?: string;
+  inputSchema?: unknown;
+  outputSchema?: unknown;
+  annotations?: unknown;
+  [key: string]: unknown;
+}
+
+export interface ToolGuardrailHit {
+  field: "title" | "description" | "input_schema" | "output_schema" | "annotations";
+  pattern: string;
+}
+
+export interface ToolSourceTool {
+  name: string;
+  status: "approved" | "pending" | "removed";
+  current_hash: string;
+  approved_hash: string;
+  definition: ToolDefinition;
+  approved_definition: ToolDefinition | null;
+  hidden: boolean;
+  rename: string;
+  description_override: string;
+  read_only: boolean | null;
+  upstream_read_only: boolean;
+  effective_read_only: boolean;
+  served_name: string;
+  served: boolean;
+  serve_issue: "" | "name_conflict";
+  guardrail_hits: ToolGuardrailHit[];
+  updated_at: string;
+  /** Later additions (the aggregated endpoint): shown when present, ignored when absent. */
+  aggregated_name?: string;
+  aggregated_issue?: string;
+}
+
+export interface ToolSourceToolUpdate {
+  hidden?: boolean;
+  rename?: string;
+  description_override?: string;
+  read_only?: boolean | null;
+}
+
+/** A gateway key whose allow-list names a tool's new served name exactly. */
+export interface ToolRenameKey {
+  id: string;
+  name: string;
+  key_prefix: string;
+  user_id: string;
+}
+
+/** The answer to a tool change; keys_matching_rename is there when the body carried a rename. */
+export type ToolSourceToolChanged = ToolSourceTool & { keys_matching_rename?: ToolRenameKey[] };
+
+export interface ToolSyncResult {
+  added: number;
+  changed: number;
+  removed: number;
+  tool_count: number;
+  pending_count: number;
+  skipped: string[];
+}
+
+export interface ToolApproveAllResult {
+  approved: string[];
+  conflicts: string[];
+}

@@ -1,8 +1,8 @@
 import { http, HttpResponse } from "msw";
 import { ALL_PERMISSIONS } from "@/auth/permissions";
 import { modelNameError } from "@/lib/modelNames";
-import { db, NO_MODES, type MockDb, type CacheSettingsPayload, type AiProviderRow, type ServiceRow } from "@/mocks/db";
-import type { AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, ClientView, CostGroupBy, CostSummary, Dialect, DialectMode, KnownClient, Service, ServiceAIConfig, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
+import { db, NO_MODES, mockToolHash, MOCK_TOOL_PATTERN, type MockDb, type CacheSettingsPayload, type AiProviderRow, type ServiceRow } from "@/mocks/db";
+import type { AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, ClientView, CostGroupBy, CostSummary, Dialect, DialectMode, KnownClient, Service, ServiceAIConfig, ToolSource, ToolSourceCreate, ToolSourceUpdate, ToolSourceTool, ToolSourceToolUpdate, ToolSyncResult, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
 
 const json = (body: unknown, status = 200) => HttpResponse.json(body as object, { status });
 const err = (status: number, message: string) => HttpResponse.json({ error: message }, { status });
@@ -36,6 +36,36 @@ function gate(req: Request, opts: { admin?: boolean; needs?: string[] } = {}): R
     return err(403, "admin required");
   }
   return null;
+}
+
+// ---- Tool sources: what the relay works out on every answer ----
+function sourceWire(s: ToolSource): ToolSource {
+  const tools = (db.toolSourceTools[s.slug] ?? []).filter((t) => t.status !== "removed");
+  return { ...s, tool_count: tools.length, pending_count: tools.filter((t) => t.status === "pending").length };
+}
+function refreshCounts(slug: string) {
+  const s = db.toolSources.find((x) => x.slug === slug);
+  if (s) s.updated_at = new Date().toISOString();
+}
+function approveTool(t: ToolSourceTool) {
+  t.approved_definition = t.definition;
+  t.approved_hash = t.current_hash;
+  t.status = "approved";
+}
+// Another approved tool is served under the name this one would be.
+function servedNameTaken(tools: ToolSourceTool[], t: ToolSourceTool): boolean {
+  const name = t.rename || t.name;
+  return tools.some((x) => x !== t && x.status === "approved" && !x.hidden && (x.rename || x.name) === name);
+}
+function toolWire(tools: ToolSourceTool[], t: ToolSourceTool): ToolSourceTool {
+  const served_name = t.rename || t.name;
+  const upstream_read_only = (t.definition.annotations as { readOnlyHint?: boolean } | undefined)?.readOnlyHint === true;
+  const visible = t.status === "approved" && !t.hidden;
+  const clash = visible && tools.some((x) => x !== t && x.status === "approved" && !x.hidden && (x.rename || x.name) === served_name);
+  return {
+    ...t, served_name, upstream_read_only, effective_read_only: t.read_only ?? upstream_read_only,
+    served: visible && !clash, serve_issue: clash ? "name_conflict" : "",
+  };
 }
 
 // Whether the caller holds one of the permissions: the admin role holds them all, any other role what /me lists.
@@ -2056,6 +2086,184 @@ export const handlers = [
       status: 200,
       headers: { "Content-Type": "text/plain" },
     });
+  }),
+
+  // ---- Tool sources (MCP gateway) ----
+  // Reads need mcp:sources:read or :manage; every write needs :manage (the admin role holds both).
+  http.get("/api/v1/mcp/sources", ({ request }) => {
+    const g = gate(request, { admin: true, needs: ["mcp:sources:read", "mcp:sources:manage"] }); if (g) return g;
+    return json([...db.toolSources].sort((a, b) => a.slug.localeCompare(b.slug)).map(sourceWire));
+  }),
+  http.post("/api/v1/mcp/sources", async ({ request }) => {
+    const g = gate(request, { admin: true, needs: ["mcp:sources:manage"] }); if (g) return g;
+    const b = await body<ToolSourceCreate & Record<string, unknown>>(request);
+    if (!b || typeof b !== "object") return err(400, "invalid JSON body");
+    const known = ["slug", "name", "kind", "service_id", "url", "credential_slot", "auth_header", "auth_format", "protocol_version", "rpm", "max_concurrent", "timeout_s", "enabled"];
+    const extra = Object.keys(b).find((k) => !known.includes(k));
+    if (extra) return err(400, `unknown field "${extra}"`);
+    const slug = b.slug ?? "";
+    if (["burrow", "v1"].includes(slug)) return err(400, `slug "${slug}" is reserved`);
+    if (!/^[a-z0-9]([a-z0-9-]{0,22}[a-z0-9])?$/.test(slug)) return err(400, "slug must be 1-24 characters of a-z, 0-9 and hyphens, starting and ending with a letter or digit");
+    if (b.kind !== "remote" && b.kind !== "tunnel") return err(400, "kind must be 'remote' or 'tunnel'");
+    if (db.toolSources.some((s) => s.slug === slug)) return err(409, "a tool source with this slug already exists");
+    let serviceId = "";
+    if (b.kind === "remote") {
+      if (!/^https:\/\/[^/\s?#@]+/.test(b.url ?? "")) return err(400, "url must be an https URL");
+      serviceId = `mcp-${slug}`;
+    } else {
+      if (b.url || b.credential_slot) return err(400, "url and credential fields belong to a remote source");
+      const svc = db.services.find((s) => s.id === b.service_id);
+      if (!svc || svc.type !== "http") return err(409, "service_id must be an existing http service");
+      if (db.toolSources.some((s) => s.service_id === svc.id)) return err(409, "the service is already used by a tool source");
+      svc.gateway_only = true;
+      serviceId = svc.id;
+    }
+    const now = new Date().toISOString();
+    const row: ToolSource = {
+      slug, name: (b.name ?? "").trim() || slug, kind: b.kind, service_id: serviceId,
+      endpoint_url: `https://relay.example.com/mcp/${slug}`, url: b.kind === "remote" ? (b.url ?? "") : "",
+      credential_slot: b.credential_slot ?? "", credential_present: false,
+      auth_header: b.kind === "remote" ? (b.auth_header || "Authorization") : "",
+      auth_format: b.kind === "remote" ? (b.auth_format || "Bearer {key}") : "",
+      protocol_version: b.protocol_version ?? "", rpm: b.rpm ?? 0, max_concurrent: b.max_concurrent ?? 0, timeout_s: b.timeout_s ?? 60,
+      enabled: b.enabled ?? true, last_sync_at: null, last_sync_error: "", tool_count: 0, pending_count: 0, created_at: now, updated_at: now,
+    };
+    db.toolSources.push(row);
+    db.toolSourceTools[slug] = [];
+    return json(sourceWire(row), 201);
+  }),
+  http.get("/api/v1/mcp/sources/:slug", ({ request, params }) => {
+    const g = gate(request, { admin: true, needs: ["mcp:sources:read", "mcp:sources:manage"] }); if (g) return g;
+    const s = db.toolSources.find((x) => x.slug === params.slug);
+    return s ? json(sourceWire(s)) : err(404, "tool source not found");
+  }),
+  http.put("/api/v1/mcp/sources/:slug", async ({ request, params }) => {
+    const g = gate(request, { admin: true, needs: ["mcp:sources:manage"] }); if (g) return g;
+    const s = db.toolSources.find((x) => x.slug === params.slug);
+    if (!s) return err(404, "tool source not found");
+    const b = await body<ToolSourceUpdate & Record<string, unknown>>(request);
+    if (!b || typeof b !== "object") return err(400, "invalid JSON body");
+    const known = ["name", "url", "credential_slot", "auth_header", "auth_format", "protocol_version", "rpm", "max_concurrent", "timeout_s", "enabled"];
+    const extra = Object.keys(b).find((k) => !known.includes(k));
+    if (extra) return err(400, `unknown field "${extra}"`);
+    if (b.timeout_s !== undefined && (b.timeout_s < 1 || b.timeout_s > 300)) return err(400, "timeout_s must be between 1 and 300");
+    if (b.rpm !== undefined && (b.rpm < 0 || b.rpm > 100000)) return err(400, "rpm must be between 0 and 100000");
+    if (b.max_concurrent !== undefined && (b.max_concurrent < 0 || b.max_concurrent > 1000)) return err(400, "max_concurrent must be between 0 and 1000");
+    Object.assign(s, b, { updated_at: new Date().toISOString() });
+    return json(sourceWire(s));
+  }),
+  http.delete("/api/v1/mcp/sources/:slug", ({ request, params }) => {
+    const g = gate(request, { admin: true, needs: ["mcp:sources:manage"] }); if (g) return g;
+    const s = db.toolSources.find((x) => x.slug === params.slug);
+    if (!s) return err(404, "tool source not found");
+    db.toolSources = db.toolSources.filter((x) => x !== s);
+    delete db.toolSourceTools[s.slug];
+    return noContent();
+  }),
+  http.post("/api/v1/mcp/sources/:slug/sync", ({ request, params }) => {
+    const g = gate(request, { admin: true, needs: ["mcp:sources:manage"] }); if (g) return g;
+    const s = db.toolSources.find((x) => x.slug === params.slug);
+    if (!s) return err(404, "tool source not found");
+    const svc = db.services.find((x) => x.id === s.service_id);
+    if (s.kind === "tunnel" && !svc?.connected) {
+      s.last_sync_error = "the client that serves this source is not connected";
+      return err(502, s.last_sync_error);
+    }
+    const tools = db.toolSourceTools[s.slug] ?? (db.toolSourceTools[s.slug] = []);
+    const offered = db.toolUpstream[s.slug] ?? tools.filter((t) => t.status !== "removed").map((t) => t.definition);
+    const result: ToolSyncResult = { added: 0, changed: 0, removed: 0, tool_count: 0, pending_count: 0, skipped: [] };
+    const seen = new Set<string>();
+    for (const def of offered) {
+      const name = def.name ?? "";
+      seen.add(name);
+      const hash = mockToolHash(def);
+      const hit = (def.description ?? "").toLowerCase().includes(MOCK_TOOL_PATTERN)
+        ? [{ field: "description" as const, pattern: MOCK_TOOL_PATTERN }] : [];
+      const have = tools.find((t) => t.name === name);
+      if (!have) {
+        tools.push({
+          name, status: "pending", current_hash: hash, approved_hash: "", definition: def, approved_definition: null, hidden: false,
+          rename: "", description_override: "", read_only: null, upstream_read_only: false, effective_read_only: false,
+          served_name: name, served: false, serve_issue: "", guardrail_hits: hit, updated_at: new Date().toISOString(),
+        });
+        result.added++;
+      } else if (have.current_hash !== hash || have.status === "removed") {
+        if (have.status === "removed") result.added++; else result.changed++;
+        have.definition = def; have.current_hash = hash; have.guardrail_hits = hit;
+        have.status = have.approved_hash === hash ? "approved" : "pending";
+      }
+    }
+    for (const t of tools) {
+      if (!seen.has(t.name) && t.status !== "removed") { t.status = "removed"; result.removed++; }
+    }
+    s.last_sync_at = new Date().toISOString();
+    s.last_sync_error = "";
+    result.tool_count = tools.filter((t) => t.status !== "removed").length;
+    result.pending_count = tools.filter((t) => t.status === "pending").length;
+    return json(result);
+  }),
+  http.get("/api/v1/mcp/sources/:slug/tools", ({ request, params }) => {
+    const g = gate(request, { admin: true, needs: ["mcp:sources:read", "mcp:sources:manage"] }); if (g) return g;
+    const s = db.toolSources.find((x) => x.slug === params.slug);
+    if (!s) return err(404, "tool source not found");
+    const tools = db.toolSourceTools[s.slug] ?? [];
+    return json([...tools].sort((a, b) => a.name.localeCompare(b.name)).map((t) => toolWire(tools, t)));
+  }),
+  http.put("/api/v1/mcp/sources/:slug/tools/:name", async ({ request, params }) => {
+    const g = gate(request, { admin: true, needs: ["mcp:sources:manage"] }); if (g) return g;
+    const tools = db.toolSourceTools[String(params.slug)];
+    const t = tools?.find((x) => x.name === params.name);
+    if (!tools || !t) return err(404, "tool not found");
+    const b = await body<ToolSourceToolUpdate & Record<string, unknown>>(request);
+    if (!b || typeof b !== "object") return err(400, "invalid JSON body");
+    const extra = Object.keys(b).find((k) => !["hidden", "rename", "description_override", "read_only"].includes(k));
+    if (extra) return err(400, `unknown field "${extra}"`);
+    if (b.rename !== undefined) {
+      if (b.rename !== "" && !/^[A-Za-z0-9_-]+$/.test(b.rename)) return err(400, "rename may only contain letters, digits, _ and -");
+      if (b.rename !== "" && tools.some((x) => x !== t && (x.name === b.rename || x.rename === b.rename))) {
+        return err(409, `the name ${b.rename} is already used by another tool of this source`);
+      }
+    }
+    if (b.hidden !== undefined) t.hidden = b.hidden;
+    if (b.rename !== undefined) t.rename = b.rename === t.name ? "" : b.rename;
+    if (b.description_override !== undefined) t.description_override = b.description_override;
+    if (b.read_only !== undefined) t.read_only = b.read_only;
+    t.updated_at = new Date().toISOString();
+    const keys = b.rename ? (db.toolRenameAffected[b.rename] ?? []) : undefined;
+    return json({ ...toolWire(tools, t), ...(keys ? { keys_matching_rename: keys } : {}) });
+  }),
+  http.post("/api/v1/mcp/sources/:slug/tools/:name/approve", async ({ request, params }) => {
+    const g = gate(request, { admin: true, needs: ["mcp:sources:manage"] }); if (g) return g;
+    const tools = db.toolSourceTools[String(params.slug)];
+    const t = tools?.find((x) => x.name === params.name);
+    if (!tools || !t) return err(404, "tool not found");
+    const b = await body<{ hash?: string }>(request);
+    if (!b?.hash) return err(400, "hash is required");
+    if (t.status !== "pending") return err(409, "the tool is not pending");
+    if (b.hash !== t.current_hash) return err(409, "the definition changed since it was reviewed");
+    if (servedNameTaken(tools, t)) return err(409, `another tool is served under the name ${t.rename || t.name}`);
+    approveTool(t);
+    refreshCounts(String(params.slug));
+    return json(toolWire(tools, t));
+  }),
+  http.post("/api/v1/mcp/sources/:slug/approve-all", async ({ request, params }) => {
+    const g = gate(request, { admin: true, needs: ["mcp:sources:manage"] }); if (g) return g;
+    const slug = String(params.slug);
+    const tools = db.toolSourceTools[slug];
+    if (!tools) return err(404, "tool source not found");
+    const b = await body<{ hashes?: Record<string, string> }>(request);
+    if (!b?.hashes || typeof b.hashes !== "object") return err(400, "hashes is required");
+    const approved: string[] = [];
+    const conflicts: string[] = [];
+    for (const [name, hash] of Object.entries(b.hashes)) {
+      const t = tools.find((x) => x.name === name);
+      if (!t || t.status !== "pending" || t.current_hash !== hash) continue;
+      if (servedNameTaken(tools, t)) { conflicts.push(name); continue; }
+      approveTool(t);
+      approved.push(name);
+    }
+    refreshCounts(slug);
+    return json({ approved, conflicts });
   }),
 
   // ---- v0.5.0 OpenAPI viewer stubs ----

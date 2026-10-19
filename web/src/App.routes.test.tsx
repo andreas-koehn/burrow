@@ -53,6 +53,8 @@ describe("App routes", () => {
     ["/gateway",                       /^AI Gateway$/i],
     ["/gateway/providers",             /^Providers$/i],
     ["/gateway/providers/ollama",      /^Provider · /i],
+    ["/gateway/tools",                 /^Tools$/i],
+    ["/gateway/tools/github",          /^Tool source · /i],
     ["/gateway/cache",                 /^Prompt cache$/i],
     ["/gateway/guardrails",            /^Guardrails & redaction$/i],
     ["/gateway/requests/svc_ai001",    /^Request inspector$/i],

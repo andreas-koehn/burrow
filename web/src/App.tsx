@@ -19,6 +19,8 @@ import ClientDetail from "@/pages/ClientDetail";
 import ConnectClient from "@/pages/ConnectClient";
 import LinkClient from "@/pages/LinkClient";
 import Providers from "@/pages/Providers";
+import ToolSources from "@/pages/ToolSources";
+import ToolSourceDetail from "@/pages/ToolSourceDetail";
 import ProviderDetail from "@/pages/ProviderDetail";
 import PromptCache from "@/pages/PromptCache";
 import Guardrails from "@/pages/Guardrails";
@@ -75,6 +77,8 @@ export default function App() {
         <Route path="/gateway" element={<GatewayOverview />} />
         <Route path="/gateway/providers" element={<RequirePermission needs={needsOf("/gateway/providers")}><Providers /></RequirePermission>} />
         <Route path="/gateway/providers/:slug" element={<RequirePermission needs={needsOf("/gateway/providers")}><ProviderDetail /></RequirePermission>} />
+        <Route path="/gateway/tools" element={<RequirePermission needs={needsOf("/gateway/tools")}><ToolSources /></RequirePermission>} />
+        <Route path="/gateway/tools/:slug" element={<RequirePermission needs={needsOf("/gateway/tools")}><ToolSourceDetail /></RequirePermission>} />
         <Route path="/gateway/models" element={<RequirePermission needs={needsOf("/gateway/models")}><GatewayModels /></RequirePermission>} />
         <Route path="/gateway/keys" element={<RequirePermission needs={needsOf("/gateway/keys")}><GatewayKeys /></RequirePermission>} />
         <Route path="/gateway/cache" element={<RequirePermission needs={needsOf("/gateway/cache")}><PromptCache /></RequirePermission>} />

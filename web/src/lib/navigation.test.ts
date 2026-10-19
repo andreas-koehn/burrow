@@ -30,13 +30,13 @@ describe("navigation description", () => {
     expect(labels("gateway")).toEqual([
       ["", ["Overview"]],
       ["Connect", ["Clients"]],
-      ["Route", ["Providers", "Models", "Gateway keys"]],
+      ["Route", ["Providers", "Tools", "Models", "Gateway keys"]],
       ["Control", ["Guardrails", "Prompt cache"]],
       ["Observe", ["Requests", "Cost & budgets"]],
     ]);
     expect(NAVIGATIONS.gateway.namespace).toBe("/ai/…");
     const route = NAVIGATIONS.gateway.groups.find((g) => g.title === "Route")!;
-    expect(route.entries.map((e) => e.to)).toEqual(["/gateway/providers", "/gateway/models", "/gateway/keys"]);
+    expect(route.entries.map((e) => e.to)).toEqual(["/gateway/providers", "/gateway/tools", "/gateway/models", "/gateway/keys"]);
   });
   it("Settings navigation for an admin", () => {
     expect(labels("settings")).toEqual([
@@ -110,7 +110,7 @@ describe("navigation description", () => {
   it("keeps each workspace short", () => {
     const count = (ws: "services" | "gateway") => navigationFor(ws, admin).groups.reduce((a, g) => a + g.entries.length, 0);
     expect(count("services")).toBeLessThanOrEqual(7);
-    expect(count("gateway")).toBeLessThanOrEqual(9);
+    expect(count("gateway")).toBeLessThanOrEqual(10);
   });
   it("both workspaces open the one Clients page, with the same count", () => {
     for (const ws of ["services", "gateway"] as const) {

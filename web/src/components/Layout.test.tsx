@@ -202,7 +202,7 @@ describe("Layout workspace shell", () => {
     renderLayout("admin", { path: "/gateway" });
     await screen.findByRole("navigation", { name: "AI Gateway" });
     expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "true"]]);
-    expect(sidebarLinks("AI Gateway")).toEqual(["Overview", "Clients", "Providers", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
+    expect(sidebarLinks("AI Gateway")).toEqual(["Overview", "Clients", "Providers", "Tools", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
     expect(screen.getByRole("link", { name: /^Clients(,|$)/ })).toHaveAttribute("href", "/clients");
   });
 
@@ -408,7 +408,7 @@ describe("Layout workspace shell", () => {
     await screen.findByRole("navigation", { name: "Workspace" });
     await userEvent.click(tab("AI Gateway"));
     expect(screen.getByTestId("where")).toHaveTextContent(/^\/gateway$/);
-    expect(sidebarLinks("AI Gateway")).toEqual(["Overview", "Clients", "Providers", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
+    expect(sidebarLinks("AI Gateway")).toEqual(["Overview", "Clients", "Providers", "Tools", "Models", "Gateway keys", "Guardrails", "Prompt cache", "Requests", "Cost & budgets"]);
     expect(screen.queryByRole("navigation", { name: "Services" })).toBeNull();
     expect(tabs()).toEqual([["Services", "/", null], ["AI Gateway", "/gateway", "true"]]);
     expect(within(screen.getByRole("navigation", { name: "AI Gateway" })).getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
