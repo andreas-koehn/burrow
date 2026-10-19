@@ -565,6 +565,7 @@ type callRecord struct {
 	redacted  []redact.RuleHit
 	guardrail *inspector.GuardrailMark
 	policy    Policy
+	limited   bool // refused by a limit: audited at most once per key, source and minute
 }
 
 // limitError is the JSON-RPC error of a limit hit (HTTP 200 per MCP), with
@@ -626,7 +627,7 @@ func (g *Gateway) Call(ctx context.Context, req CallRequest) (res *mcp.CallToolR
 	// Limits: the source's places and rate, then the key's rate limits.
 	release, err := g.admit(ctx, req)
 	if err != nil {
-		rec.outcome, rec.status, rec.reason = outcomeDenied, http.StatusTooManyRequests, err.Error()
+		rec.outcome, rec.status, rec.reason, rec.limited = outcomeDenied, http.StatusTooManyRequests, err.Error(), true
 		return nil, err
 	}
 	defer release()
@@ -810,69 +811,110 @@ func callTimeout(src db.MCPSource) time.Duration {
 
 // ----- limits ----------------------------------------------------------------
 
-// sourceLimits are the places and the rate of one source under one
-// configuration; a changed configuration gets a new value.
+// sourceLimits are the places and the rate of one source. They outlive a
+// change of the source's limits: the calls already running keep counting
+// against the new max, and the bucket keeps its tokens (clamped to the new
+// rpm), so a change neither resets nor doubles what a source admits.
 type sourceLimits struct {
-	rpm, max int
-	places   chan struct{} // nil = no concurrency limit
-
-	mu     sync.Mutex
-	tokens float64
-	at     time.Time
+	mu       sync.Mutex
+	inflight int // calls holding a place
+	rpm      int // the bucket's capacity, as last configured
+	tokens   float64
+	at       time.Time // last refill
+	used     time.Time // last admit, for pruning
 }
 
-func (g *Gateway) limitsFor(src db.MCPSource) *sourceLimits {
+// limitsIdle is how long the limits of a source nobody calls are kept.
+const limitsIdle = 10 * time.Minute
+
+func (g *Gateway) limitsFor(slug string, now time.Time) *sourceLimits {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	l := g.limits[src.Slug]
-	if l == nil || l.rpm != src.RPM || l.max != src.MaxConcurrent {
-		l = &sourceLimits{rpm: src.RPM, max: src.MaxConcurrent, tokens: float64(src.RPM), at: g.now()}
-		if src.MaxConcurrent > 0 {
-			l.places = make(chan struct{}, src.MaxConcurrent)
+	l := g.limits[slug]
+	if l == nil {
+		if len(g.limits) >= 64 {
+			g.pruneLocked(now)
 		}
-		g.limits[src.Slug] = l
+		l = &sourceLimits{rpm: -1, at: now}
+		g.limits[slug] = l
 	}
 	return l
 }
 
-// take takes one request from the source's per-minute bucket (capacity rpm,
-// refilled at rpm per minute); when it is empty it returns how long until
-// one is back.
-func (l *sourceLimits) take(now time.Time) (time.Duration, bool) {
-	if l.rpm <= 0 {
-		return 0, true
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	perSec := float64(l.rpm) / 60
-	l.tokens = min(float64(l.rpm), l.tokens+now.Sub(l.at).Seconds()*perSec)
-	l.at = now
-	if l.tokens >= 1 {
-		l.tokens--
-		return 0, true
-	}
-	return time.Duration((1 - l.tokens) / perSec * float64(time.Second)), false
-}
-
-// admit applies the limits of a call (D13): a place of the source (not
-// waited for), the source's rpm, then the key's rate limits, which count
-// tool calls like model requests. It returns the function that gives the
-// place back, or the limit error.
-func (g *Gateway) admit(ctx context.Context, req CallRequest) (func(), error) {
-	l := g.limitsFor(req.Source)
-	release := func() {}
-	if l.places != nil {
-		select {
-		case l.places <- struct{}{}:
-			release = func() { <-l.places }
-		default:
-			return nil, limitError(fmt.Sprintf("the tool source allows %d calls at a time", l.max), "source_concurrency", concurrencyRetryAfter)
+// pruneLocked drops the limits of sources nobody has called for limitsIdle
+// and nothing runs on (deleted sources among them).
+func (g *Gateway) pruneLocked(now time.Time) {
+	for slug, l := range g.limits {
+		l.mu.Lock()
+		idle := l.inflight == 0 && now.Sub(l.used) > limitsIdle
+		l.mu.Unlock()
+		if idle {
+			delete(g.limits, slug)
 		}
 	}
-	if wait, ok := l.take(g.now()); !ok {
-		release()
-		return nil, limitError(fmt.Sprintf("the tool source allows %d calls per minute", l.rpm), "source_rpm", wait)
+}
+
+// Forget drops the limits of a source that was changed or deleted, when no
+// call of it is running; running calls keep them until they end (the next
+// change or the idle pruning drops them then).
+func (g *Gateway) Forget(slug string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if l := g.limits[slug]; l != nil {
+		l.mu.Lock()
+		idle := l.inflight == 0
+		l.mu.Unlock()
+		if idle {
+			delete(g.limits, slug)
+		}
 	}
+}
+
+// acquire takes a place (max 0 = no concurrency limit, as documented for the
+// source's max_concurrent) and one request from the per-minute bucket
+// (capacity rpm, refilled at rpm per minute; rpm 0 = no limit). It returns
+// which limit refused and how long to wait, or ok.
+func (l *sourceLimits) acquire(src db.MCPSource, now time.Time) (limit string, wait time.Duration, ok bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.used = now
+	if src.MaxConcurrent > 0 && l.inflight >= src.MaxConcurrent {
+		return "source_concurrency", concurrencyRetryAfter, false
+	}
+	if src.RPM > 0 {
+		perSec := float64(src.RPM) / 60
+		switch {
+		case l.rpm < 0:
+			l.tokens = float64(src.RPM) // first use: a full bucket
+		case l.rpm != src.RPM:
+			l.tokens = min(l.tokens, float64(src.RPM))
+		}
+		l.rpm = src.RPM
+		l.tokens = min(float64(src.RPM), l.tokens+now.Sub(l.at).Seconds()*perSec)
+		l.at = now
+		if l.tokens < 1 {
+			return "source_rpm", time.Duration((1 - l.tokens) / perSec * float64(time.Second)), false
+		}
+		l.tokens--
+	} else {
+		l.rpm, l.at = 0, now
+	}
+	l.inflight++
+	return "", 0, true
+}
+
+func (l *sourceLimits) release() {
+	l.mu.Lock()
+	l.inflight--
+	l.mu.Unlock()
+}
+
+// admit applies the limits of a call (D13). The key's rate limits come
+// first, so a key over its own limit does not use up the source's rpm for
+// the other keys; then a place of the source (not waited for) and the
+// source's rpm. It returns the function that gives the place back, or the
+// limit error.
+func (g *Gateway) admit(ctx context.Context, req CallRequest) (func(), error) {
 	if g.opts.Limits != nil && req.Caller.GatewayKeyID != "" {
 		d := g.opts.Limits.ChargeRate(ctx, quota.Subjects{
 			APIKeyID:     gatewayKeySubject + req.Caller.GatewayKeyID,
@@ -880,11 +922,20 @@ func (g *Gateway) admit(ctx context.Context, req CallRequest) (func(), error) {
 			ServiceID:    req.Source.ServiceID,
 		}, quota.DimensionRPM, 1)
 		if !d.Allow {
-			release()
 			return nil, limitError("rate limit reached", "rate_limit", time.Duration(max(d.RetryAfter, 1))*time.Second)
 		}
 	}
-	return release, nil
+	now := g.now()
+	l := g.limitsFor(req.Source.Slug, now)
+	limit, wait, ok := l.acquire(req.Source, now)
+	switch {
+	case ok:
+		return l.release, nil
+	case limit == "source_concurrency":
+		return nil, limitError(fmt.Sprintf("the tool source allows %d calls at a time", req.Source.MaxConcurrent), limit, wait)
+	default:
+		return nil, limitError(fmt.Sprintf("the tool source allows %d calls per minute", req.Source.RPM), limit, wait)
+	}
 }
 
 // gatewayKeySubject prefixes a gateway key id in quota.Subjects.APIKeyID, as
@@ -921,7 +972,9 @@ func (g *Gateway) finish(ctx context.Context, req CallRequest, rec *callRecord, 
 	if rec.guardrail != nil {
 		payload["guardrail"] = map[string]string{"pattern": rec.guardrail.Pattern, "direction": rec.guardrail.Direction, "action": rec.guardrail.Action}
 	}
-	g.appendAudit(ctx, req.Caller, src, req.Info, rec.outcome, payload)
+	if !rec.limited || g.sample("limit", req.Caller.GatewayKeyID, src.Slug) {
+		g.appendAudit(ctx, req.Caller, src, req.Info, rec.outcome, payload)
+	}
 	g.observe(req.Caller, src, req.Tool.Name, rec.outcome, rec.status, took)
 }
 
@@ -957,12 +1010,13 @@ func (g *Gateway) capture(req CallRequest, rec *callRecord, took time.Duration) 
 }
 
 // appendAudit writes an mcp.gateway.call row (D30): every error and
-// refusal, and at most one ok call per key, source and minute.
+// refusal, and at most one ok call per key, source and minute. (Limit
+// refusals are sampled the same way by finish.)
 func (g *Gateway) appendAudit(ctx context.Context, c Caller, src db.MCPSource, info RequestInfo, outcome string, payload map[string]any) {
 	if g.opts.Audit == nil {
 		return
 	}
-	if outcome == outcomeOK && !g.sampleOK(c.GatewayKeyID, src.Slug) {
+	if outcome == outcomeOK && !g.sample("ok", c.GatewayKeyID, src.Slug) {
 		return
 	}
 	defer func() {
@@ -980,12 +1034,12 @@ func (g *Gateway) appendAudit(ctx context.Context, c Caller, src db.MCPSource, i
 	}
 }
 
-// sampleOK reports whether an ok call of key on source is audited: the first
-// one of each minute.
-func (g *Gateway) sampleOK(key, slug string) bool {
+// sample reports whether a call of kind ("ok" or "limit") by key on source
+// is audited: the first one of each minute.
+func (g *Gateway) sample(kind, key, slug string) bool {
 	now := g.now()
 	minute := now.Truncate(time.Minute)
-	k := key + "|" + slug
+	k := kind + "|" + key + "|" + slug
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if last, ok := g.sampled[k]; ok && last.Equal(minute) {

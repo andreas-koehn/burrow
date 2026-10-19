@@ -792,3 +792,29 @@ func TestMCPToolsMount_NotConfiguredAndLimit(t *testing.T) {
 		t.Fatalf("third request with a credential: %d, want 429", code)
 	}
 }
+
+// The gateway reads a bearer token in any case and with any spacing, so the
+// per-address limit counts every request that carries a credential header,
+// whatever it looks like (review: "bearer" in lower case bypassed it).
+func TestMCPMounts_LimitCountsAnyCredentialSpelling(t *testing.T) {
+	for _, path := range []string{"/mcp/github", "/mcp/burrow"} {
+		for _, val := range []string{"bearer bgw_x", " Bearer bgw_x", "BEARER  bgw_x"} {
+			hs := httptest.NewServer(NewRouter(Deps{Log: discardLog(), MCPToolsRateLimitPerIP: 1, MCP: MCPInfo{RateLimitPerIP: 1}}))
+			do := func() int {
+				req, _ := http.NewRequest(http.MethodPost, hs.URL+path, strings.NewReader("{}"))
+				req.Header["Authorization"] = []string{val}
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = resp.Body.Close()
+				return resp.StatusCode
+			}
+			_ = do()
+			if code := do(); code != http.StatusTooManyRequests {
+				t.Errorf("%s with Authorization %q: second request %d, want 429", path, val, code)
+			}
+			hs.Close()
+		}
+	}
+}

@@ -713,3 +713,28 @@ func readPeek(r *http.Request) string {
 	r.Body = io.NopCloser(bytes.NewReader(b))
 	return string(b)
 }
+
+// A tools/call response is capped near the gateway's result cap (2 MiB by
+// default), not at the 8 MiB a tool list may need, so the memory one call
+// holds stays bounded; the tool list keeps the larger cap.
+func TestCallTool_ResponseCapNearTheResultCap(t *testing.T) {
+	for _, stateful := range []bool{false, true} {
+		t.Run(map[bool]string{false: "stateless", true: "stateful"}[stateful], func(t *testing.T) {
+			up := mcptest.NewServer(t, mcptest.Opts{TLS: true, Stateful: stateful})
+			f := newFixture(t, up)
+			src := f.remote(t, "gh", up.URL)
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			if _, err := f.pool.CallTool(ctx, src, &mcp.CallToolParams{Name: "big", Arguments: map[string]any{"bytes": 3 << 20}}); !errors.Is(err, ErrResponseTooLarge) {
+				t.Fatalf("a 3 MiB result: err = %v, want ErrResponseTooLarge", err)
+			}
+			res, err := f.pool.CallTool(ctx, src, &mcp.CallToolParams{Name: "big", Arguments: map[string]any{"bytes": 1 << 20}})
+			if err != nil || res.IsError {
+				t.Fatalf("a 1 MiB result: %v %v", res, err)
+			}
+			if _, err := f.pool.Sync(ctx, "gh"); err != nil {
+				t.Fatalf("the tool list after a refused result: %v", err)
+			}
+		})
+	}
+}

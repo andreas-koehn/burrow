@@ -127,13 +127,18 @@ type Options struct {
 	SyncTimeout time.Duration
 	// MaxResponseBytes caps one upstream HTTP response body (default 8 MiB).
 	MaxResponseBytes int64
+	// MaxCallResponseBytes caps the response body of a tools/call (default
+	// 2 MiB: the gateway's 1 MiB result cap plus room for the envelope), so
+	// the memory one call holds stays close to what may be delivered.
+	MaxCallResponseBytes int64
 }
 
 // Defaults of Options.
 const (
-	DefaultSyncInterval     = 10 * time.Minute
-	DefaultSyncTimeout      = 60 * time.Second
-	DefaultMaxResponseBytes = 8 << 20
+	DefaultSyncInterval         = 10 * time.Minute
+	DefaultSyncTimeout          = 60 * time.Second
+	DefaultMaxResponseBytes     = 8 << 20
+	DefaultMaxCallResponseBytes = 2 << 20
 )
 
 // Pool holds the upstream access of every tool source. Safe for concurrent
@@ -181,6 +186,9 @@ func New(opts Options) *Pool {
 	}
 	if opts.MaxResponseBytes <= 0 {
 		opts.MaxResponseBytes = DefaultMaxResponseBytes
+	}
+	if opts.MaxCallResponseBytes <= 0 {
+		opts.MaxCallResponseBytes = DefaultMaxCallResponseBytes
 	}
 	// The pool's own copy of the guarded transport (same dialer and guard):
 	// a tool call may run up to 300 s and is bounded by its context, so the
@@ -315,6 +323,9 @@ func (p *Pool) CallTool(ctx context.Context, src db.MCPSource, params *mcp.CallT
 	if !src.Enabled {
 		return nil, ErrSourceDisabled
 	}
+	// The SDK sends the call's request with this context: upstreamRT reads
+	// the smaller cap from it.
+	ctx = context.WithValue(ctx, ctxKeyBodyCap{}, p.opts.MaxCallResponseBytes)
 	var res *mcp.CallToolResult
 	err := p.withSession(ctx, src, func(cs *mcp.ClientSession) error {
 		var err error
@@ -582,9 +593,16 @@ func (t *upstreamRT) RoundTrip(req *http.Request) (*http.Response, error) {
 		resp.Header.Del("Content-Type")
 		return resp, nil
 	}
-	resp.Body = &cappedBody{rc: resp.Body, left: t.max}
+	limit := t.max
+	if c, ok := req.Context().Value(ctxKeyBodyCap{}).(int64); ok && c > 0 && c < limit {
+		limit = c
+	}
+	resp.Body = &cappedBody{rc: resp.Body, left: limit}
 	return resp, nil
 }
+
+// ctxKeyBodyCap carries a smaller response cap for the requests of one call.
+type ctxKeyBodyCap struct{}
 
 // cappedBody fails a read past the cap instead of truncating silently.
 type cappedBody struct {
@@ -636,8 +654,17 @@ func mapErr(err error) error {
 		return nil
 	case errors.Is(err, proxy.ErrNotFound):
 		return fmt.Errorf("%w: %w", ErrTunnelOffline, err)
+	case !errors.Is(err, ErrResponseTooLarge) && !isJSONRPC(err) && strings.Contains(err.Error(), ErrResponseTooLarge.Error()):
+		// The SDK reports a failed body read with %v, which loses the
+		// cappedBody's error; its text is still there.
+		return fmt.Errorf("%w: %w", ErrResponseTooLarge, err)
 	}
 	return err
+}
+
+func isJSONRPC(err error) bool {
+	var rpc *jsonrpcError
+	return errors.As(err, &rpc)
 }
 
 // Describe returns a short message about err that is fit for an admin (the

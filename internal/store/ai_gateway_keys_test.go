@@ -381,8 +381,23 @@ func TestValidateGatewayKey_Owner(t *testing.T) {
 	t.Run("owner gone", func(t *testing.T) {
 		u := mustCreateUser(t, s, "own-gone@x", "user")
 		plain := mint(u.ID)
-		if err := s.DeleteUser(ctx, u.ID); err != nil {
+		// The foreign key would delete the key with its owner, and the key
+		// lookup alone would then refuse it. With foreign keys off on one
+		// connection the key row stays and only the owner is gone, so the
+		// owner lookup is what has to refuse it.
+		conn, err := s.q.DB().Conn(ctx)
+		if err != nil {
 			t.Fatal(err)
+		}
+		for _, stmt := range []string{"PRAGMA foreign_keys=OFF", "DELETE FROM users WHERE id='" + u.ID + "'", "PRAGMA foreign_keys=ON"} {
+			if _, err := conn.ExecContext(ctx, stmt); err != nil {
+				t.Fatalf("%s: %v", stmt, err)
+			}
+		}
+		_ = conn.Close()
+		var n int
+		if err := s.q.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM ai_gateway_keys WHERE user_id = ?`, u.ID).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("precondition: key rows of the deleted owner = %d (%v), want 1", n, err)
 		}
 		if valid(plain) {
 			t.Fatal("a key whose owner is missing was accepted")

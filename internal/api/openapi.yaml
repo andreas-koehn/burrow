@@ -2371,9 +2371,13 @@ paths:
         or the operator's rename. Methods beyond tools (`resources/*`,
         `prompts/*`, …) are refused with JSON-RPC error -32601.
 
-        A `tools/call` passes the source's concurrency and requests-per-minute
-        limits and the key's rate limits (a limit hit is a JSON-RPC error
-        whose data carries `retryAfterMs`), redaction (scopes
+        A `tools/call` passes the key's rate limits, then the source's
+        concurrency (`max_concurrent`, 0 = no limit) and requests-per-minute
+        limits (a limit hit is a JSON-RPC error whose data carries
+        `retryAfterMs`). Rate limits with window minute count tool calls
+        like model requests: those scoped to the gateway key, to the
+        source's backing service and global ones; day-window quotas neither
+        count nor refuse tool calls. Then come redaction (scopes
         `tool_arguments` and `tool_result`), the guardrail request patterns
         on the arguments and the answer patterns on the result, a timeout
         (the source's, at most 300 s) and a 1 MiB cap on the result. An
@@ -6009,6 +6013,14 @@ paths:
         `/mcp`; it must not be the name or rename of another tool of the
         source (409). Not offered as a management MCP tool. The same
         recent-confirmation rule as for creating a source applies.
+
+        A gateway key's allow-list names a tool by the name it is served
+        under, so a rename can give the tool to keys whose allow-list
+        already names the new name (and take it from keys that name the old
+        one). When the body carries `rename`, the answer lists the active
+        keys of every user that name `<slug>__<new served name>` exactly in
+        `keys_matching_rename`, so the dashboard can warn; keys with
+        `<slug>__*` had the tool before and are not listed.
       requestBody:
         required: true
         content:
@@ -6017,10 +6029,25 @@ paths:
             example: { rename: create_issue, read_only: false }
       responses:
         '200':
-          description: The tool.
+          description: The tool, with keys_matching_rename when the body carried a rename.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/MCPSourceTool' }
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/MCPSourceTool'
+                  - type: object
+                    properties:
+                      keys_matching_rename:
+                        type: array
+                        description: Active gateway keys whose allow-list names the new served name exactly. Only present when the body carried rename.
+                        items:
+                          type: object
+                          required: [id, name, key_prefix, user_id]
+                          properties:
+                            id: { type: string }
+                            name: { type: string }
+                            key_prefix: { type: string }
+                            user_id: { type: string }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/ForbiddenOrReauth' }

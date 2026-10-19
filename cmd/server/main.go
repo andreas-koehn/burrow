@@ -1022,7 +1022,7 @@ func newRootCmd() *cobra.Command {
 				Services:    st,
 				AIProviders: st,
 				MCPSources:  st,
-				MCPGateway:  mcpPool,
+				MCPGateway:  mcpGatewayParts{Pool: mcpPool, tools: mcpTools},
 				MCPTools:    mcpTools,
 				AILimiter:   aiLimiter,
 				AIBreaker:   aiBreaker,

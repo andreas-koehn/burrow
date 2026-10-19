@@ -439,3 +439,44 @@ func TestMCPTools_NameConflictIsFlagged(t *testing.T) {
 		}
 	}
 }
+
+// A rename can hand the tool to keys whose allow-list already names the new
+// name exactly; the answer lists them so the dashboard can warn. Keys with a
+// "<slug>__*" entry had the tool before and are not listed; revoked keys
+// neither. Without a rename in the body the field is absent.
+func TestMCPTools_RenameListsKeysItWidensTo(t *testing.T) {
+	f := newMCPToolsFixture(t, mcptest.Opts{Tools: []mcptest.ToolSpec{mcptest.Echo("echo")}})
+	f.sync(t)
+	f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/tools/echo/approve", map[string]any{"hash": f.tools(t)["echo"].CurrentHash}, f.admin)
+	ctx := context.Background()
+	named, _, err := f.st.CreateGatewayKeyFrom(ctx, "u-admin", store.NewGatewayKey{Name: "named", AllowedTools: []string{"gh__say"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []store.NewGatewayKey{{Name: "wild", AllowedTools: []string{"gh__*"}}, {Name: "other", AllowedTools: []string{"gh__echo", "xx__say"}}} {
+		if _, _, err := f.st.CreateGatewayKeyFrom(ctx, "u-user", in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	revoked, _, _ := f.st.CreateGatewayKeyFrom(ctx, "u-user", store.NewGatewayKey{Name: "gone", AllowedTools: []string{"gh__say"}})
+	if err := f.st.RevokeGatewayKey(ctx, "u-user", false, revoked.ID); err != nil {
+		t.Fatal(err)
+	}
+	rec := f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh/tools/echo", map[string]any{"rename": "say"}, f.admin)
+	var got struct {
+		ServedName string `json:"served_name"`
+		Keys       *[]struct {
+			ID, Name, KeyPrefix string
+		} `json:"keys_matching_rename"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK || got.Keys == nil {
+		t.Fatalf("rename: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(*got.Keys) != 1 || (*got.Keys)[0].ID != named.ID || (*got.Keys)[0].Name != "named" || got.ServedName != "say" {
+		t.Fatalf("keys_matching_rename = %+v", *got.Keys)
+	}
+	rec = f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh/tools/echo", map[string]any{"hidden": false}, f.admin)
+	if strings.Contains(rec.Body.String(), "keys_matching_rename") {
+		t.Fatalf("no rename, yet the field is there: %s", rec.Body.String())
+	}
+}

@@ -49,8 +49,8 @@ func bootMCPGatewayE2E(t *testing.T, tunnels tunnelStreamOpener, remote *mcptest
 		t.Cleanup(tr.CloseIdleConnections)
 		pool := mcpgw.New(mcpgw.Options{Store: st, Vault: deps.CredentialVault, Remote: tr, Tunnels: proxyDialerAdapter{st: st, srv: tunnels}})
 		t.Cleanup(pool.Close)
-		deps.MCPSources, deps.MCPGateway = st, pool
-		deps.MCPTools = newMCPToolGateway(st, v04, pool, discardLog())
+		tools := newMCPToolGateway(st, v04, pool, discardLog())
+		deps.MCPSources, deps.MCPGateway, deps.MCPTools = st, mcpGatewayParts{Pool: pool, tools: tools}, tools
 		env.st, env.pool = st, pool
 	})
 	return env
@@ -95,12 +95,18 @@ func (e *mcpGWEnv) source(t *testing.T, body map[string]any) string {
 // key creates a gateway key through the API.
 func (e *mcpGWEnv) key(t *testing.T, tools []string, readOnly bool) string {
 	t.Helper()
+	k, _ := e.keyWithID(t, tools, readOnly)
+	return k
+}
+
+func (e *mcpGWEnv) keyWithID(t *testing.T, tools []string, readOnly bool) (key, id string) {
+	t.Helper()
 	code, raw := e.admin(t, "POST", "/api/v1/ai/keys", map[string]any{"name": "tools", "allowed_tools": tools, "tools_read_only": readOnly})
-	var k struct{ Key string }
-	if code != http.StatusCreated || json.Unmarshal(raw, &k) != nil || k.Key == "" {
+	var k struct{ Key, ID string }
+	if code != http.StatusCreated || json.Unmarshal(raw, &k) != nil || k.Key == "" || k.ID == "" {
 		t.Fatalf("create key: %d %s", code, raw)
 	}
-	return k.Key
+	return k.Key, k.ID
 }
 
 func (e *mcpGWEnv) connect(t *testing.T, slug, key string) *mcp.ClientSession {
@@ -144,7 +150,7 @@ func TestE2E_MCPGatewayRemote(t *testing.T) {
 			}})
 			e := bootMCPGatewayE2E(t, &fakeHTTPTunnelLookup{}, up)
 			serviceID := e.source(t, map[string]any{"slug": "gh", "kind": "remote", "url": up.URL, "credential_slot": "ALPHA"})
-			key := e.key(t, []string{"gh__*"}, false)
+			key, keyID := e.keyWithID(t, []string{"gh__*"}, false)
 
 			cs := e.connect(t, "gh", key)
 			if got := toolNames(t, cs); got != "big,echo,fail,mutate,slow" {
@@ -161,24 +167,33 @@ func TestE2E_MCPGatewayRemote(t *testing.T) {
 					}
 				}
 			}
-			var kind, provider, model string
-			var status int
-			deadline := time.Now().Add(10 * time.Second)
-			for {
-				err := e.sqldb.QueryRow(`SELECT kind, provider_slug, requested_model, upstream_status FROM usage_events WHERE kind = 'mcp'`).Scan(&kind, &provider, &model, &status)
-				if err == nil || time.Now().After(deadline) {
-					break
+			var kind, provider, model, gk string
+			var status, bytesIn, bytesOut, latency int
+			usage := func(tool string) {
+				t.Helper()
+				deadline := time.Now().Add(10 * time.Second)
+				for {
+					err := e.sqldb.QueryRow(`SELECT kind, provider_slug, requested_model, upstream_status, gateway_key_id, bytes_in, bytes_out, latency_ms
+					  FROM usage_events WHERE kind = 'mcp' AND requested_model = ?`, tool).Scan(&kind, &provider, &model, &status, &gk, &bytesIn, &bytesOut, &latency)
+					if err == nil || time.Now().After(deadline) {
+						return
+					}
+					time.Sleep(20 * time.Millisecond)
 				}
-				time.Sleep(20 * time.Millisecond)
 			}
-			if kind != "mcp" || provider != "gh" || model != "echo" || status != http.StatusOK {
-				t.Fatalf("usage row = %s %s %s %d", kind, provider, model, status)
+			usage("echo")
+			if kind != "mcp" || provider != "gh" || model != "echo" || status != http.StatusOK || gk != keyID || bytesIn == 0 || bytesOut == 0 {
+				t.Fatalf("usage row = %s %s %s %d key %q bytes %d/%d", kind, provider, model, status, gk, bytesIn, bytesOut)
+			}
+			mcpCall(t, cs, false, "slow", map[string]any{"ms": 40})
+			if usage("slow"); latency < 40 || gk != keyID {
+				t.Fatalf("usage row of a 40 ms call: latency %d ms, key %q", latency, gk)
 			}
 			ring := e.v04.InspectorMgr.Get(serviceID)
-			if ring == nil || ring.Len() != 1 {
-				t.Fatal("no inspector entry on the backing service")
+			if ring == nil || ring.Len() != 2 {
+				t.Fatal("no inspector entries on the backing service")
 			}
-			if en := ring.List(inspector.ListQuery{})[0]; en.MCP == nil || en.MCP.Tool != "echo" || en.Provider != "gh" || en.Status != http.StatusOK {
+			if en := ring.List(inspector.ListQuery{})[1]; en.MCP == nil || en.MCP.Tool != "echo" || en.Provider != "gh" || en.Status != http.StatusOK {
 				t.Fatalf("inspector entry = %+v", en)
 			}
 			if rows := e.gatewayAudit(t); len(rows) != 1 || rows[0].Result != "ok" || rows[0].Subject != "gh" || strings.Contains(rows[0].Payload, key) {

@@ -423,7 +423,7 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"mcpSourceUpdate":        {status: "200", typ: oaType[mcpSourceResp]()},
 	"mcpSourceSync":          {status: "200", typ: oaType[mcpgw.SyncResult]()},
 	"mcpSourceToolsList":     {status: "200", typ: oaType[mcpSourceToolResp](), list: true},
-	"mcpSourceToolUpdate":    {status: "200", typ: oaType[mcpSourceToolResp]()},
+	"mcpSourceToolUpdate":    {status: "200", typ: oaType[putMCPToolResp]()},
 	"mcpSourceToolApprove":   {status: "200", typ: oaType[mcpSourceToolResp]()},
 	"mcpSourceApproveAll":    {status: "200", typ: oaType[mcpApproveAllResp]()},
 	"providerModelsList":     {status: "200", typ: oaType[aiProviderModelResp](), list: true},

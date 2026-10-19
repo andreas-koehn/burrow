@@ -83,7 +83,7 @@ func (d Deps) mcpAddressLimiter() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		counted := limiter(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			if carriesCredential(r) {
 				counted.ServeHTTP(w, r)
 				return
 			}
@@ -92,10 +92,23 @@ func (d Deps) mcpAddressLimiter() func(http.Handler) http.Handler {
 	}
 }
 
+// carriesCredential reports whether r carries a credential the MCP endpoints
+// look up, parsed as the tool gateway parses it (mcpgw.presentedKey): a
+// bearer token in any case and with any spacing, or an x-api-key value. The
+// limits in front of the endpoints count every such spelling, not only
+// "Bearer ". Another scheme (Basic) costs no lookup and is not counted.
+func carriesCredential(r *http.Request) bool {
+	const scheme = "bearer "
+	if auth := strings.TrimSpace(r.Header.Get("Authorization")); len(auth) > len(scheme) && strings.EqualFold(auth[:len(scheme)], scheme) {
+		return true
+	}
+	return strings.TrimSpace(r.Header.Get("X-Api-Key")) != ""
+}
+
 // toolsAddressLimiter is the per-address limit in front of /mcp/<slug>, with
 // buckets of its own. Like mcpAddressLimiter it counts only a request that
-// carries a credential (a bearer token or x-api-key): that is the one that
-// costs a hash and a store lookup.
+// carries a credential (carriesCredential): that is the one that costs a
+// hash and a store lookup.
 func (d Deps) toolsAddressLimiter() func(http.Handler) http.Handler {
 	limit := d.MCPToolsRateLimitPerIP
 	if limit <= 0 {
@@ -110,7 +123,7 @@ func (d Deps) toolsAddressLimiter() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		counted := limiter(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || r.Header.Get("X-Api-Key") != "" {
+			if carriesCredential(r) {
 				counted.ServeHTTP(w, r)
 				return
 			}

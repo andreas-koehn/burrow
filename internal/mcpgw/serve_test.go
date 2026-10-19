@@ -646,7 +646,7 @@ func TestServe_UpstreamFailures(t *testing.T) {
 func TestServe_ArgumentsMustBeAnObject(t *testing.T) {
 	up := mcptest.NewServer(t, mcptest.Opts{TLS: true})
 	g := newGWFixture(t, up)
-	key, k := g.key(t, g.userID, []string{"gh__*"}, false)
+	_, k := g.key(t, g.userID, []string{"gh__*"}, false)
 	src := g.source(t)
 	tools, _, err := g.gw.ToolsFor(context.Background(), src, Caller{GatewayKeyID: k.ID, UserID: g.userID, AllowedTools: []string{"gh__*"}})
 	if err != nil {
@@ -664,5 +664,120 @@ func TestServe_ArgumentsMustBeAnObject(t *testing.T) {
 			t.Fatalf("%s: %+v %v", raw, res, err)
 		}
 	}
-	_ = key
+}
+
+// waitCalls waits until the upstream has seen n calls of tool.
+func waitCalls(t *testing.T, up *mcptest.Server, tool string, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(up.CallsTo(tool)) < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("the upstream saw %d calls of %s, want %d", len(up.CallsTo(tool)), tool, n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A key over its own rate limit does not use up the source's rpm: the key is
+// charged first, so its refused calls leave the source's budget to others.
+// Limit refusals are audited at most once per key, source and minute.
+func TestServe_ThrottledKeyDoesNotDrainTheSource(t *testing.T) {
+	up := mcptest.NewServer(t, mcptest.Opts{TLS: true})
+	rpm := 2
+	g := newGWFixture(t, up, func(in *store.MCPSourceInput) { in.RPM = &rpm })
+	keyA, a := g.key(t, g.userID, []string{"gh__*"}, false)
+	keyB, _ := g.key(t, g.userID, []string{"gh__*"}, false)
+	g.quota = quota.NewWithStores(limitRows{{ID: "rl", Scope: quota.ScopeGatewayKey, Subject: a.ID, Dimension: quota.DimensionRPM, Lim: 1, Burst: 1, Window: quota.WindowMinute}}, nil)
+	if err := g.quota.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	g.newGateway(t, nil)
+	csA, csB := g.connect(t, keyA, "gh", ""), g.connect(t, keyB, "gh", "")
+	if _, err := call(t, csA, "echo", map[string]any{"text": "a"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		_, err := call(t, csA, "echo", map[string]any{"text": "a"})
+		limitErr(t, err, "rate_limit")
+	}
+	if _, err := call(t, csB, "echo", map[string]any{"text": "b"}); err != nil {
+		t.Fatalf("the other key was starved by the throttled one: %v", err)
+	}
+	_, events, _ := g.rec.snapshot()
+	denied := 0
+	for _, e := range events {
+		if e.Result == "denied" {
+			denied++
+		}
+	}
+	if denied != 1 {
+		t.Fatalf("limit refusals audited %d times, want 1 (sampled per key, source and minute)", denied)
+	}
+}
+
+// The concurrency place is given back after a timeout and after a panic.
+func TestServe_ConcurrencyPlaceReturned(t *testing.T) {
+	up := mcptest.NewServer(t, mcptest.Opts{TLS: true})
+	one, timeout := 1, 1
+	g := newGWFixture(t, up, func(in *store.MCPSourceInput) { in.MaxConcurrent, in.TimeoutS = &one, &timeout })
+	key, _ := g.key(t, g.userID, []string{"gh__*"}, false)
+	cs := g.connect(t, key, "gh", "")
+	if res, err := call(t, cs, "slow", map[string]any{"ms": 3000}); err != nil || !res.IsError {
+		t.Fatalf("timeout: %+v %v", res, err)
+	}
+	if _, err := call(t, cs, "echo", map[string]any{"text": "x"}); err != nil {
+		t.Fatalf("after a timeout: %v", err)
+	}
+	g.gw.opts.Upstream = panicky{g.pool}
+	if res, err := call(t, cs, "echo", map[string]any{"text": "x"}); err != nil || !res.IsError {
+		t.Fatalf("panic: %+v %v", res, err)
+	}
+	g.gw.opts.Upstream = g.pool
+	if _, err := call(t, cs, "echo", map[string]any{"text": "x"}); err != nil {
+		t.Fatalf("after a panic: %v", err)
+	}
+}
+
+type panicky struct{ ToolCaller }
+
+func (panicky) CallTool(context.Context, db.MCPSource, *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+	panic("boom")
+}
+
+// A changed concurrency limit counts the calls already running: raising it
+// from 1 to 2 while one call runs admits one more, not two.
+func TestServe_ConcurrencyLimitChangeCountsRunningCalls(t *testing.T) {
+	up := mcptest.NewServer(t, mcptest.Opts{TLS: true})
+	one := 1
+	g := newGWFixture(t, up, func(in *store.MCPSourceInput) { in.MaxConcurrent = &one })
+	key, _ := g.key(t, g.userID, []string{"gh__*"}, false)
+	cs := g.connect(t, key, "gh", "")
+	done := make(chan error, 2)
+	slow := func() {
+		_, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "slow", Arguments: map[string]any{"ms": 1500}})
+		done <- err
+	}
+	go slow()
+	waitCalls(t, up, "slow", 1)
+	two := 2
+	if _, err := g.st.UpdateMCPSource(context.Background(), "gh", store.MCPSourceUpdate{MaxConcurrent: &two}); err != nil {
+		t.Fatal(err)
+	}
+	go slow()
+	waitCalls(t, up, "slow", 2)
+	_, err := call(t, cs, "echo", map[string]any{"text": "x"})
+	limitErr(t, err, "source_concurrency")
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A deleted source's limits are forgotten once nothing runs.
+	g.gw.Forget("gh")
+	g.gw.mu.Lock()
+	_, kept := g.gw.limits["gh"]
+	g.gw.mu.Unlock()
+	if kept {
+		t.Fatal("Forget kept the limits of an idle source")
+	}
 }

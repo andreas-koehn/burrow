@@ -301,7 +301,61 @@ func (d Deps) PutMCPSourceTool(w http.ResponseWriter, r *http.Request) {
 	d.auditMCPTool(r, audit.ActionMCPToolOverride, slug, "ok", map[string]any{
 		"tool": name, "hidden": t.Hidden, "rename": t.Rename, "description_override": t.DescriptionOverride != "", "read_only": t.ReadOnly,
 	})
-	writeJSON(w, http.StatusOK, mcpToolViewOf(r.Context(), st, t))
+	out := putMCPToolResp{mcpSourceToolResp: mcpToolViewOf(r.Context(), st, t)}
+	if in.Rename != nil {
+		keys, err := d.keysNaming(r.Context(), slug, out.ServedName)
+		if err != nil {
+			d.Log.Warn("tool rename: keys not read", "source", slug, "err", err)
+			keys = []mcpKeyRef{}
+		}
+		out.KeysMatchingRename = &keys
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// putMCPToolResp is the answer of PUT …/tools/{name}: the tool, and with a
+// rename in the body the keys the new name may hand the tool to.
+type putMCPToolResp struct {
+	mcpSourceToolResp
+	// KeysMatchingRename lists the active gateway keys whose allow-list
+	// names "<slug>__<new served name>" exactly: the rename gives them the
+	// tool if they did not have it. Keys with "<slug>__*" had it before and
+	// are not listed. Only present when the body changed the rename.
+	KeysMatchingRename *[]mcpKeyRef `json:"keys_matching_rename,omitempty"`
+}
+
+// mcpKeyRef names a gateway key without its secret.
+type mcpKeyRef struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	KeyPrefix string `json:"key_prefix"`
+	UserID    string `json:"user_id"`
+}
+
+// keysNaming returns the active keys of every user whose allow-list holds
+// "<slug>__<served>".
+func (d Deps) keysNaming(ctx context.Context, slug, served string) ([]mcpKeyRef, error) {
+	out := []mcpKeyRef{}
+	if d.AIGatewayKeys == nil {
+		return out, nil
+	}
+	keys, err := d.AIGatewayKeys.ListGatewayKeys(ctx, "", true)
+	if err != nil {
+		return nil, err
+	}
+	entry := slug + "__" + served
+	for _, k := range keys {
+		if k.RevokedAt != nil {
+			continue
+		}
+		for _, e := range k.AllowedTools {
+			if e == entry {
+				out = append(out, mcpKeyRef{ID: k.ID, Name: k.Name, KeyPrefix: k.KeyPrefix, UserID: k.UserID})
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 // PostMCPSourceToolApprove handles POST

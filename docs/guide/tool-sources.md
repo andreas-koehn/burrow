@@ -166,6 +166,17 @@ announces a change.
 
 ## 4. Limits {#limits}
 
+- **Rate limits count tool calls.** A tool call counts against the rate
+  limits with a per-minute window that apply to it: those of the gateway
+  key, those of the source's backing service, and global ones, as a model
+  request does. Each source adds its own requests per minute and
+  `max_concurrent` (0 = no limit). Day quotas and budgets neither count nor
+  refuse tool calls.
+- **A rename changes who may call a tool.** A key's allow-list names a tool
+  by the name it is served under. When you rename a tool, keys that list the
+  old name lose it and keys that already list the new name gain it; the
+  dashboard is told which keys those are (`keys_matching_rename`).
+
 - **Tools only.** The bridge passes `tools/list` and `tools/call` and nothing
   else. Resources, prompts, sampling, elicitation, roots and logging are not
   published. The relay refuses those methods, too.
