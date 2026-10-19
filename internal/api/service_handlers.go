@@ -351,6 +351,10 @@ func (d Deps) DeleteService(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "an AI provider still uses this service ("+
 			errDetail(err, store.ErrServiceHasProvider)+"); delete the provider, and the models that use it, first")
 		return
+	case errors.Is(err, store.ErrServiceHasMCPSource):
+		writeErr(w, http.StatusConflict, "a tool source still uses this service ("+
+			errDetail(err, store.ErrServiceHasMCPSource)+"); delete the tool source first")
+		return
 	case errors.Is(err, store.ErrProviderInUse):
 		writeErr(w, http.StatusConflict, "models still use this service's provider ("+
 			errDetail(err, store.ErrProviderInUse)+"); remove them first")

@@ -94,6 +94,7 @@ var (
 	aiRead            = anyOf(authz.PermAIReadOwn, authz.PermAIReadAny, authz.PermAIConfigureOwn, authz.PermAIConfigureAny)
 	aiConfigure       = anyOf(authz.PermAIConfigureOwn, authz.PermAIConfigureAny)
 	providersRead     = anyOf(authz.PermAIReadOwn, authz.PermAIReadAny, authz.PermAIProvidersManage)
+	mcpSourcesRead    = anyOf(authz.PermMcpSourcesRead, authz.PermMcpSourcesManage)
 	quotasRead        = anyOf(authz.PermQuotasReadOwn, authz.PermQuotasReadAny)
 	inspectorRead     = anyOf(authz.PermInspectorReadOwn, authz.PermInspectorReadAny)
 	inspectorReplay   = anyOf(authz.PermInspectorReplayOwn, authz.PermInspectorReplayAny)
@@ -197,6 +198,11 @@ var routeAccess = map[string]access{
 	"POST /api/v1/ai/providers/{slug}/models/sync": needs(authz.PermAIProvidersManage), // an outbound call
 	"POST /api/v1/ai/providers/{slug}/models":      needs(authz.PermAIProvidersManage),
 	"DELETE /api/v1/ai/providers/{slug}/models":    needs(authz.PermAIProvidersManage),
+	"GET /api/v1/mcp/sources":                      needs(mcpSourcesRead...),
+	"GET /api/v1/mcp/sources/{slug}":               needs(mcpSourcesRead...),
+	"POST /api/v1/mcp/sources":                     needs(authz.PermMcpSourcesManage),
+	"PUT /api/v1/mcp/sources/{slug}":               needs(authz.PermMcpSourcesManage),
+	"DELETE /api/v1/mcp/sources/{slug}":            needs(authz.PermMcpSourcesManage),
 	"GET /api/v1/ai/gateway":                       needs(aiRead...),
 	"GET /api/v1/ai/models":                        needs(aiRead...),
 	"GET /api/v1/ai/models/{name}":                 needs(aiRead...),

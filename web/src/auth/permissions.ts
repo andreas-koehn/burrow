@@ -42,6 +42,8 @@ export const ALL_PERMISSIONS: readonly string[] = [
   "ai:providers:manage",
   "budgets:manage",
   "cost:pricing:manage",
+  "mcp:sources:read",
+  "mcp:sources:manage",
 ];
 
 /** The built-in "user" role (`userPerms` in internal/authz/authz.go). */
@@ -103,6 +105,8 @@ export const P = {
   aiProvidersManage: "ai:providers:manage",
   budgetsManage: "budgets:manage",
   costPricingManage: "cost:pricing:manage",
+  mcpSourcesRead: "mcp:sources:read",
+  mcpSourcesManage: "mcp:sources:manage",
 } as const;
 
 export type PermissionKey = keyof typeof P;

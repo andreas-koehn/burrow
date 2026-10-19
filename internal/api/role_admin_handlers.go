@@ -240,6 +240,9 @@ var permissionInfoTable = map[authz.Permission]permissionInfo{
 	authz.PermAIConfigureOwn:    {Group: "AI", Description: "Configure own AI service settings"},
 	authz.PermAIConfigureAny:    {Group: "AI", Description: "Configure all AI service settings"},
 	authz.PermAIProvidersManage: {Group: "AI", Description: "Create, change and delete AI providers and their model catalogs. Reaches the stored upstream credentials (a provider sends one to the address it names): give it like admin rights"},
+	// MCP gateway tool sources
+	authz.PermMcpSourcesRead:   {Group: "MCP", Description: "Read tool sources and their tools"},
+	authz.PermMcpSourcesManage: {Group: "MCP", Description: "Create, change, sync and delete tool sources, approve and override their tools. A source sends a stored upstream credential to the address it names: give it like admin rights"},
 	// Quotas + cost
 	authz.PermQuotasReadOwn:     {Group: "Quotas", Description: "Read own usage + limits"},
 	authz.PermQuotasReadAny:     {Group: "Quotas", Description: "Read all usage + limits"},

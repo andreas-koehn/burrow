@@ -160,6 +160,11 @@ var openAPIOperationIDs = map[string]string{
 	"PUT /api/v1/ai/providers/{slug}":                                           "providerUpdate",
 	"DELETE /api/v1/ai/providers/{slug}":                                        "providerDelete",
 	"PUT /api/v1/ai/providers/{slug}/upstream":                                  "providerUpstreamUpdate",
+	"GET /api/v1/mcp/sources":                                                   "mcpSourcesList",
+	"POST /api/v1/mcp/sources":                                                  "mcpSourceCreate",
+	"GET /api/v1/mcp/sources/{slug}":                                            "mcpSourceGet",
+	"PUT /api/v1/mcp/sources/{slug}":                                            "mcpSourceUpdate",
+	"DELETE /api/v1/mcp/sources/{slug}":                                         "mcpSourceDelete",
 	"GET /api/v1/ai/providers/{slug}/models":                                    "providerModelsList",
 	"POST /api/v1/ai/providers/{slug}/models":                                   "providerModelCreate",
 	"DELETE /api/v1/ai/providers/{slug}/models":                                 "providerModelDelete",
@@ -274,6 +279,8 @@ var openAPIRequestBodies = map[string]openAPIRequestBody{
 	"providerCreate":         {typ: oaType[postProviderReq]()},
 	"providerUpdate":         {typ: oaType[putProviderReq]()},
 	"providerUpstreamUpdate": {typ: oaType[upstreamReq]()},
+	"mcpSourceCreate":        {typ: oaType[postMCPSourceReq]()},
+	"mcpSourceUpdate":        {typ: oaType[putMCPSourceReq]()},
 	// PostAIProviderModel (ai_provider_handlers.go) decodes into
 	// `var in struct { ID string `json:"id"` }`.
 	// TestOpenAPI_ProviderModelBody probes the handler instead.
@@ -393,6 +400,10 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"providerGet":            {status: "200", typ: oaType[aiProviderResp]()},
 	"providerUpdate":         {status: "200", typ: oaType[aiProviderResp]()},
 	"providerUpstreamUpdate": {status: "200", typ: oaType[aiProviderResp]()},
+	"mcpSourcesList":         {status: "200", typ: oaType[mcpSourceResp](), list: true},
+	"mcpSourceCreate":        {status: "201", typ: oaType[mcpSourceResp]()},
+	"mcpSourceGet":           {status: "200", typ: oaType[mcpSourceResp]()},
+	"mcpSourceUpdate":        {status: "200", typ: oaType[mcpSourceResp]()},
 	"providerModelsList":     {status: "200", typ: oaType[aiProviderModelResp](), list: true},
 	"providerModelsSync":     {status: "200", keys: []string{"count"}},
 	"providerMetricsGet":     {status: "200", typ: oaType[endpointMetricsResp]()},

@@ -410,3 +410,35 @@ func (x *DB) Placeholder(_ int) string { return "?" }
 
 // compile-time assertion: *DB satisfies Backend.
 var _ Backend = (*DB)(nil)
+
+// MCPSource is a row of the mcp_sources table: a tool source of the MCP
+// gateway. A "remote" source is an https MCP server the relay calls; a
+// "tunnel" source is an MCP server behind a client, reached through the
+// tunnel of its service.
+type MCPSource struct {
+	Slug      string
+	Name      string
+	Kind      string // "remote" or "tunnel"
+	ServiceID string // backing service: a hidden "direct" row (remote) or an http service (tunnel)
+
+	URL             string // remote only
+	CredentialSlot  string // remote only, vault slot name (never the secret)
+	AuthHeader      string // default "Authorization"
+	AuthFormat      string // default "Bearer {key}"
+	ProtocolVersion string // "" = negotiate
+
+	RPM           int // requests per minute, 0 = no limit
+	MaxConcurrent int // 0 = no limit
+	TimeoutS      int // per call
+	Enabled       bool
+
+	LastSyncAt    *time.Time
+	LastSyncError string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+
+	// Filled by reads: the tools that are not removed, and those waiting for
+	// approval.
+	ToolCount    int
+	PendingCount int
+}

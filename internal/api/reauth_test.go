@@ -58,6 +58,10 @@ var reauthGuarded = []apiRoute{
 	{http.MethodPost, "/api/v1/services/{serviceID}/domains"},
 	{http.MethodPut, "/api/v1/services/{serviceID}/domains/{did}"},
 	{http.MethodPost, "/api/v1/settings/test-email"},
+	// Tool sources carry a URL and a credential slot name.
+	{http.MethodPost, "/api/v1/mcp/sources"},
+	{http.MethodPut, "/api/v1/mcp/sources/{slug}"},
+	{http.MethodDelete, "/api/v1/mcp/sources/{slug}"},
 }
 
 func errorOf(rec *httptest.ResponseRecorder) string {

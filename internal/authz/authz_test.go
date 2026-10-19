@@ -145,6 +145,8 @@ func TestPermissionSetIsClosed(t *testing.T) {
 		PermIPGeoManageOwn, PermIPGeoManageAny,
 		// v0.10.0
 		PermAIProvidersManage, PermBudgetsManage, PermCostPricingManage,
+		// v0.12.0
+		PermMcpSourcesRead, PermMcpSourcesManage,
 	}
 	got := AllPermissions()
 	if !slices.Equal(got, expected) {
@@ -179,6 +181,7 @@ func TestAdminHoldsEveryPermission(t *testing.T) {
 func TestUserRoleLacksTheAdminOnlyPermissions(t *testing.T) {
 	for _, p := range []Permission{
 		PermAIProvidersManage, PermBudgetsManage, PermCostPricingManage,
+		PermMcpSourcesRead, PermMcpSourcesManage,
 		PermUsersRead, PermUsersManage, PermRolesRead, PermRolesManage, PermSettingsManage,
 		PermTunnelsReadAny, PermServicesConfigureAny, PermAIReadAny,
 	} {

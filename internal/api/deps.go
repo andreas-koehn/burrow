@@ -302,6 +302,16 @@ type AIProviderStore interface {
 	RemoveProviderModel(ctx context.Context, slug, modelID string) error
 }
 
+// MCPSourceStore is the tool-source surface the management API needs.
+// *store.Store satisfies it.
+type MCPSourceStore interface {
+	ListMCPSources(ctx context.Context) ([]db.MCPSource, error)
+	MCPSourceBySlug(ctx context.Context, slug string) (db.MCPSource, error)
+	CreateMCPSource(ctx context.Context, ownerID string, in store.MCPSourceInput) (db.MCPSource, error)
+	UpdateMCPSource(ctx context.Context, slug string, u store.MCPSourceUpdate) (db.MCPSource, error)
+	DeleteMCPSource(ctx context.Context, slug string) error
+}
+
 // AIModelStore is the synthetic-model surface of the management API.
 // *store.Store satisfies it.
 type AIModelStore interface {
@@ -371,6 +381,8 @@ type Deps struct {
 	Services ServiceStore
 	// AIProviders is the providers table behind /ai/providers.
 	AIProviders AIProviderStore
+	// MCPSources is the tool sources table behind /mcp/sources.
+	MCPSources MCPSourceStore
 	// AILimiter tells how many requests a provider with a concurrency limit
 	// is serving now (the gateway's limiter). nil = reported as 0.
 	AILimiter interface{ InUse(slug string) int }

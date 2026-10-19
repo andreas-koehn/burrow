@@ -291,6 +291,73 @@ components:
             Tunnel provider: the name of the client token of the client that
             served it last. Empty while no client has served it, and always
             empty for a direct provider.
+    MCPSource:
+      type: object
+      description: >
+        One tool source of the MCP gateway. The credential is never part of
+        it: credential_slot names a vault slot, credential_present tells
+        whether the slot holds a value.
+      required: [slug, name, kind, service_id, endpoint_url, url, credential_slot, credential_present, auth_header, auth_format, protocol_version, rpm, max_concurrent, timeout_s, enabled, last_sync_at, last_sync_error, tool_count, pending_count, created_at, updated_at]
+      properties:
+        slug: { type: string, pattern: '^[a-z0-9]([a-z0-9-]{0,22}[a-z0-9])?$' }
+        name: { type: string }
+        kind: { type: string, enum: [remote, tunnel] }
+        service_id:
+          type: string
+          description: The backing service row. Hidden for a remote source; the bound http service for a tunnel source.
+        endpoint_url:
+          type: string
+          description: 'https://<auth_domain>/mcp/<slug>; empty while the relay has no auth domain.'
+        url: { type: string, description: 'The upstream MCP URL of a remote source; empty for a tunnel source.' }
+        credential_slot: { type: string, description: 'Name of the vault slot; empty when the upstream needs no credential.' }
+        credential_present: { type: boolean }
+        auth_header: { type: string }
+        auth_format: { type: string, description: 'Holds the literal {key} placeholder, never the credential.' }
+        protocol_version:
+          type: string
+          description: The MCP revision pinned toward the upstream; empty negotiates.
+        rpm: { type: integer, description: 'Calls per minute the source accepts; 0 = no limit.' }
+        max_concurrent: { type: integer, description: 'Calls served at once; 0 = no limit.' }
+        timeout_s: { type: integer, description: 'Per-call timeout, 1-300.' }
+        enabled: { type: boolean }
+        last_sync_at: { type: string, format: date-time, nullable: true }
+        last_sync_error: { type: string }
+        tool_count: { type: integer, description: 'Tools the upstream offers, not counting removed ones.' }
+        pending_count: { type: integer, description: 'Tools waiting for approval.' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    MCPSourceCreate:
+      type: object
+      additionalProperties: false
+      required: [slug, kind]
+      properties:
+        slug: { type: string }
+        name: { type: string, description: 'Display name, at most 120 characters; the slug when left out.' }
+        kind: { type: string, enum: [remote, tunnel] }
+        service_id: { type: string, description: 'Kind tunnel: the http service to bind.' }
+        url: { type: string, description: 'Kind remote: an https URL.' }
+        credential_slot: { type: string, description: 'Kind remote: one vault slot, 1-32 characters of A-Z, 0-9 and _.' }
+        auth_header: { type: string, description: 'Kind remote: default Authorization.' }
+        auth_format: { type: string, description: 'Kind remote: must contain {key} once; default "Bearer {key}".' }
+        protocol_version: { type: string, description: 'A revision date such as 2025-06-18; empty negotiates.' }
+        rpm: { type: integer, minimum: 0, maximum: 100000 }
+        max_concurrent: { type: integer, minimum: 0, maximum: 1000 }
+        timeout_s: { type: integer, minimum: 1, maximum: 300 }
+        enabled: { type: boolean, description: 'Default true.' }
+    MCPSourceUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        url: { type: string }
+        credential_slot: { type: string }
+        auth_header: { type: string }
+        auth_format: { type: string }
+        protocol_version: { type: string }
+        rpm: { type: integer, minimum: 0, maximum: 100000 }
+        max_concurrent: { type: integer, minimum: 0, maximum: 1000 }
+        timeout_s: { type: integer, minimum: 1, maximum: 300 }
+        enabled: { type: boolean }
     AIProviderUpstream:
       type: object
       description: >
@@ -5486,6 +5553,159 @@ paths:
               schema: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ────────────────────────────────────────────────────────────────────────
+  # MCP gateway tool sources (v0.12.0)
+  # ────────────────────────────────────────────────────────────────────────
+  /api/v1/mcp/sources:
+    get:
+      tags: [mcp]
+      operationId: mcpSourcesList
+      x-burrow-permission: {kind: needs, any_of: ["mcp:sources:read", "mcp:sources:manage"]}
+      summary: List tool sources
+      description: |
+        Returns one entry per tool source, ordered by slug. A source is an
+        MCP server whose tools the gateway serves behind gateway keys: a
+        remote server the relay calls, or one behind a client. The
+        credential is never part of the answer: `credential_slot` names a
+        vault slot and `credential_present` tells whether it holds a value.
+      security:
+        - CookieAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Array of tool sources.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MCPSource'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [mcp]
+      operationId: mcpSourceCreate
+      x-burrow-permission: {kind: needs, any_of: ["mcp:sources:manage"]}
+      summary: Create a tool source (admin)
+      description: |
+        Kind `remote` adds an MCP server the relay calls itself: `url` must
+        be an https URL without credentials, query or fragment, and its
+        host must resolve to a public address (unless private upstreams
+        are allowed on the relay). It gets a hidden backing service row
+        owned by the caller, which is never listed under services. The
+        credential is set on the relay: `credential_slot` names the vault
+        slot (`BURROW_UPSTREAM_KEY_<SLOT>`) and `auth_header` / `auth_format`
+        say how it is sent upstream (`Authorization` and `Bearer {key}` when
+        left out). A field this body does not have (for example `api_key`)
+        is refused with 400 naming the field.
+
+        Kind `tunnel` binds an MCP server behind a client to the existing
+        http service `service_id` and closes that service's direct doors
+        (gateway-only). The caller must be able to configure the service.
+        `url` and the credential fields are refused on this kind.
+
+        The slug is 1-24 characters of a-z, 0-9 and hyphens, starting and
+        ending with a letter or digit; `burrow` and `v1` are reserved. It
+        names the source at `/mcp/<slug>` and prefixes its tools on `/mcp`.
+        `timeout_s` is 60 when left out (at most 300), `rpm` and
+        `max_concurrent` 0 (no limit). While the relay has no services
+        domain, a dashboard session must have confirmed its password
+        recently (see `POST /api/v1/auth/reauth`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MCPSourceCreate' }
+            example: { slug: github, name: GitHub, kind: remote, url: 'https://mcp.example.com/mcp', credential_slot: GITHUB_MCP }
+      responses:
+        '201':
+          description: The source.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MCPSource' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
+        '409':
+          description: The slug or the service is already used by a source, or `service_id` is not an http service.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/mcp/sources/{slug}:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [mcp]
+      operationId: mcpSourceGet
+      x-burrow-permission: {kind: needs, any_of: ["mcp:sources:read", "mcp:sources:manage"]}
+      summary: Get one tool source
+      security:
+        - CookieAuth: []
+        - BearerAuth: []
+      responses:
+        '200':
+          description: The source.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MCPSource' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [mcp]
+      operationId: mcpSourceUpdate
+      x-burrow-permission: {kind: needs, any_of: ["mcp:sources:manage"]}
+      summary: Change a tool source (admin)
+      description: |
+        A field that is left out keeps its stored value; `""` clears
+        `credential_slot` and `protocol_version`. The slug and the kind
+        never change. `url`, `credential_slot`, `auth_header` and
+        `auth_format` belong to a remote source and are refused with 400 on
+        a tunnel source. Concurrent updates of different fields are both
+        kept. The same recent-confirmation rule as for creating applies.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MCPSourceUpdate' }
+            example: { rpm: 60, timeout_s: 30 }
+      responses:
+        '200':
+          description: The source.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MCPSource' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The source was changed by someone else at the same time (try again).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [mcp]
+      operationId: mcpSourceDelete
+      x-burrow-permission: {kind: needs, any_of: ["mcp:sources:manage"]}
+      summary: Delete a tool source (admin)
+      description: |
+        Removes the source and its tools. A remote source's hidden backing
+        service goes with it, and with that its usage settings and
+        inspector history; the vault slot is configured on the relay and is
+        not touched. For a tunnel source the service and its tunnel are
+        kept, only unbound (its gateway-only flag stays as it is). The same
+        recent-confirmation rule as for creating applies.
+      responses:
+        '204': { description: Source deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   # ────────────────────────────────────────────────────────────────────────

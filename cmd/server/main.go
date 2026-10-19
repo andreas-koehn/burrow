@@ -995,6 +995,7 @@ func newRootCmd() *cobra.Command {
 				// v0.3.0: service API + live tunnel lookup + auth domain.
 				Services:    st,
 				AIProviders: st,
+				MCPSources:  st,
 				AILimiter:   aiLimiter,
 				AIBreaker:   aiBreaker,
 				AIAttempts:  st,

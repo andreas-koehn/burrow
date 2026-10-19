@@ -77,6 +77,11 @@ const (
 	PermAIProvidersManage Permission = "ai:providers:manage"
 	PermBudgetsManage     Permission = "budgets:manage"
 	PermCostPricingManage Permission = "cost:pricing:manage"
+
+	// v0.12.0: the MCP gateway's tool sources. Held by no role but admin
+	// unless a custom role names them.
+	PermMcpSourcesRead   Permission = "mcp:sources:read"
+	PermMcpSourcesManage Permission = "mcp:sources:manage"
 )
 
 // Role is a named permission set (built-in only in v0.2.0).
@@ -108,6 +113,8 @@ var adminPerms = []Permission{
 	PermIPGeoManageAny, PermIPGeoManageOwn,
 	// v0.10.0
 	PermAIProvidersManage, PermBudgetsManage, PermCostPricingManage,
+	// v0.12.0
+	PermMcpSourcesRead, PermMcpSourcesManage,
 }
 
 // userPerms is the standard-user :own subset.
@@ -185,6 +192,8 @@ func AllPermissions() []Permission {
 		PermIPGeoManageOwn, PermIPGeoManageAny,
 		// v0.10.0
 		PermAIProvidersManage, PermBudgetsManage, PermCostPricingManage,
+		// v0.12.0
+		PermMcpSourcesRead, PermMcpSourcesManage,
 	}
 }
 

@@ -44,6 +44,10 @@ var (
 	// provider's slug, while an AI provider (tunnel or direct) points at the
 	// service.
 	ErrServiceHasProvider = db.ErrServiceHasProvider
+	// ErrServiceHasMCPSource is returned by DeleteService, wrapped with the
+	// source's slug, while a tool source points at the service: the source
+	// would otherwise be deleted with it without a word.
+	ErrServiceHasMCPSource = db.ErrServiceHasMCPSource
 )
 
 // ServiceView is the durable-fields representation of a service returned by
@@ -106,7 +110,10 @@ func (s *Store) canConfigure(ctx context.Context, callerID, callerRole, serviceI
 // the service with ON DELETE CASCADE, so deleting the service would take a
 // tunnel provider with it without a word; a direct provider's backing row is
 // deleted with its provider. A race with a new model that targets the
-// provider comes back from the database as ErrProviderInUse.
+// provider comes back from the database as ErrProviderInUse. A service that a
+// tool source points at stays the same way: the error wraps
+// ErrServiceHasMCPSource and names the source (the source of a remote kind is
+// deleted with DeleteMCPSource, together with its hidden backing row).
 func (s *Store) DeleteService(ctx context.Context, callerID, callerRole, serviceID string) (string, error) {
 	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
 	if err != nil {

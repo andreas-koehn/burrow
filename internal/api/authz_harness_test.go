@@ -118,7 +118,7 @@ func newAuthzHarness(t *testing.T, mods ...func(*Deps)) *authzHarness {
 	d := Deps{
 		Log:   discardLog(),
 		Users: st, Roles: st, Sessions: st, Settings: st, Services: st,
-		AIProviders: st, AIAttempts: st, AIModels: st, AIGatewayKeys: st,
+		AIProviders: st, MCPSources: st, AIAttempts: st, AIModels: st, AIGatewayKeys: st,
 		ClientLogins: st, Automation: st, Bearer: NewStoreBearerStore(st),
 		Events:   events.NewBus(),
 		Webhooks: x, RateLimitDB: x, RateLimits: &fakeQuotaEngine{}, Budgets: x, AIMetrics: x,

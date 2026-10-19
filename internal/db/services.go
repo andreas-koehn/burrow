@@ -277,7 +277,9 @@ var ErrServiceHasProvider = errors.New("service backs an AI provider")
 // stays, and the check is part of the delete: a provider created meanwhile
 // cannot be deleted by cascade. The error wraps ErrServiceHasProvider and
 // names the provider; when only the models of a provider are in the way, it
-// wraps ErrProviderInUse and names the models.
+// wraps ErrProviderInUse and names the models. A service that a tool source
+// points at stays as well, by the same check: the error wraps
+// ErrServiceHasMCPSource and names the source.
 func (x *DB) DeleteService(ctx context.Context, id string) error {
 	tx, err := x.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
@@ -285,7 +287,7 @@ func (x *DB) DeleteService(ctx context.Context, id string) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	res, err := tx.ExecContext(ctx,
-		`DELETE FROM services WHERE id=? AND NOT EXISTS (SELECT 1 FROM ai_providers WHERE service_id=?)`, id, id)
+		`DELETE FROM services WHERE id=? AND NOT EXISTS (SELECT 1 FROM ai_providers WHERE service_id=?) AND NOT EXISTS (SELECT 1 FROM mcp_sources WHERE service_id=?)`, id, id, id)
 	if err != nil {
 		_ = tx.Rollback()
 		return x.providerInUseOr(ctx, fmt.Errorf("delete service: %w", err), `WHERE s.id=?`, id)
@@ -301,6 +303,9 @@ func (x *DB) DeleteService(ctx context.Context, id string) error {
 				return fmt.Errorf("delete service: %w: %s", ErrProviderInUse, strings.Join(names, ", "))
 			}
 			return fmt.Errorf("delete service: %w: %s", ErrServiceHasProvider, p.Slug)
+		}
+		if src, err := x.GetMCPSourceByService(ctx, id); err == nil {
+			return fmt.Errorf("delete service: %w: %s", ErrServiceHasMCPSource, src.Slug)
 		}
 		return fmt.Errorf("delete service: %w", ErrNotFound)
 	}

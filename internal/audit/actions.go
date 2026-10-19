@@ -105,6 +105,11 @@ const (
 
 	ActionMCPToolCall = "mcp.tool.call"
 
+	// MCP gateway tool sources.
+	ActionMCPSourceCreate = "mcp.source.create"
+	ActionMCPSourceUpdate = "mcp.source.update"
+	ActionMCPSourceDelete = "mcp.source.delete"
+
 	// v0.5.0 Task 5: upstream-credential binding / unbinding.
 	ActionServiceUpstreamCredentialBind   = "service.upstream_credential.bind"
 	ActionServiceUpstreamCredentialUnbind = "service.upstream_credential.unbind"
@@ -189,6 +194,7 @@ var AllActions = []string{
 	ActionMtlsCAUpdate, ActionMtlsCertRotated, ActionIPGeoUpdate,
 	ActionAutomationTokenMint, ActionAutomationTokenRevoke,
 	ActionMCPToolCall,
+	ActionMCPSourceCreate, ActionMCPSourceUpdate, ActionMCPSourceDelete,
 	ActionServiceUpstreamCredentialBind, ActionServiceUpstreamCredentialUnbind,
 	ActionServiceCustomDomainAdd, ActionServiceCustomDomainUpdate, ActionServiceCustomDomainDelete,
 	ActionServiceCustomDomainStatusChanged,

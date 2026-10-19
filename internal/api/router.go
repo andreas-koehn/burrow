@@ -377,6 +377,13 @@ func newRouter(d Deps) http.Handler {
 			r.With(recent).Post("/ai/providers/{slug}/models/sync", d.PostAIProviderModelsSync)
 			r.Post("/ai/providers/{slug}/models", d.PostAIProviderModel)
 			r.Delete("/ai/providers/{slug}/models", d.DeleteAIProviderModel)
+			// Tool sources of the MCP gateway. Writes carry a URL and a
+			// credential slot name, so they ask for a recent confirmation.
+			r.Get("/mcp/sources", d.GetMCPSources)
+			r.Get("/mcp/sources/{slug}", d.GetMCPSource)
+			r.With(recent).Post("/mcp/sources", d.PostMCPSource)
+			r.With(recent).Put("/mcp/sources/{slug}", d.PutMCPSource)
+			r.With(recent).Delete("/mcp/sources/{slug}", d.DeleteMCPSource)
 			r.With(recent).Put("/services/{serviceID}/access-mode", d.SetServiceAccessMode)
 			r.With(recent).Put("/services/{serviceID}/gateway-only", d.PutServiceGatewayOnly)
 			r.Get("/services/{serviceID}/api-keys", d.ListAPIKeys)
