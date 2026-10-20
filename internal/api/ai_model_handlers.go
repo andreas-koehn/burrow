@@ -86,14 +86,6 @@ type aiModelResp struct {
 	UpdatedAt        time.Time           `json:"updated_at"`
 }
 
-// routingOrOrdered reads an empty routing as the default.
-func routingOrOrdered(r string) string {
-	if r == "" {
-		return "ordered"
-	}
-	return r
-}
-
 // providersBySlug loads every provider once for a model view. Without a
 // provider store the map is empty and every target reads as unavailable.
 func (d Deps) providersBySlug(ctx context.Context) (map[string]db.AIProvider, error) {
@@ -136,7 +128,7 @@ func (d Deps) modelView(m db.AIModel, providers map[string]db.AIProvider) aiMode
 	out := aiModelResp{
 		Name: m.Name, Description: m.Description, Enabled: m.Enabled,
 		FallbackOnRateLimit: m.FallbackOnRateLimit, Translate: m.Translate,
-		SystemText: m.SystemText, Routing: routingOrOrdered(m.Routing),
+		SystemText: m.SystemText, Routing: db.RoutingOrDefault(m.Routing),
 		AttemptTimeoutS: m.AttemptTimeoutS, TotalTimeoutS: m.TotalTimeoutS,
 		Targets:   make([]aiModelTargetResp, 0, len(m.Targets)),
 		Dialects:  []string{},
@@ -310,7 +302,7 @@ func modelAudit(m db.AIModel) map[string]any {
 		"enabled":                m.Enabled,
 		"fallback_on_rate_limit": m.FallbackOnRateLimit,
 		"translate":              m.Translate,
-		"routing":                routingOrOrdered(m.Routing),
+		"routing":                db.RoutingOrDefault(m.Routing),
 		"system_text_bytes":      len(m.SystemText),
 		"targets":                targets,
 	}
@@ -406,8 +398,8 @@ func (d Deps) PostAIModel(w http.ResponseWriter, r *http.Request) {
 
 // PutAIModel handles PUT /api/v1/ai/models/{name} (admin or
 // ai:configure:any).  The body replaces the model: its targets are the new
-// list.  Three fields keep their stored value when left out: name, enabled
-// and translate.
+// list.  Five fields keep their stored value when left out: name, enabled,
+// translate, system_text and routing (see aiModelReq).
 // A different name renames the model; gateway keys that name the old one in
 // their allow-list are not rewritten and no longer reach it.
 func (d Deps) PutAIModel(w http.ResponseWriter, r *http.Request) {

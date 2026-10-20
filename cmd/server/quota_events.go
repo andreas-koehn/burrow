@@ -209,9 +209,8 @@ func (g *guardrailAuditor) answered(ctx context.Context, serviceID, pattern, act
 }
 
 // judged is the chain's OnGuardrailJudge hook: the judge blocked a request
-// or an answer (audited as guardrail.refused with tier "judge" and the
-// judge's reason), or it failed (guardrail.judge_failed with the class). It
-// never blocks.
+// or an answer (audited as guardrail.refused with tier "judge"), or it failed
+// (guardrail.judge_failed with the class). It never blocks.
 func (g *guardrailAuditor) judged(ctx context.Context, serviceID string, e aigw.JudgeEvent) {
 	g.enqueue(ctx, guardrailRefusal{service: serviceID, judge: &e})
 }
@@ -289,20 +288,21 @@ func (g *guardrailAuditor) write(job guardrailRefusal) {
 	}
 }
 
-// writeJudge appends the entry for one judgement of the judge model. A block
-// is guardrail.refused with tier "judge", the direction and the judge's
-// reason (the model's words about the content, never the content). A failure
-// is guardrail.judge_failed with the class as its reason and what
-// on_failure did; its result is "denied" when the request was refused or
-// the answer withheld, "ok" when it went through. Both are kept to one entry
-// per service, kind, direction and gateway key per hour (for a failure also
-// per class), like the pattern entries: the reason of later blocks in that
-// hour is in the inspector, not here.
+// writeJudge appends the entry for one judgement of the judge model. Both
+// kinds carry the verdict and a reason class, never text: the judge's own
+// reason for a block (the model's words) is in the inspector entry only, and
+// the hash chain keeps nothing a model wrote. A block is guardrail.refused
+// with tier "judge", the direction and reason "policy". A failure is
+// guardrail.judge_failed with the class as its reason and what on_failure
+// did; its result is "denied" when the request was refused or the answer
+// withheld, "ok" when it went through. Both are kept to one entry per
+// service, kind, direction and gateway key per hour (for a failure also per
+// class), like the pattern entries.
 func (g *guardrailAuditor) writeJudge(ctx context.Context, job guardrailRefusal) {
 	e := *job.judge
 	var ev audit.Event
 	if e.Verdict == aigw.JudgeBlock {
-		payload := map[string]string{"tier": "judge", "direction": e.Direction, "action": "block", "reason": e.Reason}
+		payload := map[string]string{"tier": "judge", "direction": e.Direction, "action": "block", "verdict": aigw.JudgeBlock, "reason": judgeReasonPolicy}
 		if job.gatewayKey != "" {
 			payload["gateway_key_id"] = job.gatewayKey
 		}
@@ -316,7 +316,7 @@ func (g *guardrailAuditor) writeJudge(ctx context.Context, job guardrailRefusal)
 		if e.Refused {
 			onFailure, result = guardrails.JudgeOnFailureRefuse, "denied"
 		}
-		payload := map[string]string{"reason": e.Failure, "direction": e.Direction, "on_failure": onFailure}
+		payload := map[string]string{"reason": e.Failure, "direction": e.Direction, "on_failure": onFailure, "verdict": aigw.JudgeFailed}
 		if job.gatewayKey != "" {
 			payload["gateway_key_id"] = job.gatewayKey
 		}
@@ -330,6 +330,10 @@ func (g *guardrailAuditor) writeJudge(ctx context.Context, job guardrailRefusal)
 		g.log.Warn("guardrail audit: write failed", "service_id", job.service, "err", err)
 	}
 }
+
+// judgeReasonPolicy is the reason class of a judge's block in its audit
+// entry: the content broke the operator's policy, in the judge's view.
+const judgeReasonPolicy = "policy"
 
 // Flush waits until the refusals queued so far are written, or ctx is done.
 // Called at shutdown, before the database closes.

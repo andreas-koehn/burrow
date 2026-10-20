@@ -82,6 +82,9 @@ var protocolVersions = []string{"2026-07-28", "2025-11-25", "2025-06-18", "2025-
 type ServeStore interface {
 	MCPSourceBySlug(ctx context.Context, slug string) (db.MCPSource, error)
 	ListMCPTools(ctx context.Context, slug string) ([]db.MCPTool, error)
+	// ListMCPToolsForSlugs returns the tools of several sources in one
+	// query, by source slug (the aggregated /mcp).
+	ListMCPToolsForSlugs(ctx context.Context, slugs []string) (map[string][]db.MCPTool, error)
 	// ListMCPSources returns every source ordered by slug (the aggregated /mcp).
 	ListMCPSources(ctx context.Context) ([]db.MCPSource, error)
 }
@@ -375,7 +378,8 @@ func (g *Gateway) perimeter(w http.ResponseWriter, r *http.Request, path string)
 // ServeSource serves /mcp/<slug>. In order: a browser on another origin
 // (403), the gateway key (401 with a Bearer challenge), the source (404 for
 // an unknown or disabled one), the body (413 over 1 MiB, 400 for a JSON-RPC
-// batch), then the SDK.
+// batch, -32601 for a method beyond tools), then the source's tools are read
+// and the SDK serves the request.
 func (g *Gateway) ServeSource(w http.ResponseWriter, r *http.Request, slug string) {
 	caller, ok := g.perimeter(w, r, "/mcp/"+slug)
 	if !ok {
@@ -391,22 +395,22 @@ func (g *Gateway) ServeSource(w http.ResponseWriter, r *http.Request, slug strin
 		writeJSONError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	tools, all, err := g.ToolsFor(r.Context(), src, caller)
-	if err != nil {
-		g.log.Error("mcp gateway: tools not read", "source", src.Slug, "err", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
 	info := requestInfo(r)
-	g.serveSDK(w, r, func() *mcp.Server {
+	g.serveSDK(w, r, func() (*mcp.Server, error) {
+		rows, err := g.opts.Store.ListMCPTools(r.Context(), src.Slug)
+		if err != nil {
+			g.log.Error("mcp gateway: tools not read", "source", src.Slug, "err", err)
+			return nil, err
+		}
+		st := g.toolsFrom(src, rows, caller)
 		srv := NewServer()
-		for _, t := range tools {
+		for _, t := range st.mine {
 			g.AddTool(srv, t, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return g.Call(ctx, CallRequest{Caller: caller, Source: src, Tool: t, Arguments: req.Params.Arguments, Info: info})
 			})
 		}
-		srv.AddReceivingMiddleware(g.deniedCalls(caller, src, all, info))
-		return srv
+		srv.AddReceivingMiddleware(g.deniedCalls(caller, src, st, info))
+		return srv, nil
 	})
 }
 
@@ -433,14 +437,70 @@ func (g *Gateway) ToolsFor(ctx context.Context, src db.MCPSource, c Caller) (min
 	if err != nil {
 		return nil, nil, err
 	}
+	st := g.toolsFrom(src, rows, c)
+	return st.mine, st.all, nil
+}
+
+// sourceTools is what one source offers on a request: the tools the caller
+// may see, every tool it serves, and the tools it has but does not serve.
+type sourceTools struct {
+	mine, all []Tool
+	// unserved maps a name a call may use for a tool the source has but
+	// does not serve (its own name, and its rename) to why: "tool not
+	// approved" (waiting for an admin) or "tool hidden".
+	unserved map[string]unservedTool
+}
+
+// unservedTool is a tool of a source that is not served, and why.
+type unservedTool struct {
+	native, reason string
+}
+
+// Why a tool the source has is not served (the reason of the denied row).
+const (
+	reasonNotApproved = "tool not approved"
+	reasonHidden      = "tool hidden"
+)
+
+// toolsFrom is ToolsFor on the rows of src already read. Name conflicts are
+// logged once per change.
+func (g *Gateway) toolsFrom(src db.MCPSource, rows []db.MCPTool, c Caller) sourceTools {
 	all, conflicts := ServedSet(rows)
 	g.reportConflicts(src.Slug, conflicts)
+	st := sourceTools{all: all}
 	for _, t := range all {
 		if c.May(src.Slug, t) {
-			mine = append(mine, t)
+			st.mine = append(st.mine, t)
 		}
 	}
-	return mine, all, nil
+	served := make(map[string]bool, len(all))
+	for _, t := range all {
+		served[t.Native] = true
+	}
+	for _, row := range rows {
+		if served[row.Name] {
+			continue
+		}
+		var why string
+		switch {
+		case row.Status == db.MCPToolRemoved:
+			continue // the upstream no longer has it
+		case row.Hidden:
+			why = reasonHidden
+		case row.Status == db.MCPToolPending:
+			why = reasonNotApproved
+		default:
+			continue
+		}
+		if st.unserved == nil {
+			st.unserved = map[string]unservedTool{}
+		}
+		st.unserved[row.Name] = unservedTool{native: row.Name, reason: why}
+		if row.Rename != "" {
+			st.unserved[row.Rename] = unservedTool{native: row.Name, reason: why}
+		}
+	}
+	return st
 }
 
 func (g *Gateway) reportConflicts(slug string, conflicts map[string]string) {
@@ -555,17 +615,21 @@ func toolsOnly(next mcp.MethodHandler) mcp.MethodHandler {
 }
 
 // deniedCalls records a tools/call on a tool the source serves but the
-// caller may not use. It does not answer: the tool is not on this request's
+// caller may not use, and one on a tool the source has but does not serve
+// (pending or hidden). It does not answer: the tool is not on this request's
 // server, so the SDK's "unknown tool" follows, as for a tool that does not
 // exist.
-func (g *Gateway) deniedCalls(c Caller, src db.MCPSource, all []Tool, info RequestInfo) mcp.Middleware {
-	byName := make(map[string]Tool, len(all))
-	for _, t := range all {
+func (g *Gateway) deniedCalls(c Caller, src db.MCPSource, st sourceTools, info RequestInfo) mcp.Middleware {
+	byName := make(map[string]Tool, len(st.all))
+	for _, t := range st.all {
 		byName[t.Name] = t
 	}
 	return g.denied(c, info, func(_ context.Context, name string) (db.MCPSource, Tool, string, bool) {
 		t, ok := byName[name]
 		return src, t, "", ok
+	}, func(_ context.Context, name string) (db.MCPSource, unservedTool, string, bool) {
+		u, ok := st.unserved[name]
+		return src, u, "", ok
 	})
 }
 
@@ -574,11 +638,18 @@ func (g *Gateway) deniedCalls(c Caller, src db.MCPSource, all []Tool, info Reque
 // ("" on /mcp/<slug>).
 type servedLookup func(ctx context.Context, name string) (src db.MCPSource, t Tool, aggregated string, found bool)
 
+// unservedLookup finds a requested tool name among the tools the endpoint's
+// sources have but do not serve.
+type unservedLookup func(ctx context.Context, name string) (src db.MCPSource, u unservedTool, aggregated string, found bool)
+
 // denied is the middleware behind deniedCalls: served looks a requested name
 // up among everything the endpoint serves to anybody; a name found there that
 // the caller may not use is recorded as denied, under the served name (and
-// the aggregated one on /mcp), as a call is.
-func (g *Gateway) denied(c Caller, info RequestInfo, served servedLookup) mcp.Middleware {
+// the aggregated one on /mcp), as a call is. A name that unserved finds (a
+// pending or hidden tool) is recorded as denied with the reason, at most
+// once per caller, source and minute, like the limit refusals: such a call
+// costs the gateway nothing, and the row says somebody tried.
+func (g *Gateway) denied(c Caller, info RequestInfo, served servedLookup, unserved unservedLookup) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (res mcp.Result, err error) {
 			defer func() {
@@ -589,11 +660,19 @@ func (g *Gateway) denied(c Caller, info RequestInfo, served servedLookup) mcp.Mi
 			}()
 			if method == "tools/call" {
 				if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && p != nil {
-					if src, t, aggregated, found := served(ctx, p.Name); found && !c.May(src.Slug, t) {
+					src, t, aggregated, found := served(ctx, p.Name)
+					switch {
+					case found && !c.May(src.Slug, t):
 						g.observe(c, src, t.Name, outcomeDenied, 0, 0)
 						payload := toolPayload(c, t, aggregated)
 						payload["reason"] = "not allowed for this key"
 						g.appendAudit(ctx, c, src, info, outcomeDenied, payload)
+					case !found && unserved != nil:
+						if src, u, aggregated, ok := unserved(ctx, p.Name); ok && g.sample("unserved", c.subject(), src.Slug) {
+							payload := toolPayload(c, Tool{Native: u.native, Name: u.native}, aggregated)
+							payload["reason"] = u.reason
+							g.appendAudit(ctx, c, src, info, outcomeDenied, payload)
+						}
 					}
 				}
 			}
@@ -602,9 +681,10 @@ func (g *Gateway) denied(c Caller, info RequestInfo, served servedLookup) mcp.Mi
 	}
 }
 
-// serveSDK refuses an oversized body and a JSON-RPC batch before the SDK
-// sees them, then serves the request with the server build returns.
-func (g *Gateway) serveSDK(w http.ResponseWriter, r *http.Request, build func() *mcp.Server) {
+// serveSDK refuses an oversized body, a JSON-RPC batch and a method beyond
+// tools before the SDK sees them, then serves the request with the server
+// build returns. build runs only after those checks: it reads the tools.
+func (g *Gateway) serveSDK(w http.ResponseWriter, r *http.Request, build func() (*mcp.Server, error)) {
 	if r.Method == http.MethodPost && r.Body != nil {
 		body, err := io.ReadAll(io.LimitReader(r.Body, MaxRequestBytes+1))
 		if err != nil {
@@ -628,7 +708,12 @@ func (g *Gateway) serveSDK(w http.ResponseWriter, r *http.Request, build func() 
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 	}
-	ctx := context.WithValue(r.Context(), ctxKeyServer{}, build())
+	srv, err := build()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	ctx := context.WithValue(r.Context(), ctxKeyServer{}, srv)
 	g.sdk.ServeHTTP(w, r.WithContext(ctx))
 }
 
@@ -891,14 +976,20 @@ func decodeResult(raw []byte) (*mcp.CallToolResult, error) {
 }
 
 // answerText is the text the answer patterns read (D16): the result's text
-// contents, one per line, and its structuredContent as JSON, which a client
-// may show as well.
+// contents and the text of its embedded resources, one per line, and its
+// structuredContent as JSON, which a client may show as well.
 func answerText(r *mcp.CallToolResult) string {
 	var b strings.Builder
 	for _, c := range r.Content {
-		if t, ok := c.(*mcp.TextContent); ok {
-			b.WriteString(t.Text)
+		switch c := c.(type) {
+		case *mcp.TextContent:
+			b.WriteString(c.Text)
 			b.WriteByte('\n')
+		case *mcp.EmbeddedResource:
+			if c.Resource != nil && c.Resource.Text != "" {
+				b.WriteString(c.Resource.Text)
+				b.WriteByte('\n')
+			}
 		}
 	}
 	if raw, ok := r.StructuredContent.(json.RawMessage); ok {

@@ -28,7 +28,9 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// RequireSession authenticates via the burrow_session cookie and injects the user id.
+// RequireSession authenticates via the session cookie (__Host-burrow_session,
+// or the bare burrow_session of plain http and earlier versions) and injects
+// the user id.
 //
 // When RequireBearerOrSession ran earlier in the chain and successfully
 // authenticated a bearer token, the request context already carries a
@@ -42,12 +44,12 @@ func (d Deps) RequireSession(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		c, err := r.Cookie(sessionCookieName)
-		if err != nil || c.Value == "" {
+		sid := sessionID(r)
+		if sid == "" {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		uid, err := d.Users.ValidateSession(r.Context(), c.Value)
+		uid, err := d.Users.ValidateSession(r.Context(), sid)
 		if err != nil {
 			if errors.Is(err, store.ErrUnauthorized) {
 				writeErr(w, http.StatusUnauthorized, "unauthorized")
@@ -58,6 +60,28 @@ func (d Deps) RequireSession(next http.Handler) http.Handler {
 		}
 		ctx := context.WithValue(r.Context(), userIDKey, uid)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// crossOrigin is the standard library's check of where a browser request
+// comes from (see sameOriginOnly).
+var crossOrigin = http.NewCrossOriginProtection()
+
+// sameOriginOnly refuses a request a browser sent from another origin, with
+// 403 before the handler runs: Sec-Fetch-Site must be "same-origin" or "none"
+// when the browser sends it; without it, an Origin header must name the
+// request's host. A request with neither (a CLI, a script) passes. It guards
+// the routes that take a password without a session to ride on, or that a
+// CSRF token alone would not tie to the dashboard's origin: sign-in (login
+// CSRF: a page elsewhere, a services host included, must not sign the
+// browser in to an account of its choosing) and the password confirmation.
+func sameOriginOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := crossOrigin.Check(r); err != nil {
+			writeErr(w, http.StatusForbidden, "cross-origin request refused")
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -73,7 +97,8 @@ var csrfSafeMethods = map[string]bool{
 // for all non-safe HTTP methods (POST, PUT, PATCH, DELETE).
 //
 // For state-changing requests it requires:
-//   - The burrow_csrf cookie to be present and non-empty.
+//   - The CSRF cookie that belongs with the session cookie (see
+//     csrfCookieValue) to be present and non-empty.
 //   - The X-CSRF-Token request header to equal the cookie value
 //     (compared with crypto/subtle.ConstantTimeCompare to prevent timing attacks).
 //
@@ -96,13 +121,13 @@ func RequireCSRF(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		cookie, err := r.Cookie(csrfCookieName)
-		if err != nil || cookie.Value == "" {
+		token := csrfCookieValue(r)
+		if token == "" {
 			writeErr(w, http.StatusForbidden, "csrf token invalid")
 			return
 		}
 		header := r.Header.Get("X-CSRF-Token")
-		if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(header)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(header)) != 1 {
 			writeErr(w, http.StatusForbidden, "csrf token invalid")
 			return
 		}

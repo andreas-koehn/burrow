@@ -237,37 +237,52 @@ func (s *Store) UpdateGatewayKey(ctx context.Context, callerID string, anyKey bo
 	if err != nil {
 		return GatewayKey{}, err
 	}
+	// The owner of a key never changes: the check above holds for the
+	// update below.
 	if !anyKey && (callerID == "" || k.UserID != callerID) {
 		return GatewayKey{}, ErrKeyNotFound
 	}
+	// Only the fields the update sets are written, in one statement: an
+	// update of other fields running at the same time is not undone.
+	var p db.AIGatewayKeyPatch
 	if u.Name != nil {
-		k.Name = strings.TrimSpace(*u.Name)
-		if k.Name == "" || len(k.Name) > maxGatewayKeyName || hasControl(k.Name) {
+		name := strings.TrimSpace(*u.Name)
+		if name == "" || len(name) > maxGatewayKeyName || hasControl(name) {
 			return GatewayKey{}, invalidKey("name must be 1-120 characters without control characters")
 		}
+		p.Name = &name
 	}
 	if u.SystemText != nil {
 		if len([]byte(*u.SystemText)) > MaxSystemTextBytes {
 			return GatewayKey{}, invalidKey(msgSystemTextLong)
 		}
-		k.SystemText = *u.SystemText
+		p.SystemText = u.SystemText
 	}
 	if u.AllowedModels != nil {
-		if k.AllowedModels, err = checkAllowedModels(*u.AllowedModels); err != nil {
+		models, err := checkAllowedModels(*u.AllowedModels)
+		if err != nil {
 			return GatewayKey{}, err
 		}
+		p.AllowedModels = &models
 	}
 	if u.AllowedTools != nil {
-		if k.AllowedTools, err = checkAllowedTools(*u.AllowedTools); err != nil {
+		tools, err := checkAllowedTools(*u.AllowedTools)
+		if err != nil {
 			return GatewayKey{}, err
 		}
+		p.AllowedTools = &tools
 	}
-	if u.ToolsReadOnly != nil {
-		k.ToolsReadOnly = *u.ToolsReadOnly
-	}
-	if err := s.q.UpdateAIGatewayKey(ctx, k); errors.Is(err, db.ErrNotFound) {
+	p.ToolsReadOnly = u.ToolsReadOnly
+	if err := s.q.UpdateAIGatewayKey(ctx, id, p); errors.Is(err, db.ErrNotFound) {
 		return GatewayKey{}, ErrKeyNotFound
 	} else if err != nil {
+		return GatewayKey{}, err
+	}
+	k, err = s.q.GetAIGatewayKey(ctx, id)
+	if errors.Is(err, db.ErrNotFound) {
+		return GatewayKey{}, ErrKeyNotFound
+	}
+	if err != nil {
 		return GatewayKey{}, err
 	}
 	return toGatewayKey(k), nil

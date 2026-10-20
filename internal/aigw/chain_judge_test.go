@@ -159,7 +159,7 @@ func TestChainJudge_BlockRefuses(t *testing.T) {
 		t.Fatalf("inspector judge mark %+v", m)
 	}
 	got := rig.hook.events()
-	if len(got) != 1 || got[0].Verdict != aigw.JudgeBlock || got[0].Reason != "asks for ransomware" || got[0].Direction != "request" || !got[0].Refused {
+	if len(got) != 1 || got[0].Verdict != aigw.JudgeBlock || got[0].Direction != "request" || !got[0].Refused {
 		t.Fatalf("audit hook %+v", got)
 	}
 }
@@ -216,9 +216,6 @@ func TestChainJudge_Failures(t *testing.T) {
 				got := rig.hook.events()
 				if len(got) != 1 || got[0].Verdict != aigw.JudgeFailed || got[0].Failure != wantClass || got[0].Refused != (onFailure == "refuse") {
 					t.Fatalf("audit hook %+v", got)
-				}
-				if strings.Contains(got[0].Reason, "hi") {
-					t.Fatalf("the judged text reached the audit event: %+v", got[0])
 				}
 				ev := rig.obs.only(t)
 				if ev.JudgeVerdict != aigw.JudgeFailed || ev.JudgeFailure != wantClass {

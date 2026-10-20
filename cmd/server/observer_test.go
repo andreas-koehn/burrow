@@ -726,3 +726,28 @@ func TestObserver_GuardrailDirections(t *testing.T) {
 		}
 	}
 }
+
+// G05: an answer a pattern flagged and the judge then withheld announces
+// both: the judge's block and the pattern's flag.
+func TestObserver_AnswerFlagAndJudgeBlockBothAnnounced(t *testing.T) {
+	o, _, em, _ := newTestObserver(t)
+	o.ObserveModelRequest(observe.ModelRequest{
+		ServiceID: "svc-fj", Outcome: observe.ModelAnswered, Status: 502, Metered: true,
+		GuardrailAction: "block", GuardrailDirection: "answer", GuardrailTier: "judge", AnswerFlag: "openai_key",
+	})
+	got := em.named("guardrail.refused")
+	if len(got) != 2 {
+		t.Fatalf("%d guardrail.refused events, want 2: %v", len(got), got)
+	}
+	want := []map[string]any{
+		{"ServiceID": "svc-fj", "Pattern": "openai_key", "direction": "answer", "tier": "pattern", "action": "flag"},
+		{"ServiceID": "svc-fj", "Pattern": "", "direction": "answer", "tier": "judge", "action": "block"},
+	}
+	for i, w := range want {
+		for k, v := range w {
+			if got[i][k] != v {
+				t.Errorf("event %d: %v, want %s=%v", i, got[i], k, v)
+			}
+		}
+	}
+}

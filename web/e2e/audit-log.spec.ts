@@ -29,7 +29,7 @@ test("v0.4.0: audit log API — /events list + /verify ok envelope", async ({ pa
   expect(Array.isArray(events)).toBe(true);
 
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   expect(csrf).not.toBe("");
   const verify = await page.request.post("/api/v1/audit/verify", {
     headers: { "X-CSRF-Token": csrf, "Content-Type": "application/json" },

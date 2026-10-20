@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"mime"
 	"net"
 	"net/http"
 
@@ -21,7 +22,15 @@ type userResp struct {
 }
 
 // Login verifies credentials, creates a session, and sets the cookie.
+//
+// A text/plain body is refused (415): it is what a page on another site can
+// send without a preflight, from a form or a no-cors fetch. (The route also
+// refuses cross-origin browser requests outright, see sameOriginOnly.)
 func (d Deps) Login(w http.ResponseWriter, r *http.Request) {
+	if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt == "text/plain" {
+		writeErr(w, http.StatusUnsupportedMediaType, "send the body as application/json")
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	var in loginReq
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Email == "" {
@@ -72,9 +81,9 @@ func (d Deps) Login(w http.ResponseWriter, r *http.Request) {
 
 // Logout deletes the session and clears both the session and CSRF cookies.
 func (d Deps) Logout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
-		_ = d.Users.DeleteSession(r.Context(), c.Value)
-		d.reauth.forget(sessionRef(c.Value))
+	if sid := sessionID(r); sid != "" {
+		_ = d.Users.DeleteSession(r.Context(), sid)
+		d.reauth.forget(sessionRef(sid))
 	}
 	clearSessionCookie(w, d.SecureCookies)
 	clearCSRFCookie(w, d.SecureCookies)

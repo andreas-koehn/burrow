@@ -14,7 +14,7 @@ const pathOf = (page: Page) => { const u = new URL(page.url()); return u.pathnam
 /** What a request that changes something has to carry. The page must have loaded once: the cookie comes with it. */
 async function csrfHeaders(page: Page) {
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   return { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 }
 

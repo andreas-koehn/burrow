@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -102,6 +103,35 @@ func (x *DB) ListMCPTools(ctx context.Context, slug string) ([]MCPTool, error) {
 			return nil, fmt.Errorf("list tools: scan: %w", err)
 		}
 		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// ListMCPToolsForSlugs returns the tools of the sources named by slugs, in
+// one query, by source slug and ordered by name within each. A slug with no
+// tools (or no source) has no entry.
+func (x *DB) ListMCPToolsForSlugs(ctx context.Context, slugs []string) (map[string][]MCPTool, error) {
+	out := map[string][]MCPTool{}
+	if len(slugs) == 0 {
+		return out, nil
+	}
+	args := make([]any, len(slugs))
+	for i, s := range slugs {
+		args[i] = s
+	}
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(slugs)), ",")
+	rows, err := x.sqlDB.QueryContext(ctx,
+		`SELECT `+mcpToolCols+` FROM mcp_tools WHERE source_slug IN (`+marks+`) ORDER BY source_slug, name`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list tools: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		t, err := scanMCPTool(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list tools: scan: %w", err)
+		}
+		out[t.SourceSlug] = append(out[t.SourceSlug], t)
 	}
 	return out, rows.Err()
 }

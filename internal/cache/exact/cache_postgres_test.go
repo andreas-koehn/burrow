@@ -50,6 +50,7 @@ func TestCacheLifecycle_Postgres(t *testing.T) {
 				}
 			}
 			checkCacheLifecycle(t, New(d, nil), "pg")
+			checkGuardGen(t, New(d, nil), "pg")
 		})
 	}
 }

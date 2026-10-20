@@ -45,7 +45,7 @@ test("v0.4.0: cost page renders zeroed tiles + add-budget flow lists the row", a
 
 test("v0.4.0: cost API — /budgets POST validates daily_usd > 0", async ({ page }) => {
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 
   const bad = await page.request.post("/api/v1/budgets", {

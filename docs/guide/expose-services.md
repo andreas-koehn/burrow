@@ -348,7 +348,9 @@ instead of the provider's.
 A model with several targets tries them in a routing order. **Ordered** (the
 default) keeps the order you configured. **Fastest** puts the target whose
 provider has the lowest p95 latency over the last 24 hours first (the figure
-the providers page shows, at most a minute old). **Cheapest** puts the lowest
+the providers page shows; it is computed again once a minute, and can be
+older while a computation runs or after one failed, which keeps the previous
+figure until the next try). **Cheapest** puts the lowest
 blended price first (three parts input to one part output, per million tokens,
 from the pricing table). A target is priced only when its model is in the
 pricing table (bundled bare names, or an entry added in the pricing editor); a
@@ -497,12 +499,15 @@ Which settings apply to a request:
 #### Answers
 
 With answer inspection on, Burrow reads the text of every answer on the chat
-(`/v1/chat/completions`), responses (`/v1/responses`) and messages
-(`/v1/messages`) endpoints and checks it against the bundled answer patterns,
-then against your custom patterns for answers. Only the text the model wrote
-is checked, not the JSON around it; escaped characters are decoded first, so
-`sk-…` counts as `sk-…`. Tool calls, embeddings, counting tokens and
-answers that are not text (audio, images) are not inspected. Neither is an
+(`/v1/chat/completions`), legacy completions (`/v1/completions`), responses
+(`/v1/responses`) and messages (`/v1/messages`) endpoints and checks it
+against the bundled answer patterns, then against your custom patterns for
+answers. Only what the model wrote is checked, not the JSON around it;
+escaped characters are decoded first, so `sk-…` counts as `sk-…`. The
+arguments of tool calls count as what the model wrote (an answer can hand a
+secret to a tool): whole, the strings of the arguments' JSON are checked;
+streamed, the pieces of the arguments as they arrive. Embeddings, counting
+tokens and answers that are not text (audio, images) are not inspected. Neither is an
 error answer of the provider, or an answer larger than the inspector's
 capture limit (256 KiB); the log says so once.
 
@@ -535,7 +540,12 @@ Checking them on every token would cost too much; the price is that with
 before the stream is stopped.
 
 A blocked answer is never put into the response cache; a flagged one is.
-Answers served from the cache were checked when they were stored. While
+Answers served from the cache were checked when they were stored, under the
+same inspection: each cache entry records the answer inspection it was stored
+under (the answer action, the bundled and custom answer patterns, and a judge
+that checks answers), and an entry stored under other settings (for example
+while answer inspection was off) is not served but fetched again from the
+provider and checked. While
 answer inspection is on, Burrow asks the provider for an uncompressed answer
 so that it can read it; the app gets it uncompressed too.
 
@@ -553,8 +563,11 @@ The bundled answer patterns:
 | `burrow_automation_token` | a Burrow automation token (`bua_…`) |
 | `burrow_gateway_key` | a Burrow gateway key (`bgw_…`) |
 
-A key shape is only found where it starts a word: `task-…` is no `sk-…`. A
-secret glued to the word before it (`mykeysk-…`) is not found.
+A key glued to the word before it (`tokenghp_…`, `KEY_AKIA…`) is found too
+where the prefix is distinctive enough that no word ends in it. The OpenAI
+shapes are found only where they start a word: `sk-` ends English words and
+CSS or resource names (`task-…`, `kiosk-admin-…`), which are no keys; an
+AWS key id may follow an underscore but no letter or digit.
 
 A pattern matches as soon as the prefix and 20 key characters are there (an
 AWS key id: its 16), not only the whole token. In a streamed answer with
@@ -650,9 +663,10 @@ The verdict:
 - `allow`: the request goes on.
 - `block`: the request is refused with status `403` and code
   `guardrail_judge_refused` ("the request was refused by a guardrail"). The
-  judge's reason is written to the audit entry (`guardrail.refused` with
-  `tier: "judge"`) and shown in the request inspector; the app never sees
-  it. The webhook event `guardrail.refused` is published with
+  block is audited as `guardrail.refused` with `tier: "judge"`,
+  `verdict: "block"` and the reason class `policy`; the judge's own reason
+  (the model's words) is shown in the request inspector only, never written
+  to the hash-chained audit log, and the app never sees it. The webhook event `guardrail.refused` is published with
   `tier: "judge"`, `direction: "request"` and no pattern.
 
 With `requests_and_answers`, an answer that comes in one piece is held until
@@ -667,14 +681,18 @@ A **failure** is a judge that does not answer within `timeout_ms`, a call
 that fails, an answer that is not exactly the JSON object above (a fence of
 `` ```json `` around it is accepted), no judge to ask, or (with
 `requests_and_answers`) an answer larger than the relay holds, 256 KiB.
-Failures are audited as `guardrail.judge_failed`, naming the class
-(`timeout`, `error`, `malformed`, `unavailable`, `too_large`) and what
-`on_failure` did, never the text. Like the other guardrail entries they are
+Failures are audited as `guardrail.judge_failed` with `verdict: "failed"`,
+naming the class (`timeout`, `error`, `malformed`, `unavailable`,
+`too_large`) and what `on_failure` did, never the text. Like the other guardrail entries they are
 kept to one entry per service, class, direction and gateway key per hour,
 so a judge that is down does not write an entry per request; the request
 inspector marks every judged request. Blocks are kept the same way (one
-`guardrail.refused` entry per service, direction and gateway key per hour,
-with the first block's reason); every block's reason is in the inspector.
+`guardrail.refused` entry per service, direction and gateway key per hour);
+every block's reason is in the inspector. When both the request and its
+answer were judged, the inspector keeps both verdicts (the answer's as the
+judge mark, the request's next to it), and an answer a pattern flagged
+before the judge withheld it announces both: the pattern's flag and the
+judge's block.
 Then `on_failure` decides:
 
 - `allow` keeps apps running while the judge is slow or down, at the price

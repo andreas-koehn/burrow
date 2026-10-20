@@ -138,13 +138,29 @@ func checkAIGatewayKeySystemText(t *testing.T, x *DB, userID string) {
 	if k, err := x.GetAIGatewayKeyByHash(ctx, "gkst-h2"); err != nil || k.SystemText != "" {
 		t.Fatalf("by hash: %v %+v", err, k)
 	}
-	if err := x.UpdateAIGatewayKey(ctx, AIGatewayKey{ID: "gkst1", Name: "renamed", SystemText: "Other.", AllowedTools: []string{"gh__*"}, ToolsReadOnly: true}); err != nil {
+	name, text, tools, ro := "renamed", "Other.", []string{"gh__*"}, true
+	if err := x.UpdateAIGatewayKey(ctx, "gkst1", AIGatewayKeyPatch{Name: &name, SystemText: &text, AllowedTools: &tools, ToolsReadOnly: &ro}); err != nil {
 		t.Fatal(err)
 	}
 	if k, _ := x.GetAIGatewayKey(ctx, "gkst1"); k.Name != "renamed" || k.SystemText != "Other." || len(k.AllowedTools) != 1 || !k.ToolsReadOnly {
 		t.Fatalf("after update: %+v", k)
 	}
-	if err := x.UpdateAIGatewayKey(ctx, AIGatewayKey{ID: "missing", Name: "x"}); err != ErrNotFound {
+	// A patch writes only what it sets.
+	only := "only-name"
+	if err := x.UpdateAIGatewayKey(ctx, "gkst1", AIGatewayKeyPatch{Name: &only}); err != nil {
+		t.Fatal(err)
+	}
+	if k, _ := x.GetAIGatewayKey(ctx, "gkst1"); k.Name != "only-name" || k.SystemText != "Other." || len(k.AllowedTools) != 1 || !k.ToolsReadOnly {
+		t.Fatalf("after a name-only patch: %+v", k)
+	}
+	off, none := false, []string{}
+	if err := x.UpdateAIGatewayKey(ctx, "gkst1", AIGatewayKeyPatch{AllowedTools: &none, ToolsReadOnly: &off}); err != nil {
+		t.Fatal(err)
+	}
+	if k, _ := x.GetAIGatewayKey(ctx, "gkst1"); k.Name != "only-name" || len(k.AllowedTools) != 0 || k.ToolsReadOnly {
+		t.Fatalf("after clearing tools and read-only: %+v", k)
+	}
+	if err := x.UpdateAIGatewayKey(ctx, "missing", AIGatewayKeyPatch{Name: &name}); err != ErrNotFound {
 		t.Fatalf("update missing = %v, want ErrNotFound", err)
 	}
 	list, err := x.ListAIGatewayKeys(ctx, userID)

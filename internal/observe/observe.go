@@ -199,6 +199,15 @@ type ModelRequest struct {
 	// a failure ("timeout", "error", "malformed", "unavailable").
 	// JudgeDirection is "request" or "answer": what the verdict is about.
 	JudgeVerdict, JudgeReason, JudgeFailure, JudgeDirection string
+	// RequestJudgeVerdict and RequestJudgeFailure keep the judge's word on
+	// the request when its answer was judged too (the Judge… fields then
+	// describe the answer); "" otherwise.
+	RequestJudgeVerdict, RequestJudgeFailure string
+	// AnswerFlag is the id of the answer pattern that flagged an answer
+	// (action "flag") the judge then withheld: GuardrailPattern …
+	// GuardrailTier describe the judge's block, and the pattern's flag is
+	// announced as well. "" otherwise.
+	AnswerFlag string
 
 	// Purpose says why the relay itself made the request: "guardrail-judge"
 	// for a call to the judge model; "" for an app's request.

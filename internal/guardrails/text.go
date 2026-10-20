@@ -1,6 +1,7 @@
 package guardrails
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 )
@@ -22,23 +23,33 @@ const (
 	FormatRerank        = "rerank"        // POST /v1/rerank: query and documents
 	FormatTranscription = "transcription" // audio uploads: multipart, no text
 	// FormatCompletions is the legacy POST /v1/completions: its "prompt" (a
-	// string or a list of strings) is read; its answers are not.
+	// string or a list of strings) is read, and the choices[].text of its
+	// answers.
 	FormatCompletions = "completions"
 )
 
 // The text lives where the translate package's codecs read and write it:
 //
-//   - Chat: choices[].message.content (a string or text parts) and, streamed,
-//     choices[].delta.content;
-//   - Responses: output[].content[].text and, streamed, the delta of a
-//     "response.output_text.delta" event;
-//   - Messages: content[].text of text blocks and, streamed, the text of a
-//     "content_block_delta" whose delta is a "text_delta".
+//   - Chat: choices[].message.content (a string or text parts) and the
+//     arguments of choices[].message.tool_calls[]; streamed,
+//     choices[].delta.content and the pieces of
+//     choices[].delta.tool_calls[].function.arguments;
+//   - Responses: output[].content[].text and the arguments of
+//     "function_call" items; streamed, the delta of a
+//     "response.output_text.delta" or "response.function_call_arguments.delta"
+//     event;
+//   - Messages: content[].text of text blocks and the input of "tool_use"
+//     blocks; streamed, the text of a "content_block_delta" whose delta is a
+//     "text_delta", and the partial_json of an "input_json_delta";
+//   - legacy completions: choices[].text, whole and streamed.
 //
 // encoding/json decodes the string escapes, so "sk-…" is read as
-// "sk-…". Tool calls, their arguments and reasoning are not text in this
-// sense. Several pieces of text are joined with "\n", so that the end of one
-// and the start of the next cannot form a match together.
+// "sk-…". A tool call's arguments are what the model wrote as much as its
+// text: an answer may hand a secret to a tool. Whole, the arguments are JSON
+// and their strings (keys and values, in order) are the text; streamed they
+// come in pieces of raw JSON, which are read as they are. Reasoning is not
+// text in this sense. Several pieces of text are joined with "\n", so that
+// the end of one and the start of the next cannot form a match together.
 
 // AnswerText returns the text of an answer that came in one piece. ok is
 // false when the body is not an answer of that format or has no text.
@@ -49,7 +60,12 @@ func AnswerText(format string, body []byte) (string, bool) {
 		var a struct {
 			Choices []struct {
 				Message struct {
-					Content json.RawMessage `json:"content"`
+					Content   json.RawMessage `json:"content"`
+					ToolCalls []struct {
+						Function struct {
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
 				} `json:"message"`
 			} `json:"choices"`
 		}
@@ -58,11 +74,16 @@ func AnswerText(format string, body []byte) (string, bool) {
 		}
 		for _, c := range a.Choices {
 			parts = appendContent(parts, c.Message.Content)
+			for _, tc := range c.Message.ToolCalls {
+				parts = appendArguments(parts, []byte(tc.Function.Arguments))
+			}
 		}
 	case FormatResponses:
 		var a struct {
 			Output []struct {
-				Content []textBlock `json:"content"`
+				Type      string      `json:"type"`
+				Content   []textBlock `json:"content"`
+				Arguments string      `json:"arguments"`
 			} `json:"output"`
 		}
 		if json.Unmarshal(body, &a) != nil {
@@ -70,15 +91,45 @@ func AnswerText(format string, body []byte) (string, bool) {
 		}
 		for _, o := range a.Output {
 			parts = appendBlocks(parts, o.Content, "")
+			if o.Type == "function_call" {
+				parts = appendArguments(parts, []byte(o.Arguments))
+			}
 		}
 	case FormatMessages:
 		var a struct {
-			Content []textBlock `json:"content"`
+			Content []struct {
+				Type  string          `json:"type"`
+				Text  string          `json:"text"`
+				Input json.RawMessage `json:"input"`
+			} `json:"content"`
 		}
 		if json.Unmarshal(body, &a) != nil {
 			return "", false
 		}
-		parts = appendBlocks(parts, a.Content, "text")
+		for _, b := range a.Content {
+			switch b.Type {
+			case "text":
+				if b.Text != "" {
+					parts = append(parts, b.Text)
+				}
+			case "tool_use":
+				parts = appendArguments(parts, b.Input)
+			}
+		}
+	case FormatCompletions:
+		var a struct {
+			Choices []struct {
+				Text string `json:"text"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal(body, &a) != nil {
+			return "", false
+		}
+		for _, c := range a.Choices {
+			if c.Text != "" {
+				parts = append(parts, c.Text)
+			}
+		}
 	default:
 		return "", false
 	}
@@ -87,14 +138,20 @@ func AnswerText(format string, body []byte) (string, bool) {
 
 // DeltaText returns the text one event of a streamed answer adds: frame is
 // the data of one server-sent event. ok is false for an event that adds no
-// text (a role, a tool call, usage, the end, "[DONE]").
+// text (a role, usage, the end, "[DONE]"). A piece of a tool call's
+// arguments is text (raw JSON, as it streams).
 func DeltaText(format string, frame []byte) (string, bool) {
 	switch format {
 	case FormatChat:
 		var c struct {
 			Choices []struct {
 				Delta struct {
-					Content json.RawMessage `json:"content"`
+					Content   json.RawMessage `json:"content"`
+					ToolCalls []struct {
+						Function struct {
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
 				} `json:"delta"`
 			} `json:"choices"`
 		}
@@ -104,6 +161,11 @@ func DeltaText(format string, frame []byte) (string, bool) {
 		var parts []string
 		for _, ch := range c.Choices {
 			parts = appendContent(parts, ch.Delta.Content)
+			for _, tc := range ch.Delta.ToolCalls {
+				if tc.Function.Arguments != "" {
+					parts = append(parts, tc.Function.Arguments)
+				}
+			}
 		}
 		return joined(parts)
 	case FormatResponses:
@@ -111,7 +173,10 @@ func DeltaText(format string, frame []byte) (string, bool) {
 			Type  string `json:"type"`
 			Delta string `json:"delta"`
 		}
-		if json.Unmarshal(frame, &ev) != nil || ev.Type != "response.output_text.delta" || ev.Delta == "" {
+		if json.Unmarshal(frame, &ev) != nil || ev.Delta == "" {
+			return "", false
+		}
+		if ev.Type != "response.output_text.delta" && ev.Type != "response.function_call_arguments.delta" {
 			return "", false
 		}
 		return ev.Delta, true
@@ -119,16 +184,61 @@ func DeltaText(format string, frame []byte) (string, bool) {
 		var ev struct {
 			Type  string `json:"type"`
 			Delta struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
+				Type        string `json:"type"`
+				Text        string `json:"text"`
+				PartialJSON string `json:"partial_json"`
 			} `json:"delta"`
 		}
-		if json.Unmarshal(frame, &ev) != nil || ev.Type != "content_block_delta" || ev.Delta.Type != "text_delta" || ev.Delta.Text == "" {
+		if json.Unmarshal(frame, &ev) != nil || ev.Type != "content_block_delta" {
 			return "", false
 		}
-		return ev.Delta.Text, true
+		switch {
+		case ev.Delta.Type == "text_delta" && ev.Delta.Text != "":
+			return ev.Delta.Text, true
+		case ev.Delta.Type == "input_json_delta" && ev.Delta.PartialJSON != "":
+			return ev.Delta.PartialJSON, true
+		}
+		return "", false
+	case FormatCompletions:
+		var c struct {
+			Choices []struct {
+				Text string `json:"text"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal(frame, &c) != nil {
+			return "", false
+		}
+		var parts []string
+		for _, ch := range c.Choices {
+			if ch.Text != "" {
+				parts = append(parts, ch.Text)
+			}
+		}
+		return joined(parts)
 	}
 	return "", false
+}
+
+// appendArguments appends the text of a tool call's arguments: the strings
+// of the JSON (object keys and string values, in order), or the arguments as
+// they are when they are not JSON.
+func appendArguments(parts []string, raw []byte) []string {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return parts
+	}
+	if !json.Valid(raw) {
+		return append(parts, string(raw))
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return parts
+		}
+		if s, ok := tok.(string); ok && s != "" {
+			parts = append(parts, s)
+		}
+	}
 }
 
 // RequestText returns the text of a request: what the app wrote as system

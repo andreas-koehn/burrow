@@ -27,6 +27,23 @@ func TestAnswerText_PerFormat(t *testing.T) {
 		{"messages", FormatMessages,
 			`{"id":"msg_01A","type":"message","role":"assistant","model":"claude-x","content":[{"type":"text","text":"Hello there."},{"type":"tool_use","id":"t","name":"n","input":{}}],"stop_reason":"end_turn"}`,
 			"Hello there."},
+		// Tool calls are what the model wrote too: their arguments are read
+		// (the strings of the JSON, keys included), after the text.
+		{"chat tool call", FormatChat,
+			`{"choices":[{"message":{"content":"Calling.","tool_calls":[{"id":"t","type":"function","function":{"name":"f","arguments":"{\"key\":\"sk-1\",\"n\":2,\"l\":[\"a\"]}"}}]}}]}`,
+			"Calling.\nkey\nsk-1\nn\nl\na"},
+		{"chat tool call, arguments not JSON", FormatChat,
+			`{"choices":[{"message":{"content":null,"tool_calls":[{"function":{"name":"f","arguments":"not json sk-2"}}]}}]}`,
+			"not json sk-2"},
+		{"responses function call", FormatResponses,
+			`{"output":[{"type":"function_call","call_id":"c","name":"f","arguments":"{\"q\":\"sk-3\"}"},{"type":"message","content":[{"type":"output_text","text":"Done."}]}]}`,
+			"q\nsk-3\nDone."},
+		{"messages tool use", FormatMessages,
+			`{"content":[{"type":"text","text":"Let me."},{"type":"tool_use","id":"t","name":"n","input":{"text":"x","deep":{"k":"sk-4"}}}]}`,
+			"Let me.\ntext\nx\ndeep\nk\nsk-4"},
+		{"completions", FormatCompletions,
+			`{"id":"cmpl-1","object":"text_completion","choices":[{"text":"Once upon","index":0},{"text":"a time","index":1}]}`,
+			"Once upon\na time"},
 	}
 	for _, c := range cases {
 		got, ok := AnswerText(c.format, []byte(c.body))
@@ -42,7 +59,8 @@ func TestAnswerText_NoText(t *testing.T) {
 		{FormatChat, `not json`},
 		{FormatChat, ``},
 		{FormatResponses, `{"output":[]}`},
-		{FormatMessages, `{"content":[{"type":"tool_use","id":"t","name":"n","input":{"text":"x"}}]}`},
+		{FormatMessages, `{"content":[{"type":"tool_use","id":"t","name":"n","input":{}}]}`},
+		{FormatCompletions, `{"choices":[{"text":""}]}`},
 		{"embeddings", `{"choices":[{"message":{"content":"x"}}]}`},
 	}
 	for _, c := range cases {
@@ -60,6 +78,11 @@ func TestDeltaText_PerFormat(t *testing.T) {
 		{"chat escaped", FormatChat, `{"choices":[{"delta":{"content":"sk-"}}]}`, "sk-"},
 		{"responses", FormatResponses, `{"type":"response.output_text.delta","sequence_number":4,"item_id":"msg_0","output_index":0,"content_index":0,"delta":"Let me look.","logprobs":[]}`, "Let me look."},
 		{"messages", FormatMessages, `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`, "Hello"},
+		// The pieces of a tool call's arguments, as they stream (raw JSON).
+		{"chat tool call", FormatChat, `{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"k\":\"sk-"}}]}}]}`, `{"k":"sk-`},
+		{"responses arguments", FormatResponses, `{"type":"response.function_call_arguments.delta","delta":"{\"pa"}`, `{"pa`},
+		{"messages input json", FormatMessages, `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"a"}}`, `{"a`},
+		{"completions", FormatCompletions, `{"id":"cmpl-1","object":"text_completion","choices":[{"text":"Once","index":0}]}`, "Once"},
 	}
 	for _, c := range cases {
 		got, ok := DeltaText(c.format, []byte(c.frame))
@@ -74,14 +97,14 @@ func TestDeltaText_FramesWithoutText(t *testing.T) {
 		{FormatChat, `[DONE]`},
 		{FormatChat, `{"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`},
 		{FormatChat, `{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":2,"total_tokens":14}}`},
-		{FormatChat, `{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`},
 		{FormatResponses, `{"type":"response.output_text.done","text":"Let me look."}`},
-		{FormatResponses, `{"type":"response.function_call_arguments.delta","delta":"{\"pa"}`},
 		{FormatResponses, `{"type":"response.completed","response":{"output":[{"content":[{"text":"x"}]}]}}`},
 		{FormatMessages, `{"type":"ping"}`},
-		{FormatMessages, `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"a"}}`},
 		{FormatMessages, `{"type":"message_stop"}`},
 		{FormatMessages, `garbage`},
+		{FormatChat, `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"t","function":{"name":"f","arguments":""}}]}}]}`},
+		{FormatResponses, `{"type":"response.function_call_arguments.done","arguments":"{}"}`},
+		{FormatCompletions, `[DONE]`},
 	}
 	for _, c := range cases {
 		if got, ok := DeltaText(c.format, []byte(c.frame)); ok || got != "" {

@@ -78,11 +78,11 @@ func (w *reauthWindows) active(ref string) bool {
 // recentAuth reports whether the request's session confirmed its password
 // within the window. Always false for a request without a session cookie.
 func (d Deps) recentAuth(r *http.Request) bool {
-	c, err := r.Cookie(sessionCookieName)
-	if err != nil || c.Value == "" {
+	sid := sessionID(r)
+	if sid == "" {
 		return false
 	}
-	return d.reauth.active(sessionRef(c.Value))
+	return d.reauth.active(sessionRef(sid))
 }
 
 // RequireRecentAuth guards a route that mints a secret or changes who may do
@@ -123,8 +123,8 @@ func (d Deps) PostReauth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The window belongs to a browser session; a token has none.
-	c, err := r.Cookie(sessionCookieName)
-	if bearerTokenID(r.Context()) != "" || err != nil || c.Value == "" {
+	sid := sessionID(r)
+	if bearerTokenID(r.Context()) != "" || sid == "" {
 		writeErr(w, http.StatusForbidden, "a dashboard session is required")
 		return
 	}
@@ -137,7 +137,7 @@ func (d Deps) PostReauth(w http.ResponseWriter, r *http.Request) {
 	// change share the count), next to the per-address limit. Not per user: a
 	// script on the dashboard's origin sends requests as the signed-in user
 	// and would otherwise lock the user out everywhere.
-	ref := sessionRef(c.Value)
+	ref := sessionRef(sid)
 	if d.reauthGuesses.blocked(ref) {
 		w.Header().Set("Retry-After", "60")
 		writeErr(w, http.StatusTooManyRequests, "too many wrong passwords; try again in a minute")
@@ -154,7 +154,7 @@ func (d Deps) PostReauth(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "password is incorrect")
 		return
 	}
-	end := d.reauth.open(sessionRef(c.Value))
+	end := d.reauth.open(sessionRef(sid))
 	d.auditAuth(r, audit.ActionAuthReauth, u.ID, u.Email, "ok")
 	writeJSON(w, http.StatusOK, reauthResp{ExpiresAt: end.UTC()})
 }

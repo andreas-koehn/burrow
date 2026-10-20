@@ -84,6 +84,42 @@ func TestAnswerPatterns_HitsAndNearMisses(t *testing.T) {
 	}
 }
 
+// A key glued to the word before it ("tokenghp_…", "id_AKIA…") is still
+// found where the prefix is distinctive enough that no word ends in it. The
+// OpenAI shapes keep their word boundary: "sk-" ends English words and CSS or
+// resource names ("task-…", "kiosk-admin-…"), and gluing would turn those
+// into keys.
+func TestAnswerPatterns_GluedToAWord(t *testing.T) {
+	e := NewEngine()
+	glued := map[string]string{
+		"anthropic_key":           "mykey" + fakeAnthropic,
+		"aws_access_key":          "id_" + fakeAWS,
+		"github_token":            "token" + fakeGitHub,
+		"slack_token":             "Slack" + fakeSlack,
+		"google_api_key":          "key2" + fakeGoogle,
+		"burrow_automation_token": "Bearer_" + fakeAutomation,
+		"burrow_gateway_key":      "keyis" + fakeGatewayKey,
+	}
+	for id, text := range glued {
+		if hit, got := e.InspectAnswerText(text, nil); !hit || got != id {
+			t.Errorf("%s: glued %q = %v %q, want a hit", id, text, hit, got)
+		}
+	}
+	github := "x" + "github_pat_" + strings.Repeat("A1b2C3d4E5", 3)
+	if hit, got := e.InspectAnswerText(github, nil); !hit || got != "github_token" {
+		t.Errorf("glued fine-grained GitHub token: %v %q", hit, got)
+	}
+	for _, prose := range []string{
+		"task-" + strings.Repeat("Zx9Yw8Vu7T", 3),
+		"the kiosk-admin-dashboard-components-wrapper class",
+		"desk-proj-" + strings.Repeat("Ab1-_Cd", 4),
+	} {
+		if hit, got := e.InspectAnswerText(prose, nil); hit {
+			t.Errorf("%q matched %q", prose, got)
+		}
+	}
+}
+
 func TestAnswerPatterns_CleanProse(t *testing.T) {
 	e := NewEngine()
 	prose := "Sure! To create an API key, open the settings page and click New key. " +

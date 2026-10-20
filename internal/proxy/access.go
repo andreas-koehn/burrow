@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/db"
 )
 
@@ -284,8 +285,8 @@ func (ac *accessChecker) checkBurrowLogin(ctx context.Context, res *Resolved, r 
 	}
 
 	if ac.sv != nil {
-		if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
-			uid, err := validate(ctx, c.Value)
+		if sid, _ := auth.ReadCookie(r, cookieName); sid != "" {
+			uid, err := validate(ctx, sid)
 			if err == nil {
 				user, err := ac.sv.GetUserByID(ctx, uid)
 				if err == nil && user.Status != "suspended" {

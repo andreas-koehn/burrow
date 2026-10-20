@@ -58,7 +58,7 @@ test("connect-client: three lines, the waiting indicator, and other ways without
 
 test("connect-client: ?service=<id> shows the command that serves that service", async ({ page }) => {
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 
   // A client finds its service by name: the title is what the command names.

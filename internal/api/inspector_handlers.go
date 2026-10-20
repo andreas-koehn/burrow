@@ -109,6 +109,11 @@ type inspectorEntryJSON struct {
 	// Judge is set when the judge model was asked about the request or its
 	// answer: the verdict and, for a block, the reason.
 	Judge *inspector.JudgeMark `json:"judge,omitempty"`
+	// RequestGuardrail and RequestJudge keep the request's marks when its
+	// answer got marks of its own (Guardrail and Judge then hold the
+	// answer's).
+	RequestGuardrail *inspector.GuardrailMark `json:"request_guardrail,omitempty"`
+	RequestJudge     *inspector.JudgeMark     `json:"request_judge,omitempty"`
 	// Purpose is "guardrail-judge" for the relay's own call to the judge
 	// model, "" for an app's request.
 	Purpose string `json:"purpose,omitempty"`
@@ -147,7 +152,10 @@ func inspectorEntryToJSON(e inspector.Entry) inspectorEntryJSON {
 		OAuthGrantID: e.OAuthGrantID,
 		Guardrail:    e.Guardrail,
 		Judge:        e.Judge,
-		Purpose:      e.Purpose,
+		// The request's marks when the answer's took the fields above.
+		RequestGuardrail: e.RequestGuardrail,
+		RequestJudge:     e.RequestJudge,
+		Purpose:          e.Purpose,
 	}
 	if out.Dropped == nil {
 		out.Dropped = []string{}

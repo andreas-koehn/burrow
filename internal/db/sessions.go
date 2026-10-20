@@ -64,7 +64,8 @@ func (x *DB) DeleteSessionWithChildren(ctx context.Context, id string) ([]string
 
 // deleteSessionTree deletes session id (scoped to userID when it is not "")
 // and its services sessions, and returns the children's ids and whether the
-// session itself was there.
+// session itself was there. The children go even when the session's own row
+// is already gone.
 func (x *DB) deleteSessionTree(ctx context.Context, id, userID string) ([]string, bool, error) {
 	tx, err := x.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
@@ -83,11 +84,16 @@ func (x *DB) deleteSessionTree(ctx context.Context, id, userID string) ([]string
 	if err != nil {
 		return nil, false, fmt.Errorf("delete session rows affected: %w", err)
 	}
-	if n == 0 {
-		// Not this caller's session (or gone): its children are left alone.
-		return nil, false, tx.Commit()
+	found := n > 0
+	// The children go by their parent_id even when the parent's row is
+	// already gone (a path that removed it without them). Scoped to a user,
+	// only that user's children go: the parent of another user's children
+	// may be missing too, and they are not this caller's.
+	childScope, childArgs := "", []any{id}
+	if userID != "" {
+		childScope, childArgs = " AND user_id=?", []any{id, userID}
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM sessions WHERE parent_id=?`, id)
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM sessions WHERE parent_id=?`+childScope, childArgs...)
 	if err != nil {
 		return nil, false, fmt.Errorf("list services sessions: %w", err)
 	}
@@ -103,10 +109,12 @@ func (x *DB) deleteSessionTree(ctx context.Context, id, userID string) ([]string
 	if err := rows.Close(); err != nil {
 		return nil, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE parent_id=?`, id); err != nil {
-		return nil, false, fmt.Errorf("delete services sessions: %w", err)
+	if len(children) > 0 {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE parent_id=?`+childScope, childArgs...); err != nil {
+			return nil, false, fmt.Errorf("delete services sessions: %w", err)
+		}
 	}
-	return children, true, tx.Commit()
+	return children, found, tx.Commit()
 }
 
 // ListSessionsByUser returns the user's sessions, newest first.

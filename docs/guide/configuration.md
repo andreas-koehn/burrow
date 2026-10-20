@@ -246,7 +246,7 @@ services domain to give the apps a host of their own, and the dialog goes away:
 - Every service address the relay prints (dashboard, API, the client's status
   view) uses the services host.
 - `burrow_login` services get a session of their own on the services host, in
-  the cookie `burrow_svc_session`. Nobody signs in there: the gate sends the
+  the cookie `__Host-burrow_svc_session`. Nobody signs in there: the gate sends the
   visitor to the dashboard's host, which issues a one-time code (60 seconds,
   single use) to a signed-in user and sends the browser back. See
   [Access control](/guide/access-control#burrow-login).
@@ -255,7 +255,7 @@ What the services host does not do:
 
 - **The apps share one origin with each other.** Every `/svc/<slug>/` app is
   on the same host, so a script on one app's page can call any other app as
-  the visitor, with that visitor's `burrow_svc_session` riding along, and can
+  the visitor, with that visitor's `__Host-burrow_svc_session` riding along, and can
   read its answers. The services domain separates the apps from the
   dashboard, not from each other. Expose on it only apps you trust as much as
   each other; an app that must be kept apart needs a host of its own (a

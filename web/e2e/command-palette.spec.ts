@@ -30,7 +30,7 @@ test("palette: typing a service title shows a result, Enter navigates", async ({
   // Create a service via the real API so it appears in palette entity results.
   await page.goto("/");
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
   const svcId = `palette-e2e-${Date.now()}`;
   const created = await page.request.post("/api/v1/services", {
@@ -106,7 +106,7 @@ test("palette: a provider is found by name, before the service of that name", as
   // A service and the provider it backs, both under one name.
   await page.goto("/");
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
   const name = `palette-prov-${Date.now()}`;
   const service = await page.request.post("/api/v1/services", {

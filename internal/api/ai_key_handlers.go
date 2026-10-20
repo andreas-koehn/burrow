@@ -21,6 +21,8 @@ package api
 //     user is an admin.
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -347,16 +349,45 @@ func (d Deps) PutAIKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toAIKeyResp(k))
 }
 
+// anyServiceGuardrails reports whether any service has guardrails of its own
+// switched on. A config that does not decode counts as none (the chain's
+// loader skips it as well).
+func (d Deps) anyServiceGuardrails(ctx context.Context) (bool, error) {
+	if d.ServiceAIConfigs == nil {
+		return false, nil
+	}
+	raws, err := d.ServiceAIConfigs.ListServiceAIConfigsRaw(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, raw := range raws {
+		var cfg struct {
+			Guardrails *struct {
+				Enabled bool `json:"enabled"`
+			} `json:"guardrails"`
+		}
+		if json.Unmarshal(raw, &cfg) == nil && cfg.Guardrails != nil && cfg.Guardrails.Enabled {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // keyPatterns is the guardrails engine the key handlers check system text
 // with: the bundled request patterns compiled once, the custom ones cached.
 var keyPatterns = sync.OnceValue(guardrails.NewEngine)
 
 // keyTextAllowed checks a gateway key's system text against the request
-// patterns, bundled and custom, when the global request guardrails are on,
+// patterns, bundled and custom, where request guardrails apply to the key,
 // and writes the 400 naming the pattern that matched. The chain checks the
 // text on every request as well (aigw.WithKeySystemText); refusing it here
 // tells the key's owner at once. A model's system text is the operator's and
 // is not checked.
+//
+// A gateway key serves no single service, so the check runs when the global
+// request guardrails are on, or when any service has guardrails of its own
+// switched on (they override the global switch for that service, see
+// guardrails.Effective, and use the global custom patterns).
 func (d Deps) keyTextAllowed(w http.ResponseWriter, r *http.Request, text string) bool {
 	if text == "" || d.Settings == nil {
 		return true
@@ -368,7 +399,14 @@ func (d Deps) keyTextAllowed(w http.ResponseWriter, r *http.Request, text string
 	}
 	g := loadGuardrailsGlobal(m)
 	if !g.Enabled {
-		return true
+		on, err := d.anyServiceGuardrails(r.Context())
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "get guardrail settings failed")
+			return false
+		}
+		if !on {
+			return true
+		}
 	}
 	if hit, id := keyPatterns().InspectRequest([]byte(text), g.CustomPatterns); hit {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("system_text matches the guardrail pattern %q", id))

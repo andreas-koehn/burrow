@@ -42,11 +42,13 @@ Over the opt-in host-routed ingress `burrow_login` is therefore not supported.
 With a [services domain](/guide/configuration#services-domain)
 (`BURROW_SERVICES_DOMAIN`) the dashboard's session cookie never reaches the
 services host, and does not count there. The service needs a session of the
-services host instead, in the host-only cookie `burrow_svc_session`:
+services host instead, in the host-only cookie `__Host-burrow_svc_session`
+(the `__Host-` prefix means it cannot carry a Domain, so a page on another
+host of the site cannot set it):
 
 1. The gate on the services host gives the browser a short-lived nonce cookie
-   of this sign-in's own (`burrow_svc_nonce_<id>`, two minutes; two tabs that
-   sign in at once each keep theirs) and sends the visitor to
+   of this sign-in's own (`__Host-burrow_svc_nonce_<id>`, two minutes; two
+   tabs that sign in at once each keep theirs) and sends the visitor to
    `https://<dashboard>/__burrow/handoff?return=<service address>`.
 2. The dashboard's host asks for the password if the visitor is not signed in
    to the dashboard, then issues a one-time code (60 seconds, single use, bound
@@ -478,6 +480,17 @@ BURROW_TRUSTED_PROXIES=10.0.0.1/32
 
 Without `BURROW_HTTP_SECURE_COOKIES=true` the session cookie will not carry the
 `Secure` flag, which means browsers will refuse to send it on HTTPS pages.
+
+With Secure cookies the dashboard's cookies are named `__Host-burrow_session`
+and `__Host-burrow_csrf`. Browsers accept a `__Host-` cookie only with
+`Secure`, `Path=/` and no `Domain`, so a page on another host of the same site
+(the services host, a tunnelled app on a sibling name) cannot set or shadow
+the dashboard's session with a `Domain=` cookie. Over plain http the names are
+`burrow_session` and `burrow_csrf`. A session signed in before v0.12.1 keeps
+working under its bare name for one release; the next sign-in writes the new
+names and clears the old ones. The sign-in forms (the dashboard's, the
+gate's and the handoff's) and the password confirmation refuse a request
+another origin sent (login CSRF).
 
 ::: tip ACME handles TLS for you
 With `BURROW_ACME_DOMAIN` set, `burrowd` terminates TLS itself. You do **not**

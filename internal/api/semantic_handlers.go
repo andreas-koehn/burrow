@@ -47,6 +47,9 @@ type ServiceAIConfigStore interface {
 	// GetServiceAIConfigRaw returns the raw JSON blob for the service, and
 	// ok=false (nil error) when no row exists.
 	GetServiceAIConfigRaw(ctx context.Context, serviceID string) (raw []byte, ok bool, err error)
+	// ListServiceAIConfigsRaw returns the raw JSON blob of every service
+	// that has one.
+	ListServiceAIConfigsRaw(ctx context.Context) ([][]byte, error)
 	// UpsertServiceAIConfig writes (or replaces) the JSON blob for the
 	// service. The config is expected to be valid JSON.
 	UpsertServiceAIConfig(ctx context.Context, serviceID string, config []byte) error

@@ -98,9 +98,15 @@ components:
       in: cookie
       name: burrow_session
       description: |
-        Session cookie issued by POST /api/v1/auth/login. State-changing
-        cookie-authed requests MUST also send the burrow_csrf double-submit
-        header (`X-CSRF-Token`).
+        Session cookie issued by POST /api/v1/auth/login. With Secure cookies
+        (any HTTPS deployment) it is named `__Host-burrow_session`, and the
+        CSRF cookie `__Host-burrow_csrf`: a `__Host-` cookie cannot carry a
+        Domain, so no other host of the site can set one for the dashboard.
+        Over plain http (development) the names are `burrow_session` and
+        `burrow_csrf`. The bare names of earlier versions are still accepted
+        while the `__Host-` ones are absent (one release). State-changing
+        cookie-authed requests MUST also send the CSRF cookie's value as the
+        double-submit header (`X-CSRF-Token`).
     BearerAuth:
       type: http
       scheme: bearer
@@ -116,7 +122,8 @@ components:
       name: X-CSRF-Token
       description: |
         Double-submit token for cookie-authed state-changing requests.
-        Value mirrors the burrow_csrf cookie.
+        Value mirrors the CSRF cookie (`__Host-burrow_csrf`, or `burrow_csrf`
+        over plain http) that came with the session cookie.
     GatewayKey:
       type: http
       scheme: bearer
@@ -1610,9 +1617,11 @@ components:
           minimum: 0
           description: >
             USD for one request that reports no tokens (image generation,
-            speech, transcription). A request with token counts is priced by
-            tokens; one without by this price, and costs 0 and counts in
-            unpriced_requests of the cost summary when it is 0 or unset.
+            speech, transcription, and a rerank answer that bills only Cohere
+            search units, which are no tokens). A request with token counts is
+            priced by tokens; one without by this price, and costs 0 and
+            counts in unpriced_requests of the cost summary when it is 0 or
+            unset.
     CostPricingInput:
       type: object
       description: A whole price table; it replaces the one in use.
@@ -1647,8 +1656,9 @@ components:
           format: int64
           description: >
             Requests of the window that were answered without a token count
-            (images, speech, transcription) and whose model has no
-            per_request_usd price: they are counted at 0.
+            (images, speech, transcription, a rerank that bills only search
+            units) and whose model has no per_request_usd price: they are
+            counted at 0.
         tokens_in: { type: integer, format: int64 }
         tokens_out: { type: integer, format: int64 }
         top_consumers:
@@ -2039,12 +2049,13 @@ components:
         judge:
           type: object
           description: >
-            Set when the judge applied to the request or its answer (an
-            answer's mark replaces the request's): the verdict, the judge's
-            reason for a block, and the class of a failure. not_judged means
-            there was no text to judge (an image-only request, an answer of
-            tool calls only); its reason is "no text". too_large is an answer
-            larger than the relay holds (256 KiB).
+            Set when the judge applied to the request or its answer (when both
+            were judged, this is the answer's mark and request_judge the
+            request's): the verdict, the judge's reason for a block, and the
+            class of a failure. not_judged means there was no text to judge
+            (an image-only request, an answer of tool calls without
+            arguments); its reason is "no text". too_large is an answer larger
+            than the relay holds (256 KiB).
           required: [direction, verdict]
           properties:
             direction: { type: string, enum: [request, answer] }
@@ -2057,6 +2068,31 @@ components:
                 True when the verdict is failed and on_failure refuse turned
                 the failure into a refusal; absent when the request was let
                 through.
+        request_guardrail:
+          type: object
+          description: >
+            The request's pattern mark (as in guardrail) when its answer got a
+            pattern mark of its own, which guardrail then holds; absent
+            otherwise.
+          required: [pattern, direction, action]
+          properties:
+            pattern: { type: string }
+            direction: { type: string, enum: [request] }
+            action: { type: string }
+            mid_stream: { type: boolean, description: Never true for a request. }
+            in: { type: string, enum: [key_system_text] }
+        request_judge:
+          type: object
+          description: >
+            The judge's mark on the request (as in judge) when its answer was
+            judged as well, which judge then holds; absent otherwise.
+          required: [direction, verdict]
+          properties:
+            direction: { type: string, enum: [request] }
+            verdict: { type: string, enum: [allow, block, failed, not_judged] }
+            reason: { type: string }
+            failure: { type: string, enum: [timeout, error, malformed, unavailable, too_large] }
+            refused: { type: boolean }
         purpose:
           type: string
           enum: [guardrail-judge]
@@ -3021,6 +3057,12 @@ paths:
       x-burrow-permission: {kind: public, any_of: []}
       x-burrow-mcp: false
       summary: Password login
+      description: |
+        Refuses login CSRF: a browser request from another origin (a
+        `Sec-Fetch-Site` other than `same-origin` or `none`, or without that
+        header an `Origin` that is not the request's host) gets 403, and a
+        `text/plain` body gets 415. A request with neither header (a CLI)
+        passes.
       security: []
       requestBody:
         required: true
@@ -3040,6 +3082,16 @@ paths:
               schema: { $ref: '#/components/schemas/SessionUser' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: A cross-origin browser request (`cross-origin request refused`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: A text/plain body.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '429':
           description: Rate-limited (per-IP or global).
           content:
@@ -3071,7 +3123,8 @@ paths:
         has no services domain (`BURROW_SERVICES_DOMAIN`); with one the call
         still succeeds and the guard is off. Rate-limited like sign-in, audited
         as `auth.reauth`; ten wrong passwords in a minute from one session lock that session for that minute (429); other sessions of the user are not affected. A dashboard session only: an automation token has no
-        window and gets 403.
+        window and gets 403. A cross-origin browser request gets 403 as on
+        POST /api/v1/auth/login.
       requestBody:
         required: true
         content:

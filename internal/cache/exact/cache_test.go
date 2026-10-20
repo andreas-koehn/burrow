@@ -570,3 +570,52 @@ func checkCacheLifecycle(t *testing.T, c *Cache, prefix string) {
 		t.Errorf("after Clear: hit=%v err=%v", hit, err)
 	}
 }
+
+// An entry stored under one answer inspection (its guard generation) is not
+// served under another: LookupGen treats it as a miss without reading its
+// body, and the next Store replaces it although it is still live. An empty
+// wanted generation (answers not inspected now) takes any entry.
+func TestCache_GuardGeneration(t *testing.T) {
+	checkGuardGen(t, testCache(t), "sqlite")
+}
+
+func checkGuardGen(t *testing.T, c *Cache, prefix string) {
+	t.Helper()
+	ctx := context.Background()
+	scope := "endpoint:" + prefix + "-gen:/v1/chat/completions"
+	key := scope + ":k"
+	_ = c.Clear(ctx, scope)
+	t.Cleanup(func() { _ = c.Clear(ctx, scope) })
+	now := time.Now().UTC()
+	if err := c.Store(ctx, key, Entry{Body: []byte(`uninspected`), Status: 200, CreatedAt: now, TTLSeconds: 3600}); err != nil {
+		t.Fatal(err)
+	}
+	misses := c.misses.Load()
+	if _, hit, err := c.LookupGen(ctx, key, "gen-a"); err != nil || hit {
+		t.Fatalf("an entry stored without inspection was served under gen-a: hit=%v err=%v", hit, err)
+	}
+	if c.misses.Load() != misses+1 {
+		t.Errorf("a generation mismatch is not counted as a miss")
+	}
+	if got, hit, _ := c.LookupGen(ctx, key, ""); !hit || string(got.Body) != "uninspected" {
+		t.Fatalf("no inspection wanted: hit=%v body=%q", hit, got.Body)
+	}
+	// The answer fetched under gen-a replaces the live entry.
+	if err := c.Store(ctx, key, Entry{Body: []byte(`inspected`), Status: 200, CreatedAt: now, TTLSeconds: 3600, GuardGen: "gen-a"}); err != nil {
+		t.Fatal(err)
+	}
+	got, hit, err := c.LookupGen(ctx, key, "gen-a")
+	if err != nil || !hit || string(got.Body) != "inspected" || got.GuardGen != "gen-a" {
+		t.Fatalf("after the store under gen-a: hit=%v err=%v entry=%+v", hit, err, got)
+	}
+	// Under the same generation the first writer still wins.
+	if err := c.Store(ctx, key, Entry{Body: []byte(`second`), Status: 200, CreatedAt: now, TTLSeconds: 3600, GuardGen: "gen-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := c.LookupGen(ctx, key, "gen-a"); string(got.Body) != "inspected" {
+		t.Fatalf("a second store of the same generation replaced the entry: %q", got.Body)
+	}
+	if _, hit, _ := c.LookupGen(ctx, key, "gen-b"); hit {
+		t.Fatal("an entry of gen-a was served under gen-b")
+	}
+}

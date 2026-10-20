@@ -21,7 +21,7 @@ test("v0.4.0: prompt cache — toggle enabled + save shows success toast", async
 
 test("v0.4.0: prompt cache API — PUT /cache/settings round-trips a flat body", async ({ page }) => {
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 
   // GET wraps the persisted blob in {global, per_service}.

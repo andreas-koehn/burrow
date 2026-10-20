@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/httpduplex"
 	"github.com/ankoehn/burrow/internal/observe"
 	"github.com/ankoehn/burrow/internal/proto"
@@ -1307,10 +1308,15 @@ func (c *countingConn) Write(p []byte) (int, error) {
 // session, and during the sign-in handoff its nonce, instead. None of them is
 // the upstream's business, and an upstream must not be able to set one.
 // Each handoff has a nonce cookie of its own (servicesNonceCookie + "_" + id).
-var burrowCookies = map[string]bool{"burrow_session": true, "burrow_csrf": true, ServicesSessionCookie: true, servicesNonceCookie: true}
+// Every one of them comes under its bare base name and with the __Host-
+// prefix (auth.CookieName).
+var burrowCookies = map[string]bool{gateSessionCookieName: true, gateCSRFCookieName: true, ServicesSessionCookie: true, servicesNonceCookie: true}
 
-// isBurrowCookie reports whether name is one of Burrow's own cookies.
-func isBurrowCookie(name string) bool { return burrowCookies[name] || isNonceCookie(name) }
+// isBurrowCookie reports whether name is one of Burrow's own cookies, under
+// either of its names.
+func isBurrowCookie(name string) bool {
+	return burrowCookies[auth.BaseCookieName(name)] || isNonceCookie(name)
+}
 
 // stripBurrowCookies removes the dashboard's cookies from an outbound request
 // and leaves every other cookie untouched. It filters the raw header text

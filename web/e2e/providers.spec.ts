@@ -17,7 +17,7 @@ test("Providers page mounts with heading + metric strip", async ({ page }) => {
   // Pre-provision the backing service (also a self-contained smoke for the
   // v0.5.2 POST /services route), then register it as a provider.
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
   const created = await page.request.post("/api/v1/services", {
     headers,

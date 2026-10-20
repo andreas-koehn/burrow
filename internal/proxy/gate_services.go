@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/db"
 )
 
@@ -56,10 +57,11 @@ const (
 	handoffCodesMax = 10000
 
 	// servicesNonceCookie binds a handoff to the browser that started it:
-	// each handoff has its own cookie, servicesNonceCookie + "_" + its id.
-	// The bare name is the one handoffs used before; a callback still reads
-	// it when the address carries no id. Sent to the gate's paths only.
-	servicesNonceCookie = "burrow_svc_nonce"
+	// each handoff has its own cookie, "__Host-" + servicesNonceCookie +
+	// "_" + its id, on Path=/ (a __Host- cookie must be). Earlier versions
+	// wrote it without the prefix on servicesNoncePath, and before that
+	// without the id; a callback still reads those (see nonceCandidates).
+	servicesNonceCookie = auth.ServicesNonceCookie
 	servicesNoncePath   = "/__burrow/"
 	servicesNonceMaxAge = 120
 	// nonceIDLen is the length of a handoff's id: a prefix of the nonce hash.
@@ -71,12 +73,26 @@ const (
 )
 
 // nonceCookieName is the cookie of the handoff with id nid.
-func nonceCookieName(nid string) string { return servicesNonceCookie + "_" + nid }
+func nonceCookieName(nid string) string {
+	return auth.HostCookiePrefix + servicesNonceCookie + "_" + nid
+}
 
-// isNonceCookie reports whether name is a handoff nonce cookie, the bare
-// name of earlier versions included.
+// nonceCandidates are the names the nonce of a handoff may be held under,
+// the current one first: with a valid id its __Host- name and the bare name
+// of the previous version, without one the bare name handoffs used before
+// they had ids.
+func nonceCandidates(nid string) []string {
+	if !validNonceID(nid) {
+		return []string{servicesNonceCookie}
+	}
+	return []string{nonceCookieName(nid), servicesNonceCookie + "_" + nid}
+}
+
+// isNonceCookie reports whether name is a handoff nonce cookie, the names of
+// earlier versions included.
 func isNonceCookie(name string) bool {
-	return name == servicesNonceCookie || strings.HasPrefix(name, servicesNonceCookie+"_")
+	base := auth.BaseCookieName(name)
+	return base == servicesNonceCookie || strings.HasPrefix(base, servicesNonceCookie+"_")
 }
 
 // validNonceID reports whether nid has the shape of a handoff id.
@@ -92,7 +108,7 @@ func (g *Gate) registerServicesRoutes(limiter func(http.Handler) http.Handler) {
 	g.mux.Handle("POST /__burrow/logout", limiter(http.HandlerFunc(g.handleServicesLogout)))
 	g.mux.HandleFunc("GET /__burrow/callback", g.handleCallback)
 	g.mux.HandleFunc("GET /__burrow/handoff", g.handleHandoff)
-	g.mux.Handle("POST /__burrow/handoff", limiter(http.HandlerFunc(g.handlePostHandoff)))
+	g.mux.Handle("POST /__burrow/handoff", sameOriginForm(limiter(http.HandlerFunc(g.handlePostHandoff))))
 }
 
 // onServicesHost reports whether the request arrived on the services host.
@@ -122,15 +138,15 @@ func privatePage(w http.ResponseWriter) {
 // a services session in burrow_svc_session, a dashboard session in
 // burrow_session. A session of the other kind counts for nothing.
 func (g *Gate) sessionUser(r *http.Request, cookie string) (db.User, bool) {
-	c, err := r.Cookie(cookie)
-	if err != nil || c.Value == "" {
+	sid, _ := auth.ReadCookie(r, cookie)
+	if sid == "" {
 		return db.User{}, false
 	}
 	validate := g.st.ValidateSession
 	if cookie == ServicesSessionCookie {
 		validate = g.st.ValidateServicesSession
 	}
-	uid, err := validate(r.Context(), c.Value)
+	uid, err := validate(r.Context(), sid)
 	if err != nil {
 		return db.User{}, false
 	}
@@ -219,12 +235,17 @@ func validHex(s string) bool {
 }
 
 // setNonceCookie sets (maxAge > 0) or clears (maxAge < 0) the nonce cookie
-// called name.
+// called name: a __Host- one on Path=/, one of an earlier version's names on
+// the gate's paths, where it was set.
 func (g *Gate) setNonceCookie(w http.ResponseWriter, name, value string, maxAge int) {
+	path := servicesNoncePath
+	if auth.IsHostCookie(name) {
+		path = "/"
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
 		Value:    value,
-		Path:     servicesNoncePath,
+		Path:     path,
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
@@ -240,8 +261,8 @@ func (g *Gate) handleServicesLogout(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if c, err := r.Cookie(ServicesSessionCookie); err == nil && c.Value != "" {
-		_ = g.st.DeleteSession(r.Context(), c.Value)
+	if sid, _ := auth.ReadCookie(r, ServicesSessionCookie); sid != "" {
+		_ = g.st.DeleteSession(r.Context(), sid)
 		g.setServicesCookie(w, "", -1)
 	}
 	http.Redirect(w, r, g.dashboardRoot(), http.StatusFound)
@@ -270,8 +291,8 @@ func (g *Gate) handleHandoff(w http.ResponseWriter, r *http.Request) {
 		g.renderHandoffLogin(w, ret, nh, "")
 		return
 	}
-	c, _ := r.Cookie(gateSessionCookieName) // sessionUser read it
-	g.issueHandoff(w, r, user, c.Value, ret, nh)
+	sid, _ := auth.ReadCookie(r, gateSessionCookieName) // sessionUser read it
+	g.issueHandoff(w, r, user, sid, ret, nh)
 }
 
 // handlePostHandoff is the sign-in form of the handoff on the dashboard's
@@ -371,13 +392,14 @@ func (g *Gate) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	// The handoff's nonce is spent by this answer whatever it is; the
 	// nonces of other handoffs under way in the same browser stay.
-	name := servicesNonceCookie // a handoff begun before handoffs had ids
-	if nid := q.Get("nid"); validNonceID(nid) {
-		name = nonceCookieName(nid)
-	}
+	candidates := nonceCandidates(q.Get("nid"))
+	name := candidates[0]
 	var nh string
-	if c, err := r.Cookie(name); err == nil && c.Value != "" {
-		nh = nonceHash(c.Value)
+	for _, n := range candidates {
+		if c, err := r.Cookie(n); err == nil && c.Value != "" {
+			name, nh = n, nonceHash(c.Value)
+			break
+		}
 	}
 	g.setNonceCookie(w, name, "", -1)
 	uid, parent, ok := g.codes.take(q.Get("code"), ret, nh, g.now())
@@ -392,8 +414,8 @@ func (g *Gate) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	// The browser's previous services session, if any, ends here rather
 	// than waiting out its seven days.
-	if c, err := r.Cookie(ServicesSessionCookie); err == nil && c.Value != "" {
-		_ = g.st.DeleteSession(r.Context(), c.Value)
+	if old, _ := auth.ReadCookie(r, ServicesSessionCookie); old != "" {
+		_ = g.st.DeleteSession(r.Context(), old)
 	}
 	// The services session is linked to the dashboard session that handed it
 	// off: it ends when that one does (sign-out, revoke), and none is made
@@ -414,10 +436,13 @@ func (g *Gate) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 // setServicesCookie sets (maxAge > 0) or clears (maxAge < 0) the services
 // session cookie: host-only on the services host, HttpOnly, SameSite=Lax, and
-// always Secure, since every services-host address Burrow builds is https.
+// always Secure, since every services-host address Burrow builds is https;
+// so it always carries the __Host- prefix. The bare name of earlier versions
+// is cleared either way.
 func (g *Gate) setServicesCookie(w http.ResponseWriter, value string, maxAge int) {
+	expireCookie(w, ServicesSessionCookie, "/", true, true)
 	http.SetCookie(w, &http.Cookie{
-		Name:     ServicesSessionCookie,
+		Name:     auth.CookieName(ServicesSessionCookie, true),
 		Value:    value,
 		Path:     "/",
 		HttpOnly: true,

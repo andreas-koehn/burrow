@@ -131,21 +131,52 @@ func (x *DB) ListAIGatewayKeys(ctx context.Context, userID string) ([]AIGatewayK
 	return out, rows.Err()
 }
 
-// UpdateAIGatewayKey replaces the editable fields of the key (name, system
-// text, both allow-lists and the read-only switch) with the values in k, revoked
-// or not; ErrNotFound when there is no such key.
-func (x *DB) UpdateAIGatewayKey(ctx context.Context, k AIGatewayKey) error {
-	allowed, err := json.Marshal(append([]string{}, k.AllowedModels...))
-	if err != nil {
-		return fmt.Errorf("update ai gateway key: %w", err)
+// AIGatewayKeyPatch is a change to the editable fields of a key: each field
+// that is set replaces the stored value, a nil one leaves it as it is.
+type AIGatewayKeyPatch struct {
+	Name, SystemText            *string
+	AllowedModels, AllowedTools *[]string
+	ToolsReadOnly               *bool
+}
+
+// UpdateAIGatewayKey changes the fields of the key that p sets (name, system
+// text, the allow-lists, the read-only switch), revoked or not; ErrNotFound
+// when there is no such key. It is one UPDATE that leaves every other field
+// to the row as it stands: two partial updates at the same time do not undo
+// each other, as a read-modify-write would.
+func (x *DB) UpdateAIGatewayKey(ctx context.Context, id string, p AIGatewayKeyPatch) error {
+	var name, text, allowed, tools, readOnly any // nil: NULL, the stored value stays
+	if p.Name != nil {
+		name = *p.Name
 	}
-	tools, err := json.Marshal(append([]string{}, k.AllowedTools...))
-	if err != nil {
-		return fmt.Errorf("update ai gateway key: %w", err)
+	if p.SystemText != nil {
+		text = *p.SystemText
+	}
+	for _, f := range []struct {
+		list *[]string
+		dst  *any
+	}{{p.AllowedModels, &allowed}, {p.AllowedTools, &tools}} {
+		if f.list == nil {
+			continue
+		}
+		b, err := json.Marshal(append([]string{}, (*f.list)...))
+		if err != nil {
+			return fmt.Errorf("update ai gateway key: %w", err)
+		}
+		*f.dst = string(b)
+	}
+	if p.ToolsReadOnly != nil {
+		readOnly = *p.ToolsReadOnly
 	}
 	res, err := x.sqlDB.ExecContext(ctx,
-		`UPDATE ai_gateway_keys SET name=?, system_text=?, allowed_models=?, allowed_tools=?, tools_read_only=? WHERE id=?`,
-		k.Name, k.SystemText, string(allowed), string(tools), k.ToolsReadOnly, k.ID)
+		`UPDATE ai_gateway_keys SET
+		   name            = COALESCE(?, name),
+		   system_text     = COALESCE(?, system_text),
+		   allowed_models  = COALESCE(?, allowed_models),
+		   allowed_tools   = COALESCE(?, allowed_tools),
+		   tools_read_only = COALESCE(?, tools_read_only)
+		 WHERE id=?`,
+		name, text, allowed, tools, readOnly, id)
 	if err != nil {
 		return fmt.Errorf("update ai gateway key: %w", err)
 	}

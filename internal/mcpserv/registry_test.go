@@ -343,6 +343,9 @@ var mcpSensitiveAllowed = map[string]string{
 	// inspector:replay; it changes no setting and sends nothing elsewhere.
 	"inspectorRequestReplay":        "replays a captured request to its own service; changes no setting",
 	"inspectorRequestReplayCompare": "replays a captured request to its own service; changes no setting",
+	// The permissions of a token minted by a token are at most the calling
+	// token's own (and its expiry no later), see PostAutomationToken.
+	"automationTokenCreate": "mints a token with at most the calling token's permissions and expiry; widens nothing",
 }
 
 // bodyPropertyNames collects every property name of a JSON Schema, nested
@@ -417,8 +420,11 @@ func sensitiveWrite(op Operation) string {
 	case len(address) > 0:
 		return "the body has an address (" + strings.Join(address, ", ") + ")"
 	}
+	// Who may reach a service (access_mode, mtls_ca_pem) and what a person
+	// or a role may do (role, permissions) are as sensitive as inspection.
 	for _, n := range []string{"redaction", "guardrails", "inspector", "gateway_only", "presidio_url", "redact_for_logs_only",
-		"custom_patterns", "inspector_retention_count", "audit_retention_days", "redaction_retention_days", "system_text"} {
+		"custom_patterns", "inspector_retention_count", "audit_retention_days", "redaction_retention_days", "system_text",
+		"access_mode", "mtls_ca_pem", "permissions", "role"} {
 		if names[n] {
 			return "the body has " + n
 		}
@@ -520,6 +526,42 @@ func TestRegistry_GuardCatchesTheProbes(t *testing.T) {
       operationId: serviceGuardrailsDelete
       x-burrow-permission: {kind: self, any_of: []}
       responses: { '204': { description: ok } }
+`,
+		// Round 2 deferred: who may reach a service, the CA its mTLS trusts,
+		// and what a role may do.
+		"access mode": `
+  /api/v1/gizmos/{slug}/access:
+    parameters: [{ $ref: '#/components/parameters/PathSlug' }]
+    put:
+      operationId: gizmoAccessUpdate
+      x-burrow-permission: {kind: self, any_of: []}
+      requestBody: { content: { application/json: { schema: { type: object, properties: { access_mode: { type: string } } } } } }
+      responses: { '200': { description: ok } }
+`,
+		"an mTLS CA": `
+  /api/v1/gizmos/{slug}/trust:
+    parameters: [{ $ref: '#/components/parameters/PathSlug' }]
+    put:
+      operationId: gizmoTrustUpdate
+      x-burrow-permission: {kind: self, any_of: []}
+      requestBody: { content: { application/json: { schema: { type: object, properties: { mtls_ca_pem: { type: string } } } } } }
+      responses: { '200': { description: ok } }
+`,
+		"a role's permissions": `
+  /api/v1/teams:
+    post:
+      operationId: teamCreate
+      x-burrow-permission: {kind: self, any_of: []}
+      requestBody: { content: { application/json: { schema: { type: object, properties: { name: { type: string }, permissions: { type: array, items: { type: string } } } } } } }
+      responses: { '200': { description: ok } }
+`,
+		"a member's role": `
+  /api/v1/members:
+    post:
+      operationId: memberCreate
+      x-burrow-permission: {kind: self, any_of: []}
+      requestBody: { content: { application/json: { schema: { type: object, properties: { email: { type: string }, role: { type: string } } } } } }
+      responses: { '200': { description: ok } }
 `,
 		"base_url nested under allOf": `
   /api/v1/things:

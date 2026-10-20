@@ -86,14 +86,20 @@ type Entry struct {
 	// Judge is set when the judge model was asked about the request or its
 	// answer; nil otherwise.
 	Judge *JudgeMark `json:"judge,omitempty"`
+	// RequestGuardrail and RequestJudge keep the request's marks when its
+	// answer got a mark of the same kind (Guardrail and Judge then hold the
+	// answer's); nil otherwise.
+	RequestGuardrail *GuardrailMark `json:"request_guardrail,omitempty"`
+	RequestJudge     *JudgeMark     `json:"request_judge,omitempty"`
 	// Purpose says why the relay itself made the request: "guardrail-judge"
 	// for a call to the judge model; "" for an app's request.
 	Purpose string `json:"purpose,omitempty"`
 }
 
 // JudgeMark is the judge's word on a captured request or its answer:
-// Direction "request" or "answer" (what was judged; an answer's verdict
-// replaces the request's), Verdict "allow", "block" or "failed", Reason the
+// Direction "request" or "answer" (what was judged; when both were, the
+// answer's verdict is Entry.Judge and the request's Entry.RequestJudge),
+// Verdict "allow", "block" or "failed", Reason the
 // model's reason for a block (never shown to the app), Failure the class of
 // a failure ("timeout", "error", "malformed", "unavailable").
 type JudgeMark struct {

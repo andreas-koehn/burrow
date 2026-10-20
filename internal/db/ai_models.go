@@ -75,8 +75,9 @@ func insertAIModelTargets(ctx context.Context, tx *sql.Tx, name string, targets 
 	return nil
 }
 
-// routingOrDefault is the value stored for a model's routing.
-func routingOrDefault(r string) string {
+// RoutingOrDefault is a model's routing with the default for an empty one:
+// the value stored, and the one a model view shows.
+func RoutingOrDefault(r string) string {
 	if r == "" {
 		return "ordered"
 	}
@@ -93,7 +94,7 @@ func (x *DB) CreateAIModel(ctx context.Context, m AIModel) error {
 		`INSERT INTO ai_models(name, description, enabled, fallback_on_rate_limit, translate, system_text, routing, attempt_timeout_s, total_timeout_s)
 		 VALUES(?,?,?,?,?,?,?,?,?)`,
 		m.Name, m.Description, boolToInt(m.Enabled), boolToInt(m.FallbackOnRateLimit), boolToInt(m.Translate),
-		m.SystemText, routingOrDefault(m.Routing), m.AttemptTimeoutS, m.TotalTimeoutS); err != nil {
+		m.SystemText, RoutingOrDefault(m.Routing), m.AttemptTimeoutS, m.TotalTimeoutS); err != nil {
 		_ = tx.Rollback()
 		if isDuplicateServiceErr(err) {
 			return ErrDuplicateModel
@@ -194,7 +195,7 @@ func (x *DB) UpdateAIModel(ctx context.Context, name string, m AIModel) error {
 		`UPDATE ai_models SET name=?, description=?, enabled=?, fallback_on_rate_limit=?, translate=?, system_text=?, routing=?, attempt_timeout_s=?, total_timeout_s=?, updated_at=CURRENT_TIMESTAMP
 		  WHERE name=?`,
 		m.Name, m.Description, boolToInt(m.Enabled), boolToInt(m.FallbackOnRateLimit), boolToInt(m.Translate),
-		m.SystemText, routingOrDefault(m.Routing), m.AttemptTimeoutS, m.TotalTimeoutS, name)
+		m.SystemText, RoutingOrDefault(m.Routing), m.AttemptTimeoutS, m.TotalTimeoutS, name)
 	if err != nil {
 		_ = tx.Rollback()
 		if isDuplicateServiceErr(err) {

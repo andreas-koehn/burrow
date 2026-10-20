@@ -33,7 +33,8 @@ var bundledFS embed.FS
 // Entry is the per-model USD price (per 1,000,000 tokens, split by side).
 // A zero-cost model (e.g. ollama) is represented as both fields == 0.
 // PerRequestUSD is the price of one request that reports no tokens (images,
-// speech, transcription); 0 = not priced per request.
+// speech, transcription, a rerank answer that bills only Cohere search units,
+// which are no tokens); 0 = not priced per request.
 type Entry struct {
 	InputPerMillion  float64
 	OutputPerMillion float64

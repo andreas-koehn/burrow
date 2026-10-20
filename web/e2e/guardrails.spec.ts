@@ -23,7 +23,7 @@ test("v0.4.0: guardrails page mounts with its accordion sections", async ({ page
 
 test("v0.4.0: guardrails API — PUT /guardrails/settings round-trips (flat body)", async ({ page }) => {
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 
   // Server PUT expects {enabled, action} — not the {global, per_service}

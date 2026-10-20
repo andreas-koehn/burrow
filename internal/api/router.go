@@ -307,7 +307,7 @@ func newRouter(d Deps) http.Handler {
 			r.Get("/database", d.GetDatabaseStatus)
 		})
 
-		r.With(loginPerIP, loginGlobal).Post("/auth/login", d.Login)
+		r.With(sameOriginOnly, loginPerIP, loginGlobal).Post("/auth/login", d.Login)
 
 		// Client discovery: public, like login, because a client asks before
 		// it has a token. Rate-limited per source IP. It answers with the
@@ -349,7 +349,7 @@ func newRouter(d Deps) http.Handler {
 			r.With(loginPerIP, loginGlobal, recent).Post("/auth/change-password", d.ChangePassword)
 			// Confirms the password and opens the window RequireRecentAuth
 			// checks. Rate-limited like sign-in.
-			r.With(loginPerIP, loginGlobal).Post("/auth/reauth", d.PostReauth)
+			r.With(sameOriginOnly, loginPerIP, loginGlobal).Post("/auth/reauth", d.PostReauth)
 			// v0.4.0 Task 20: backup / restore JSON API (spec Part L.3).
 			// All routes need backup:run. The download streams application/x-gzip;
 			// every other route is JSON. POST /backups/restore is multipart and

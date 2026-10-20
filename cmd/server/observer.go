@@ -425,8 +425,12 @@ func (o *observer) ObserveModelRequest(e observe.ModelRequest) {
 // withheld (direction "answer", action "flag" when it was delivered, "block"
 // when it was withheld). tier is "pattern" or "judge"; a judge's event has no
 // pattern (its reason is not announced). At most one per service, tier,
-// pattern and direction per minute.
+// pattern and direction per minute. An answer a pattern flagged before the
+// judge withheld it (AnswerFlag) announces the flag first, then the block.
 func (o *observer) guardrailEvent(e observe.ModelRequest) {
+	if e.AnswerFlag != "" {
+		o.announceGuardrail(e.ServiceID, "pattern", e.AnswerFlag, "answer", "flag")
+	}
 	direction := e.GuardrailDirection
 	tier := e.GuardrailTier
 	if tier == "" {
@@ -441,12 +445,18 @@ func (o *observer) guardrailEvent(e observe.ModelRequest) {
 	default:
 		return
 	}
-	if !o.perMinute.allow("guardrail.refused\x00" + e.ServiceID + "\x00" + tier + "\x00" + e.GuardrailPattern + "\x00" + direction) {
+	o.announceGuardrail(e.ServiceID, tier, e.GuardrailPattern, direction, e.GuardrailAction)
+}
+
+// announceGuardrail publishes one guardrail.refused event, at most one per
+// service, tier, pattern and direction per minute.
+func (o *observer) announceGuardrail(serviceID, tier, pattern, direction, action string) {
+	if !o.perMinute.allow("guardrail.refused\x00" + serviceID + "\x00" + tier + "\x00" + pattern + "\x00" + direction) {
 		return
 	}
 	o.publish("guardrail.refused", map[string]any{
-		"ServiceID": e.ServiceID, "Pattern": e.GuardrailPattern,
-		"direction": direction, "tier": tier, "action": e.GuardrailAction,
+		"ServiceID": serviceID, "Pattern": pattern,
+		"direction": direction, "tier": tier, "action": action,
 	})
 }
 

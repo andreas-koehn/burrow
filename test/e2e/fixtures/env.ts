@@ -53,7 +53,7 @@ export function aiSubdomain(): string {
     const storage = JSON.parse(readFileSync(storagePath, "utf8")) as {
       cookies: { name: string; value: string }[];
     };
-    const sessionCookie = storage.cookies?.find((c) => c.name === "burrow_session")?.value ?? "";
+    const sessionCookie = storage.cookies?.find((c) => c.name === "burrow_session" || c.name === "__Host-burrow_session")?.value ?? "";
     if (sessionCookie) {
       const result = spawnSync(
         "curl",

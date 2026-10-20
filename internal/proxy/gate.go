@@ -63,18 +63,23 @@ import (
 	"github.com/go-chi/httprate"
 
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/db"
 )
 
-// ServicesSessionCookie is the session cookie of the services host
-// (BURROW_SERVICES_DOMAIN): host-only there, set by the handoff callback,
-// read by the access checker for burrow_login services on that host, and
-// stripped from every upstream request like the dashboard's cookies.
-const ServicesSessionCookie = "burrow_svc_session"
+// ServicesSessionCookie is the base name of the session cookie of the
+// services host (BURROW_SERVICES_DOMAIN): host-only there, set by the handoff
+// callback as __Host-burrow_svc_session, read by the access checker for
+// burrow_login services on that host, and stripped from every upstream
+// request like the dashboard's cookies.
+const ServicesSessionCookie = auth.ServicesSessionCookie
 
 const (
-	gateSessionCookieName = "burrow_session"
-	gateCSRFCookieName    = "burrow_csrf"
+	// The base names of the dashboard's cookies; written with the __Host-
+	// prefix when cookies are Secure (auth.CookieName), read under both
+	// names (auth.ReadCookie).
+	gateSessionCookieName = auth.SessionCookie
+	gateCSRFCookieName    = auth.CSRFCookie
 	gateSessionMaxAge     = 7 * 24 * time.Hour
 	// loginRateLimitPerIP mirrors the value from internal/api's LoginRateLimitPerIP
 	// constant. The gate gets its own independent limiter instance (not shared
@@ -193,10 +198,30 @@ func NewGate(st GateStore, authDomain string, secure bool, log *slog.Logger, opt
 	}
 
 	g.mux.HandleFunc("GET /__burrow/login", g.handleGetLogin)
-	g.mux.Handle("POST /__burrow/login", limiter(http.HandlerFunc(g.handlePostLogin)))
+	g.mux.Handle("POST /__burrow/login", sameOriginForm(limiter(http.HandlerFunc(g.handlePostLogin))))
 	g.mux.Handle("POST /__burrow/logout", limiter(http.HandlerFunc(g.handlePostLogout)))
 
 	return g
+}
+
+// formOrigin is the standard library's check of where a browser request
+// comes from (see sameOriginForm).
+var formOrigin = http.NewCrossOriginProtection()
+
+// sameOriginForm guards a password form against login CSRF: a page on
+// another origin, a services host included, must not sign the browser in to
+// an account of its choosing. It answers 403 before the handler runs when
+// the browser says the request is not same-origin (Sec-Fetch-Site other than
+// "same-origin" or "none") or, without that header, sends an Origin that is
+// not the request's host. A request with neither passes.
+func sameOriginForm(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := formOrigin.Check(r); err != nil {
+			http.Error(w, "cross-origin request refused", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // ServeHTTP dispatches to the registered routes.
@@ -218,8 +243,8 @@ func (g *Gate) handleGetLogin(w http.ResponseWriter, r *http.Request) {
 	nextURL := g.sanitizeNext(nextRaw)
 
 	// Check for an existing session cookie.
-	if c, err := r.Cookie(gateSessionCookieName); err == nil && c.Value != "" {
-		uid, err := g.st.ValidateSession(r.Context(), c.Value)
+	if sid, _ := auth.ReadCookie(r, gateSessionCookieName); sid != "" {
+		uid, err := g.st.ValidateSession(r.Context(), sid)
 		if err == nil {
 			// Valid session — look up the user and check role against target service.
 			user, err := g.st.GetUserByID(r.Context(), uid)
@@ -340,8 +365,8 @@ func (g *Gate) handlePostLogin(w http.ResponseWriter, r *http.Request) {
 // cookie from a cross-site form POST, so such a request must not be able to
 // sign the visitor out of the dashboard.
 func (g *Gate) handlePostLogout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(gateSessionCookieName); err == nil && c.Value != "" {
-		_ = g.st.DeleteSession(r.Context(), c.Value)
+	if sid, _ := auth.ReadCookie(r, gateSessionCookieName); sid != "" {
+		_ = g.st.DeleteSession(r.Context(), sid)
 		g.clearSessionCookie(w)
 		g.clearCSRFCookie(w)
 	}
@@ -359,7 +384,7 @@ func (g *Gate) handlePostLogout(w http.ResponseWriter, r *http.Request) {
 // dashboard cookie (internal/api/cookies.go).
 func (g *Gate) setSessionCookie(w http.ResponseWriter, id string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     gateSessionCookieName,
+		Name:     auth.CookieName(gateSessionCookieName, g.secure),
 		Value:    id,
 		Path:     "/",
 		HttpOnly: true,
@@ -367,16 +392,31 @@ func (g *Gate) setSessionCookie(w http.ResponseWriter, id string) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(gateSessionMaxAge.Seconds()),
 	})
+	if g.secure {
+		// The bare cookies of an earlier version would otherwise stay
+		// behind until they expire.
+		expireCookie(w, gateSessionCookieName, "/", true, true)
+		expireCookie(w, gateCSRFCookieName, "/", false, true)
+	}
 }
 
-// clearSessionCookie expires the host-only burrow_session cookie.
+// clearSessionCookie expires the host-only session cookie under both names.
 func (g *Gate) clearSessionCookie(w http.ResponseWriter) {
+	expireCookie(w, gateSessionCookieName, "/", true, g.secure)
+	if g.secure {
+		expireCookie(w, auth.CookieName(gateSessionCookieName, true), "/", true, true)
+	}
+}
+
+// expireCookie writes a Set-Cookie that removes the host-only cookie name
+// on path.
+func expireCookie(w http.ResponseWriter, name, path string, httpOnly, secure bool) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     gateSessionCookieName,
+		Name:     name,
 		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   g.secure,
+		Path:     path,
+		HttpOnly: httpOnly,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
@@ -397,7 +437,7 @@ func newCSRFToken() (string, error) {
 // attributes as internal/api/cookies.go: readable by JavaScript, host-only.
 func (g *Gate) setCSRFCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     gateCSRFCookieName,
+		Name:     auth.CookieName(gateCSRFCookieName, g.secure),
 		Value:    token,
 		Path:     "/",
 		HttpOnly: false, // JS-readable: required for the double-submit pattern
@@ -407,17 +447,12 @@ func (g *Gate) setCSRFCookie(w http.ResponseWriter, token string) {
 	})
 }
 
-// clearCSRFCookie expires the burrow_csrf cookie.
+// clearCSRFCookie expires the CSRF cookie under both names.
 func (g *Gate) clearCSRFCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     gateCSRFCookieName,
-		Value:    "",
-		Path:     "/",
-		HttpOnly: false,
-		Secure:   g.secure,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   -1,
-	})
+	expireCookie(w, gateCSRFCookieName, "/", false, g.secure)
+	if g.secure {
+		expireCookie(w, auth.CookieName(gateCSRFCookieName, true), "/", false, true)
+	}
 }
 
 // ---------------------------------------------------------------------------

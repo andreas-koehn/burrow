@@ -43,7 +43,7 @@ test("P5: the guided steps create the provider and show the command that serves 
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 
   await page.goto("/gateway/providers?new=local");
@@ -85,7 +85,7 @@ test("P5: the guided steps create the provider and show the command that serves 
 test("P5: ServiceDetail #upstream-key hash makes Upstream-key tab active", async ({ page }) => {
   // Pre-provision a service first so ServiceDetail has something to load.
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 
   const svcId = `svc-e2e-hash-${Date.now()}-${++svcSeq}`;

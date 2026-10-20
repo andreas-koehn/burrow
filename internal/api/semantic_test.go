@@ -55,6 +55,14 @@ func (f *fakeServiceAIConfigStore) GetServiceAIConfigRaw(_ context.Context, serv
 	return b, ok, nil
 }
 
+func (f *fakeServiceAIConfigStore) ListServiceAIConfigsRaw(_ context.Context) ([][]byte, error) {
+	out := make([][]byte, 0, len(f.configs))
+	for _, b := range f.configs {
+		out = append(out, b)
+	}
+	return out, nil
+}
+
 func (f *fakeServiceAIConfigStore) UpsertServiceAIConfig(_ context.Context, serviceID string, config []byte) error {
 	if f.saveErr != nil {
 		return f.saveErr

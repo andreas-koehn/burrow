@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/auth"
 )
@@ -536,5 +537,48 @@ func TestGatewayKeyTools(t *testing.T) {
 	// A stranger cannot, and cannot tell a key from a missing one.
 	if _, err := s.UpdateGatewayKey(ctx, other, false, k.ID, GatewayKeyUpdate{AllowedTools: models("gh__*")}); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("stranger err = %v", err)
+	}
+}
+
+// Partial updates that run at the same time each change only their own
+// field: none of them writes back a stale copy of the fields it left alone
+// (a read-modify-write would lose the other updates).
+func TestUpdateGatewayKey_ConcurrentPartialUpdates(t *testing.T) {
+	checkConcurrentKeyUpdates(t, newStore(t))
+}
+
+func checkConcurrentKeyUpdates(t *testing.T, s *Store) {
+	t.Helper()
+	ctx := context.Background()
+	owner := mustCreateUser(t, s, fmt.Sprintf("gk-conc-%d@x", time.Now().UnixNano()), "user").ID
+	k, _, err := s.CreateGatewayKey(ctx, owner, "start", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for round := 0; round < 25; round++ {
+		name, text := fmt.Sprintf("name-%d", round), fmt.Sprintf("text-%d", round)
+		tools, ro := []string{fmt.Sprintf("src%d__*", round)}, round%2 == 0
+		updates := []GatewayKeyUpdate{{Name: &name}, {SystemText: &text}, {AllowedTools: &tools}, {ToolsReadOnly: &ro}}
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for _, u := range updates {
+			wg.Add(1)
+			go func(u GatewayKeyUpdate) {
+				defer wg.Done()
+				<-start
+				if _, err := s.UpdateGatewayKey(ctx, owner, false, k.ID, u); err != nil {
+					t.Error(err)
+				}
+			}(u)
+		}
+		close(start)
+		wg.Wait()
+		got, err := s.q.GetAIGatewayKey(ctx, k.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Name != name || got.SystemText != text || len(got.AllowedTools) != 1 || got.AllowedTools[0] != tools[0] || got.ToolsReadOnly != ro {
+			t.Fatalf("round %d: lost an update: name %q text %q tools %v read-only %v", round, got.Name, got.SystemText, got.AllowedTools, got.ToolsReadOnly)
+		}
 	}
 }

@@ -9,7 +9,7 @@ export const ADMIN_PASSWORD = "e2e-password-123";
 
 export async function csrfHeaders(page: Page): Promise<Record<string, string>> {
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   return { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 }
 

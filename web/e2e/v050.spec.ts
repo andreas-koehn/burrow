@@ -147,7 +147,7 @@ test("v0.5.0: semantic cache tab is enabled and shows controls", async ({ page }
 // POST /api/v1/services endpoint so the assertion runs unconditionally.
 test("v0.5.0: upstream key tab shows env-only disclosure text", async ({ page }) => {
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 
   const list = await page.request.get("/api/v1/services");

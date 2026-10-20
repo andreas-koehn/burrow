@@ -46,8 +46,8 @@ const (
 	// judge is shown, in bytes.
 	MaxJudgedText = 16384
 	// MaxVerdictReason is the most of a verdict's reason that is kept, in
-	// characters: it is the model's text and goes to the audit log and the
-	// inspector.
+	// characters: it is the model's text and goes to the inspector (never
+	// to the audit log).
 	MaxVerdictReason = 300
 )
 

@@ -119,7 +119,7 @@ test("v0.2.0 admin: users CRUD + roles + settings + clients + access-mode", asyn
   // not found"} for an unknown/unowned id, and 403 {"error":"csrf token
   // invalid"} when the header is omitted. Proves the seam end-to-end.
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   expect(csrf).not.toBe("");
   const res = await page.request.put("/api/v1/tunnels/no-such-tunnel/access-mode", {
     headers: { "X-CSRF-Token": csrf, "Content-Type": "application/json" },

@@ -49,6 +49,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,6 +60,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ankoehn/burrow/internal/aimeter"
@@ -787,8 +790,8 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// pattern tier, so a request it refuses costs no judge call; before
 	// the system text (the judge sees what the app sent) and the cache. A
 	// block, or a failure with on_failure "refuse", answers 403; the
-	// judge's reason goes to the audit entry, the inspector and the
-	// observer, never to the app.
+	// judge's reason goes to the inspector and the observer, never to the
+	// app or the audit log (which records the verdict and a class).
 	// ---------------------------------------------------------------
 	judgeSettings, judgeTextFormat, judging := judgeFormat(r, kind, cfg)
 	// judgeTime is how long the request waited for the judge: the usage
@@ -849,9 +852,16 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// from or put into the cache of inference answers (the semantic tier
 	// keys on the body alone and could not tell the two apart).
 	bypass := strings.EqualFold(r.Header.Get("Burrow-Cache"), "bypass") || withoutUsage(r.Context()) || CacheBypassed(r.Context()) || IsMediaPath(r.URL.Path)
+	// An answer is served from the cache only when it was stored under the
+	// answer inspection that applies now (or none applies now).
+	var answerJudge *guardrails.JudgeSettings
+	if judging && judgeSettings.ChecksAnswers() {
+		answerJudge = &judgeSettings
+	}
+	guardGen := c.answerGen(r, kind, cfg, answerJudge)
 	if cfg.Cache != nil && cfg.Cache.Enabled && c.Cache != nil && !bypass {
 		key := buildCacheKey(svc, r, redactedBody, *cfg.Cache)
-		entry, hit, err := c.Cache.Lookup(r.Context(), key)
+		entry, hit, err := c.Cache.LookupGen(r.Context(), key, guardGen)
 		if err != nil {
 			c.Log.Warn("aigw: cache lookup failed",
 				slog.String("service_id", svc.ID),
@@ -905,7 +915,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		}
 		if semHit && cfg.Semantic.FallbackPolicy == "return_cached_marked" {
 			// Fetch the backing exact-cache entry using the candidate's key hash.
-			exactEntry, exactHit, exactErr := c.Cache.Lookup(r.Context(), candidate.ExactKeyHash)
+			exactEntry, exactHit, exactErr := c.Cache.LookupGen(r.Context(), candidate.ExactKeyHash, guardGen)
 			if exactErr != nil {
 				c.Log.Warn("aigw: semantic exact entry fetch failed",
 					slog.String("service_id", svc.ID),
@@ -1075,9 +1085,14 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		aborted, abort = false, nil
 	}
 	answerBlocked := false
+	// The request's marks, when its answer gets marks of its own: the entry
+	// keeps both.
+	var reqGuardMark *inspector.GuardrailMark
+	var reqJudgeMark *inspector.JudgeMark
 	if guard != nil {
 		guard.finish(aborted) // a held answer goes out (or is replaced) here
 		if hit, pattern, blocked, mid := guard.Result(); hit {
+			reqGuardMark = guardMark
 			answerBlocked = blocked
 			action := guardrails.AnswerActionFlag
 			if blocked {
@@ -1095,13 +1110,20 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 		}
 	}
 	if answerNoText {
+		reqJudgeMark = judgeMark
 		judgeMark = notJudgedMark(&ev, guardrails.DirectionAnswer)
 	}
 	if answerJudgement != nil {
 		jd := *answerJudgement
+		reqJudgeMark = judgeMark
 		judgeMark = c.note(r, svc, &ev, jd, guardrails.DirectionAnswer)
 		if jd.refuse {
 			answerBlocked = true
+			if ev.GuardrailDirection == guardrails.DirectionAnswer && ev.GuardrailPattern != "" {
+				// A pattern flagged the answer before the judge withheld
+				// it: the flag is announced as well.
+				ev.AnswerFlag = ev.GuardrailPattern
+			}
 			ev.GuardrailPattern, ev.GuardrailAction = "", guardrails.AnswerActionBlock
 			ev.GuardrailDirection, ev.GuardrailTier, ev.GuardrailMidStream = guardrails.DirectionAnswer, tierJudge, false
 			c.Log.Info("aigw: guardrail judge withheld an answer",
@@ -1119,7 +1141,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	_ = stream.Close()
 
 	// Read counters before recording the meter row.
-	bytesIn, bytesOut := stream.Bytes()
+	_, bytesOut := stream.Bytes()
 	tokens := stream.Tokens()
 
 	// Non-stream upstream responses carry usage in the JSON body itself
@@ -1193,6 +1215,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 					Headers:    cacheableHeaders(wrapped.Header()),
 					CreatedAt:  time.Now().UTC(),
 					TTLSeconds: cfg.Cache.TTLSeconds,
+					GuardGen:   guardGen,
 				}
 				storeCtx, cancelStore := detached(r.Context())
 				storeErr := c.Cache.Store(storeCtx, key, entry)
@@ -1224,8 +1247,10 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 
 	// Inspector capture: only when this service has the feature enabled.
 	// An aborted response is captured too, with the bytes that were sent.
-	c.captureEntry(svc, r, elapsed, body, redactedBody, redactHits, kind,
-		wrapped.statusCode, capw.bytes(), wrapped.Header(), bytesIn, isStreamedResponse(wrapped.Header()), cacheStatus, fromReplay, guardMark, judgeMark)
+	c.captureEntryMarks(svc, r, elapsed, body, redactedBody, redactHits, kind,
+		wrapped.statusCode, capw.bytes(), wrapped.Header(), cacheStatus, entryMarks{
+			guard: guardMark, judge: judgeMark, reqGuard: reqGuardMark, reqJudge: reqJudgeMark,
+		})
 
 	// Meter the request — always, even on non-2xx or after an abort, so
 	// quota usage reflects reality. cache_hit is false on this MISS path; cacheStatus tells the
@@ -1398,21 +1423,15 @@ func (c *Chain) guardrailAnswer(r *http.Request, svc Service, pattern, action st
 // their own switches, not on the request patterns' Enabled), the request
 // does not carry WithoutGuardrails, answer inspection is on or judge is set (the judge
 // checks answers), and the request is a POST to an endpoint whose answer is
-// text in a format the guardrails read: Chat Completions, Responses or
-// Messages. judge is asked about whole answers only.
+// text in a format the guardrails read: Chat Completions, legacy
+// completions, Responses or Messages. judge is asked about whole answers
+// only.
 func (c *Chain) answerGuardFor(w http.ResponseWriter, r *http.Request, kind Kind, cfg ServiceAIConfig, judge func(string) bool) *answerGuard {
+	format, patterns, ok := c.answerInspection(r, kind, cfg, judge != nil)
+	if !ok {
+		return nil
+	}
 	g := cfg.Guardrails
-	if g == nil || r.Method != http.MethodPost || GuardrailsSkipped(r.Context()) {
-		return nil
-	}
-	patterns := c.Guardrails != nil && g.Answers.Enabled
-	if !patterns && judge == nil {
-		return nil
-	}
-	format := answerFormat(kind, r.URL.Path)
-	if format == "" {
-		return nil
-	}
 	if !patterns {
 		// The judge alone: whole answers are held for it, streams pass.
 		guard := newAnswerGuard(w, r, format, guardrails.AnswerActionFlag, nil)
@@ -1440,14 +1459,76 @@ func (c *Chain) answerGuardFor(w http.ResponseWriter, r *http.Request, kind Kind
 	return guard
 }
 
+// answerInspection says how the answer to r is read (see answerGuardFor):
+// its text format, and whether the answer patterns run on it; ok is false
+// when the answer is neither inspected nor judged. judgesAnswers says the
+// judge checks the answers of this request.
+func (c *Chain) answerInspection(r *http.Request, kind Kind, cfg ServiceAIConfig, judgesAnswers bool) (format string, patterns, ok bool) {
+	g := cfg.Guardrails
+	if g == nil || r.Method != http.MethodPost || GuardrailsSkipped(r.Context()) {
+		return "", false, false
+	}
+	patterns = c.Guardrails != nil && g.Answers.Enabled
+	if !patterns && !judgesAnswers {
+		return "", false, false
+	}
+	format = answerFormat(kind, r.URL.Path)
+	return format, patterns, format != ""
+}
+
+// bundledAnswerDigest stands for the bundled answer patterns in a guard
+// generation, so that an answer cached under the patterns of an earlier
+// version is checked again under the new ones.
+var bundledAnswerDigest = sync.OnceValue(func() string {
+	h := sha256.New()
+	for _, p := range guardrails.AnswerPatterns {
+		_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00", p.ID, p.Regex, p.SecretPrefix)
+	}
+	_, _ = fmt.Fprintf(h, "%d\x00%d", guardrails.MinSecretDistinct, guardrails.MaxPlaceholderSecret)
+	return hex.EncodeToString(h.Sum(nil))
+})
+
+// answerGen is the guard generation of the request's answer (see
+// exact.Entry.GuardGen): "" when the answer is neither inspected nor judged,
+// else a short hash of everything that decides what the inspection lets
+// through: the answer action and patterns (bundled and custom) and, when the
+// judge checks answers (judge non-nil), its model, policy and on_failure. An
+// answer cached under one generation is served only under the same one.
+func (c *Chain) answerGen(r *http.Request, kind Kind, cfg ServiceAIConfig, judge *guardrails.JudgeSettings) string {
+	_, patterns, ok := c.answerInspection(r, kind, cfg, judge != nil)
+	if !ok {
+		return ""
+	}
+	h := sha256.New()
+	_, _ = io.WriteString(h, "v1\x00")
+	if g := cfg.Guardrails; patterns {
+		action := g.Answers.Action
+		if action != guardrails.AnswerActionBlock {
+			action = guardrails.AnswerActionFlag
+		}
+		_, _ = fmt.Fprintf(h, "patterns\x00%s\x00%s\x00", action, bundledAnswerDigest())
+		for _, p := range g.CustomPatterns {
+			if p.Direction == guardrails.DirectionAnswer || p.Direction == guardrails.DirectionBoth {
+				_, _ = fmt.Fprintf(h, "%s\x00%s\x00", p.ID, p.Pattern)
+			}
+		}
+	}
+	if judge != nil {
+		_, _ = fmt.Fprintf(h, "judge\x00%s\x00%s\x00%s\x00", judge.Model, judge.Policy, judge.OnFailure)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
 // answerFormat is the text format of the answer to a request of kind on
-// path: guardrails.FormatChat, FormatResponses or FormatMessages, "" for an
-// endpoint whose answer the guardrails do not read.
+// path: guardrails.FormatChat, FormatCompletions, FormatResponses or
+// FormatMessages, "" for an endpoint whose answer the guardrails do not read.
 func answerFormat(kind Kind, path string) string {
 	path = strings.TrimSuffix(path, "/")
 	switch {
 	case kind == KindOpenAI && path == "/v1/chat/completions":
 		return guardrails.FormatChat
+	case kind == KindOpenAI && path == "/v1/completions":
+		return guardrails.FormatCompletions
 	case kind == KindOpenAI && path == "/v1/responses":
 		return guardrails.FormatResponses
 	case kind == KindAnthropic && path == "/v1/messages":
@@ -1479,6 +1560,24 @@ func (c *Chain) captureEntry(svc Service, r *http.Request, took time.Duration,
 	origBody, redactedBody []byte, redactHits []redact.RuleHit,
 	kind Kind, status int, respBody []byte, respHeaders http.Header,
 	bytesIn int64, streamed bool, cacheStatus string, fromReplay bool, mark *inspector.GuardrailMark, judge *inspector.JudgeMark) {
+	_, _, _ = bytesIn, streamed, fromReplay
+	c.captureEntryMarks(svc, r, took, origBody, redactedBody, redactHits, kind, status, respBody, respHeaders, cacheStatus,
+		entryMarks{guard: mark, judge: judge})
+}
+
+// entryMarks are the guardrail marks of an inspector entry: the request's
+// (or the answer's) pattern and judge marks, and the request's when the
+// answer has marks of its own.
+type entryMarks struct {
+	guard, reqGuard *inspector.GuardrailMark
+	judge, reqJudge *inspector.JudgeMark
+}
+
+// captureEntryMarks is captureEntry with every mark of the entry.
+func (c *Chain) captureEntryMarks(svc Service, r *http.Request, took time.Duration,
+	origBody, redactedBody []byte, redactHits []redact.RuleHit,
+	kind Kind, status int, respBody []byte, respHeaders http.Header,
+	cacheStatus string, marks entryMarks) {
 	if c.Inspector == nil {
 		return
 	}
@@ -1527,9 +1626,12 @@ func (c *Chain) captureEntry(svc Service, r *http.Request, took time.Duration,
 		Cache:        cacheStatus,
 		Redactions:   hits,
 		Dropped:      []string{},
-		Guardrail:    mark,
-		Judge:        judge,
 		Purpose:      PurposeFrom(r.Context()),
+		Guardrail:    marks.guard,
+		Judge:        marks.judge,
+		// Only when the answer's mark took the field.
+		RequestGuardrail: requestMark(marks.reqGuard, marks.guard),
+		RequestJudge:     requestMark(marks.reqJudge, marks.judge),
 	}
 	// Read here, after the response, as the usage row does: the entry names
 	// the provider and the pair of the attempt that answered. A request
@@ -1545,9 +1647,15 @@ func (c *Chain) captureEntry(svc Service, r *http.Request, took time.Duration,
 		}
 	}
 	ring.Capture(entry)
-	_ = bytesIn
-	_ = streamed
-	_ = fromReplay
+}
+
+// requestMark returns the request's mark req when the answer's mark answer
+// replaced it in the entry's main field, nil otherwise.
+func requestMark[M any](req, answer *M) *M {
+	if req == nil || answer == nil || req == answer {
+		return nil
+	}
+	return req
 }
 
 // recordMeter writes one usage_events row when a Meter sink is configured.

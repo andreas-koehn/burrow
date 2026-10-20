@@ -15,10 +15,10 @@ export function readCSRFFromStorage(storagePath = DEFAULT_STORAGE_PATH): string 
   const data = JSON.parse(fs.readFileSync(abs, "utf8")) as {
     cookies: { name: string; value: string }[];
   };
-  const ck = data.cookies?.find((c) => c.name === "burrow_csrf");
+  const ck = data.cookies?.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf");
   if (!ck?.value)
     throw new Error(
-      "burrow_csrf not in playwright-auth.json — run 01-bootstrap first",
+      "burrow_csrf (or __Host-burrow_csrf) not in playwright-auth.json — run 01-bootstrap first",
     );
   return ck.value;
 }

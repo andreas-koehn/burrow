@@ -14,16 +14,18 @@ import (
 	"github.com/ankoehn/burrow/internal/observe"
 )
 
-// A judge block is a guardrail.refused entry of tier judge, with the judge's
-// reason; a failure is a guardrail.judge_failed entry naming the class, never
-// the judged text. Both are sampled like the other guardrail entries.
+// A judge block is a guardrail.refused entry of tier judge; a failure is a
+// guardrail.judge_failed entry. Both carry the verdict and a reason class
+// only: the judge's own words (model text) stay off the hash-chained audit
+// log, in the inspector entry, and the judged text appears nowhere. Both are
+// sampled like the other guardrail entries.
 func TestGuardrailAuditor_Judge(t *testing.T) {
 	aud := &blockingAudit{}
 	g := newGuardrailAuditor(aud, nil)
 	t.Cleanup(g.stop)
 	route := aigw.NewRoute("gk-9", "openai", "m", "req-1")
 	g.judged(aigw.WithRoute(context.Background(), route), "svc-1", aigw.JudgeEvent{
-		Direction: "request", Verdict: aigw.JudgeBlock, Reason: "asks for malware", Refused: true,
+		Direction: "request", Verdict: aigw.JudgeBlock, Refused: true,
 	})
 	g.judged(context.Background(), "svc-1", aigw.JudgeEvent{Direction: "answer", Verdict: aigw.JudgeFailed, Failure: aigw.JudgeTimeout})
 	g.judged(context.Background(), "svc-1", aigw.JudgeEvent{Direction: "request", Verdict: aigw.JudgeFailed, Failure: aigw.JudgeMalformed, Refused: true})
@@ -35,19 +37,19 @@ func TestGuardrailAuditor_Judge(t *testing.T) {
 	if e := got[0]; e.Action != audit.ActionGuardrailRefused || e.SubjectID != "svc-1" || e.SubjectLabel != "judge" || e.Result != "denied" {
 		t.Fatalf("block event = %+v", e)
 	}
-	if p := string(got[0].Payload); p != `{"action":"block","direction":"request","gateway_key_id":"gk-9","reason":"asks for malware","tier":"judge"}` {
+	if p := string(got[0].Payload); p != `{"action":"block","direction":"request","gateway_key_id":"gk-9","reason":"policy","tier":"judge","verdict":"block"}` {
 		t.Fatalf("block payload = %s", p)
 	}
 	if e := got[1]; e.Action != audit.ActionGuardrailJudgeFailed || e.SubjectLabel != "timeout" || e.Result != "ok" {
 		t.Fatalf("failure event = %+v", e)
 	}
-	if p := string(got[1].Payload); p != `{"direction":"answer","on_failure":"allow","reason":"timeout"}` {
+	if p := string(got[1].Payload); p != `{"direction":"answer","on_failure":"allow","reason":"timeout","verdict":"failed"}` {
 		t.Fatalf("failure payload = %s", p)
 	}
 	if e := got[2]; e.Action != audit.ActionGuardrailJudgeFailed || e.Result != "denied" {
 		t.Fatalf("refused failure event = %+v", e)
 	}
-	if p := string(got[2].Payload); p != `{"direction":"request","on_failure":"refuse","reason":"malformed"}` {
+	if p := string(got[2].Payload); p != `{"direction":"request","on_failure":"refuse","reason":"malformed","verdict":"failed"}` {
 		t.Fatalf("refused failure payload = %s", p)
 	}
 	if !audit.IsAggregated(audit.ActionGuardrailJudgeFailed) {

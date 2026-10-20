@@ -26,21 +26,22 @@ type aggregatedTool struct {
 }
 
 // ServeAggregated serves /mcp. The order is that of ServeSource: origin
-// check, the gateway key or OAuth token (401), the body, then the SDK. There is no source to
-// be unknown: a key that names nothing sees an empty list.
+// check, the gateway key or OAuth token (401), the body, then the tools are
+// read (two queries whatever the number of sources) and the SDK serves the
+// request. There is no source to be unknown: a key that names nothing sees
+// an empty list.
 func (g *Gateway) ServeAggregated(w http.ResponseWriter, r *http.Request) {
 	caller, ok := g.perimeter(w, r, "/mcp")
 	if !ok {
 		return
 	}
-	mine, all, err := g.AggregatedFor(r.Context(), caller)
-	if err != nil {
-		g.log.Error("mcp gateway: aggregated tools not read", "err", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
 	info := requestInfo(r)
-	g.serveSDK(w, r, func() *mcp.Server {
+	g.serveSDK(w, r, func() (*mcp.Server, error) {
+		mine, all, unserved, err := g.aggregatedFor(r.Context(), caller)
+		if err != nil {
+			g.log.Error("mcp gateway: aggregated tools not read", "err", err)
+			return nil, err
+		}
 		srv := NewServer()
 		for _, a := range mine {
 			named := a.tool
@@ -61,9 +62,26 @@ func (g *Gateway) ServeAggregated(w http.ResponseWriter, r *http.Request) {
 			// call of one of its tools is looked up now, so that it is
 			// recorded as denied like any other.
 			return g.lookupAggregated(ctx, name)
+		}, func(_ context.Context, name string) (db.MCPSource, unservedTool, string, bool) {
+			slug, tool, ok := strings.Cut(name, "__")
+			if !ok {
+				return db.MCPSource{}, unservedTool{}, "", false
+			}
+			s, found := unserved[slug]
+			if !found {
+				return db.MCPSource{}, unservedTool{}, "", false
+			}
+			u, found := s.tools[tool]
+			return s.src, u, name, found
 		}))
-		return srv
+		return srv, nil
 	})
+}
+
+// unservedOf is what one source of /mcp has but does not serve.
+type unservedOf struct {
+	src   db.MCPSource
+	tools map[string]unservedTool
 }
 
 // AggregatedFor returns the tools of every enabled source that c may see
@@ -72,20 +90,44 @@ func (g *Gateway) ServeAggregated(w http.ResponseWriter, r *http.Request) {
 // ordered by source slug, then served name. A source the key's allow-list
 // cannot name is not read at all.
 func (g *Gateway) AggregatedFor(ctx context.Context, c Caller) (mine, all []aggregatedTool, err error) {
+	mine, all, _, err = g.aggregatedFor(ctx, c)
+	return mine, all, err
+}
+
+// aggregatedFor is AggregatedFor that also returns, by slug, the tools the
+// named sources have but do not serve. It reads the sources and then the
+// tools of every named source in one query.
+func (g *Gateway) aggregatedFor(ctx context.Context, c Caller) (mine, all []aggregatedTool, unserved map[string]unservedOf, err error) {
 	if len(c.AllowedTools) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	sources, err := g.opts.Store.ListMCPSources(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
+	var named []db.MCPSource
+	slugs := []string{}
 	for _, src := range sources {
-		if !src.Enabled || !namesSource(c.AllowedTools, src.Slug) {
-			continue
+		if src.Enabled && namesSource(c.AllowedTools, src.Slug) {
+			named = append(named, src)
+			slugs = append(slugs, src.Slug)
 		}
-		smine, sall, err := g.ToolsFor(ctx, src, c)
-		if err != nil {
-			return nil, nil, err
+	}
+	if len(named) == 0 {
+		return nil, nil, nil, nil
+	}
+	rows, err := g.opts.Store.ListMCPToolsForSlugs(ctx, slugs)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for _, src := range named {
+		st := g.toolsFrom(src, rows[src.Slug], c)
+		smine, sall := st.mine, st.all
+		if len(st.unserved) > 0 {
+			if unserved == nil {
+				unserved = map[string]unservedOf{}
+			}
+			unserved[src.Slug] = unservedOf{src: src, tools: st.unserved}
 		}
 		for _, t := range sall {
 			if name, issue := AggregatedName(src.Slug, t.Name); issue == "" {
@@ -98,7 +140,7 @@ func (g *Gateway) AggregatedFor(ctx context.Context, c Caller) (mine, all []aggr
 			}
 		}
 	}
-	return mine, all, nil
+	return mine, all, unserved, nil
 }
 
 // lookupAggregated finds the tool an aggregated name stands for among what

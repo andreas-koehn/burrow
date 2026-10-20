@@ -34,8 +34,8 @@ func (d Deps) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	// Wrong current passwords count against the session's allowance, shared
 	// with /auth/reauth (a bearer request has no session to count against).
 	key := ""
-	if c, cerr := r.Cookie(sessionCookieName); cerr == nil && c.Value != "" && bearerTokenID(r.Context()) == "" {
-		key = sessionRef(c.Value)
+	if sid := sessionID(r); sid != "" && bearerTokenID(r.Context()) == "" {
+		key = sessionRef(sid)
 	}
 	if key != "" && d.reauthGuesses.blocked(key) {
 		w.Header().Set("Retry-After", "60")
@@ -80,10 +80,7 @@ func (d Deps) endOtherSessions(r *http.Request, uid string) {
 	if d.Sessions == nil {
 		return
 	}
-	keep := ""
-	if c, err := r.Cookie(sessionCookieName); err == nil {
-		keep = c.Value
-	}
+	keep := sessionID(r)
 	if ss, err := d.Sessions.ListSessions(r.Context(), uid); err == nil {
 		for _, s := range ss {
 			if s.ID != keep {

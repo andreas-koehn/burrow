@@ -43,13 +43,18 @@ async function needsReauth(path: string, res: Response): Promise<boolean> {
 // an X-CSRF-Token header (mirrors the server-side csrfSafeMethods set).
 const csrfSafeMethods = new Set(["GET", "HEAD", "OPTIONS"]);
 
-// getCsrfToken reads the burrow_csrf cookie value from document.cookie.
-// Returns an empty string when the cookie is absent (e.g. before login).
+// getCsrfToken reads the CSRF cookie from document.cookie: __Host-burrow_csrf
+// (what the relay writes with Secure cookies), else the bare burrow_csrf
+// (plain http, and sessions of earlier versions). Returns an empty string
+// when neither is there (e.g. before login).
 function getCsrfToken(): string {
   if (typeof document === "undefined") return "";
-  const match = document.cookie.split(";").find((c) => c.trim().startsWith("burrow_csrf="));
-  if (!match) return "";
-  return match.trim().slice("burrow_csrf=".length);
+  const pairs = document.cookie.split(";").map((c) => c.trim());
+  for (const name of ["__Host-burrow_csrf", "burrow_csrf"]) {
+    const match = pairs.find((c) => c.startsWith(name + "="));
+    if (match) return match.slice(name.length + 1);
+  }
+  return "";
 }
 
 export async function apiFetch<T = unknown>(path: string, opts: RequestInit = {}): Promise<T> {

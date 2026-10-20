@@ -30,8 +30,8 @@ func (d Deps) ListSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cur := ""
-	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
-		cur = sessionRef(c.Value)
+	if sid := sessionID(r); sid != "" {
+		cur = sessionRef(sid)
 	}
 	out := make([]sessionResp, 0, len(ss))
 	for _, s := range ss {
@@ -80,10 +80,7 @@ func (d Deps) RevokeSession(w http.ResponseWriter, r *http.Request) {
 // RevokeAllSessions signs the caller out of every other session (keeps the
 // current one). POST /api/v1/sessions/revoke-all
 func (d Deps) RevokeAllSessions(w http.ResponseWriter, r *http.Request) {
-	keep := ""
-	if c, err := r.Cookie(sessionCookieName); err == nil {
-		keep = c.Value
-	}
+	keep := sessionID(r)
 	n, err := d.Sessions.RevokeOtherSessions(r.Context(), userID(r.Context()), keep)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "revoke all failed")

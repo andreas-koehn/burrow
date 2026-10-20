@@ -72,7 +72,7 @@ test("v0.3.0 API: services + api-keys + access-mode + access-policy contract", a
 
   // Bring the CSRF cookie out of the page context for direct API calls.
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   expect(csrf).not.toBe("");
   const csrfHeaders = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
   // A fresh session without a services domain: guarded writes (api-keys,

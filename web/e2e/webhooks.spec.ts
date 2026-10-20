@@ -37,7 +37,7 @@ test("v0.4.0: webhooks page mounts + rejects non-https URL client-side", async (
 
 test("v0.4.0: webhooks API — create returns signing_secret once + GET redacts it", async ({ page }) => {
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   expect(csrf).not.toBe("");
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 
@@ -68,7 +68,7 @@ test("v0.4.0: webhooks API — create returns signing_secret once + GET redacts 
 
 test("v0.4.0: webhooks API — closed event vocabulary is enforced", async ({ page }) => {
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 
   const bad = await page.request.post("/api/v1/webhooks", {

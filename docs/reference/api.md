@@ -14,7 +14,12 @@ Every request needs one of two credentials.
 
 ### Session cookie
 
-Log in once and carry the `burrow_session` cookie:
+Log in once and carry the session cookie. Over HTTPS it is
+`__Host-burrow_session` and the CSRF cookie `__Host-burrow_csrf` (a `__Host-`
+cookie cannot carry a Domain, so no other host of the site can set one); over
+plain http they are `burrow_session` and `burrow_csrf`. Sessions of earlier
+versions, under the bare names, still work for one release. Sign-in refuses
+a cross-origin browser request (403) and a `text/plain` body (415):
 
 ```sh
 curl -c cookies.txt -X POST https://burrow.insingo.com/api/v1/auth/login \
@@ -266,7 +271,7 @@ curl -H "Authorization: Bearer bua_YOUR_TOKEN_HERE" \
 
 ## CSRF
 
-Session-cookie requests that mutate state must mirror the `burrow_csrf` cookie value in the `X-CSRF-Token` header (double-submit pattern). Bearer token requests are exempt — the token itself is the CSRF defense.
+Session-cookie requests that mutate state must mirror the CSRF cookie's value (`__Host-burrow_csrf`, or `burrow_csrf` over plain http) in the `X-CSRF-Token` header (double-submit pattern). Bearer token requests are exempt — the token itself is the CSRF defense.
 
 ::: warning
 Omitting `X-CSRF-Token` on a cookie-authenticated POST/PUT/DELETE returns `403 Forbidden`, not `401`. This is by design.

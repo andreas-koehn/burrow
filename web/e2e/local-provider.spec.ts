@@ -19,7 +19,7 @@ async function expectGatewaySidebar(page: Page) {
 
 async function csrfHeaders(page: Page) {
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   return { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 }
 

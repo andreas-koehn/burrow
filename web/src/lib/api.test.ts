@@ -69,6 +69,22 @@ describe("apiFetch", () => {
       expect(headers["X-CSRF-Token"]).toBe("del-csrf-token");
     });
 
+    // With Secure cookies the relay writes __Host-burrow_csrf; a bare
+    // burrow_csrf (an earlier version's, or one another host of the site
+    // planted) never wins over it. jsdom refuses to store a __Host- cookie
+    // over http, so the cookie string is stubbed.
+    it.each([
+      ["burrow_csrf=planted; __Host-burrow_csrf=host-token", "host-token"],
+      ["__Host-burrow_csrf=host-token; burrow_csrf=planted", "host-token"],
+      ["other=1; burrow_csrf=legacy-token", "legacy-token"],
+    ])("reads the CSRF token from %s", async (cookies, want) => {
+      vi.spyOn(Document.prototype, "cookie", "get").mockReturnValue(cookies);
+      const f = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }) as any);
+      await apiFetch("/tokens", { method: "POST" });
+      const [, opts] = f.mock.calls[0] as [string, RequestInit];
+      expect((opts.headers as Record<string, string>)["X-CSRF-Token"]).toBe(want);
+    });
+
     it("does NOT send X-CSRF-Token on GET", async () => {
       if (typeof document !== "undefined") {
         document.cookie = "burrow_csrf=should-not-appear; path=/";

@@ -58,6 +58,10 @@ type Entry struct {
 	Headers    map[string]string
 	CreatedAt  time.Time
 	TTLSeconds int
+	// GuardGen is the generation of the answer inspection the entry was
+	// stored under: a short hash of the guardrail settings that read the
+	// answer, "" when nothing read it (see LookupGen).
+	GuardGen string
 }
 
 // sqliteTimeFormat is the zone-less text earlier versions stored created_at
@@ -157,8 +161,18 @@ func (c *Cache) SetOnMiss(fn func(ctx context.Context, key string, body []byte))
 // ttl_seconds > now.
 //
 // Returns (entry, true, nil) on hit; (zero, false, nil) on miss or expiry;
-// non-nil error only on real I/O failure.
+// non-nil error only on real I/O failure. Lookup takes an entry of any
+// guard generation; see LookupGen.
 func (c *Cache) Lookup(ctx context.Context, key string) (Entry, bool, error) {
+	return c.LookupGen(ctx, key, "")
+}
+
+// LookupGen is Lookup for a request whose answer would be inspected under
+// guard generation gen: an entry stored under another generation (an answer
+// cached while inspection was off, or under other patterns) is a miss, and
+// its body is not read. With gen "" (the answer is not inspected now) an
+// entry of any generation is a hit.
+func (c *Cache) LookupGen(ctx context.Context, key, gen string) (Entry, bool, error) {
 	if c == nil || c.d == nil {
 		return Entry{}, false, errors.New("exact.Cache: not initialised")
 	}
@@ -171,10 +185,11 @@ func (c *Cache) Lookup(ctx context.Context, key string) (Entry, bool, error) {
 		id         string
 		createdRaw any
 		ttl        int
+		guardGen   string
 	)
 	err := c.d.DB().QueryRowContext(ctx,
-		`SELECT id, created_at, ttl_seconds FROM cache_entries WHERE key_hash = ?`, key,
-	).Scan(&id, &createdRaw, &ttl)
+		`SELECT id, created_at, ttl_seconds, guard_gen FROM cache_entries WHERE key_hash = ?`, key,
+	).Scan(&id, &createdRaw, &ttl, &guardGen)
 	if errors.Is(err, sql.ErrNoRows) {
 		c.misses.Add(1)
 		return Entry{}, false, nil
@@ -183,7 +198,7 @@ func (c *Cache) Lookup(ctx context.Context, key string) (Entry, bool, error) {
 		return Entry{}, false, fmt.Errorf("cache lookup: %w", err)
 	}
 	createdAt, live := entryLive(createdRaw, ttl, time.Now())
-	if !live {
+	if !live || (gen != "" && guardGen != gen) {
 		c.misses.Add(1)
 		return Entry{}, false, nil
 	}
@@ -226,6 +241,7 @@ func (c *Cache) Lookup(ctx context.Context, key string) (Entry, bool, error) {
 		Headers:    headers,
 		CreatedAt:  createdAt,
 		TTLSeconds: ttl,
+		GuardGen:   guardGen,
 	}, true, nil
 }
 
@@ -282,9 +298,10 @@ func entryTime(raw any) (time.Time, bool) {
 // entries are evicted first). Store returns as soon as the INSERT commits —
 // eviction never blocks the caller path.
 //
-// While a live entry holds the key, a second Store is swallowed (the first
-// writer wins; the second's payload is the same value for the same canonical
-// request anyway). An entry that has outlived its ttl is replaced.
+// While a live entry of the same guard generation holds the key, a second
+// Store is swallowed (the first writer wins; the second's payload is the same
+// value for the same canonical request anyway). An entry that has outlived
+// its ttl, or was stored under another guard generation, is replaced.
 func (c *Cache) Store(ctx context.Context, key string, e Entry) error {
 	if c == nil || c.d == nil {
 		return errors.New("exact.Cache: not initialised")
@@ -331,8 +348,9 @@ func (c *Cache) Store(ctx context.Context, key string, e Entry) error {
 	return nil
 }
 
-// insert writes the entry unless a live one already holds the key. An entry
-// that has outlived its ttl does not keep its key: it is deleted in the same
+// insert writes the entry unless a live one of the same guard generation
+// already holds the key. An entry that has outlived its ttl, or was stored
+// under another generation, does not keep its key: it is deleted in the same
 // transaction, so the new answer is cached. Whether it has expired is decided
 // here, as in Lookup. When two writers meet, the first wins (ON CONFLICT DO
 // NOTHING), under every isolation level the database may default to.
@@ -352,28 +370,29 @@ func (c *Cache) insert(ctx context.Context, key, scope string, e Entry, headersJ
 		oldID  string
 		oldRaw any
 		oldTTL int
+		oldGen string
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT id, created_at, ttl_seconds FROM cache_entries WHERE key_hash = ?`, key,
-	).Scan(&oldID, &oldRaw, &oldTTL)
+		`SELECT id, created_at, ttl_seconds, guard_gen FROM cache_entries WHERE key_hash = ?`, key,
+	).Scan(&oldID, &oldRaw, &oldTTL, &oldGen)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
 		return fmt.Errorf("cache store: %w", err)
 	default:
-		if _, live := entryLive(oldRaw, oldTTL, time.Now()); live {
+		if _, live := entryLive(oldRaw, oldTTL, time.Now()); live && oldGen == e.GuardGen {
 			return nil // first writer wins
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM cache_entries WHERE id = ?`, oldID); err != nil {
-			return fmt.Errorf("cache store: drop expired entry: %w", err)
+			return fmt.Errorf("cache store: drop replaced entry: %w", err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO cache_entries
-		  (id, scope_key, key_hash, status, headers, body, created_at, ttl_seconds)
-		VALUES (?,?,?,?,?,?,?,?)
+		  (id, scope_key, key_hash, status, headers, body, created_at, ttl_seconds, guard_gen)
+		VALUES (?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(key_hash) DO NOTHING`,
-		uuid.NewString(), scope, key, e.Status, headersJSON, e.Body, createdAt, e.TTLSeconds,
+		uuid.NewString(), scope, key, e.Status, headersJSON, e.Body, createdAt, e.TTLSeconds, e.GuardGen,
 	); err != nil {
 		return fmt.Errorf("cache store: %w", err)
 	}

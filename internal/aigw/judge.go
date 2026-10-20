@@ -59,11 +59,13 @@ func PurposeFrom(ctx context.Context) string {
 
 // JudgeEvent is a judgement that leaves an audit entry (see
 // Chain.OnGuardrailJudge): the judge blocked a request or an answer, or it
-// failed.
+// failed. It carries classes only, never text: the judge's reason for a
+// block is the model's own words and goes to the inspector entry and the
+// observe event, not to the hash-chained audit log, where it could not be
+// removed again.
 type JudgeEvent struct {
 	Direction string // "request" or "answer"
 	Verdict   string // JudgeBlock or JudgeFailed
-	Reason    string // the judge's reason for a block; never the judged text
 	Failure   string // the class of a failure: JudgeTimeout, JudgeError, JudgeMalformed, JudgeUnavailable
 	Refused   bool   // the request was refused, or the answer withheld
 }
@@ -119,8 +121,7 @@ func judgeFormat(r *http.Request, kind Kind, cfg ServiceAIConfig) (guardrails.Ju
 	format := answerFormat(kind, r.URL.Path)
 	if format == "" {
 		// Endpoints with request text only (the answers of media endpoints
-		// are audio, images or scores; legacy completions' answers are not
-		// read).
+		// are audio, images or scores).
 		format = requestOnlyFormat(r.URL.Path)
 	}
 	return g.Judge, format, format != ""
@@ -194,9 +195,19 @@ func (c *Chain) judgeFailure(serviceID string, j guardrails.JudgeSettings, class
 	return judgement{verdict: JudgeFailed, failure: class, refuse: j.RefusesOnFailure()}
 }
 
+// keepRequestJudgement moves the judge's word on the request to the event's
+// RequestJudge… fields before a judgement of the answer (direction) takes
+// the Judge… fields.
+func keepRequestJudgement(ev *observe.ModelRequest, direction string) {
+	if direction == guardrails.DirectionAnswer && ev.JudgeDirection == guardrails.DirectionRequest {
+		ev.RequestJudgeVerdict, ev.RequestJudgeFailure = ev.JudgeVerdict, ev.JudgeFailure
+	}
+}
+
 // notJudgedMark records on the event that the judge applied to direction but
 // had no text to judge, and returns the inspector's mark for it.
 func notJudgedMark(ev *observe.ModelRequest, direction string) *inspector.JudgeMark {
+	keepRequestJudgement(ev, direction)
 	ev.JudgeVerdict, ev.JudgeReason, ev.JudgeFailure, ev.JudgeDirection = JudgeNotJudged, reasonNoText, "", direction
 	return &inspector.JudgeMark{Direction: direction, Verdict: JudgeNotJudged, Reason: reasonNoText}
 }
@@ -205,6 +216,7 @@ func notJudgedMark(ev *observe.ModelRequest, direction string) *inspector.JudgeM
 // request's event, reports it to OnGuardrailJudge when it leaves an audit
 // entry (a block, a failure), and returns the inspector's mark for it.
 func (c *Chain) note(r *http.Request, svc Service, ev *observe.ModelRequest, jd judgement, direction string) *inspector.JudgeMark {
+	keepRequestJudgement(ev, direction)
 	ev.JudgeVerdict, ev.JudgeReason, ev.JudgeFailure, ev.JudgeDirection = jd.verdict, jd.reason, jd.failure, direction
 	if jd.verdict != JudgeAllow && c.OnGuardrailJudge != nil {
 		func() {
@@ -215,7 +227,7 @@ func (c *Chain) note(r *http.Request, svc Service, ev *observe.ModelRequest, jd 
 				}
 			}()
 			c.OnGuardrailJudge(r.Context(), svc.ID, JudgeEvent{
-				Direction: direction, Verdict: jd.verdict, Reason: jd.reason, Failure: jd.failure, Refused: jd.refuse,
+				Direction: direction, Verdict: jd.verdict, Failure: jd.failure, Refused: jd.refuse,
 			})
 		}()
 	}
@@ -224,7 +236,8 @@ func (c *Chain) note(r *http.Request, svc Service, ev *observe.ModelRequest, jd 
 }
 
 // requestOnlyFormat is the guardrails text format of a request whose answer
-// the guardrails do not read: legacy completions, media and rerank; "" for
+// the guardrails do not read: media and rerank (and legacy completions,
+// whose answers answerFormat reads, for a kind that is not OpenAI); "" for
 // any other path.
 func requestOnlyFormat(path string) string {
 	switch strings.TrimRight(path, "/") {

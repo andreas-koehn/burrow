@@ -35,7 +35,7 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   //     the 10-minute window for this shared session once: the whole suite
   //     runs inside it. It shares the sign-in rate limit, so specs confirm
   //     again only when the relay answers reauth_required (see reauth.ts).
-  const csrf = (await apiCtx.storageState()).cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = (await apiCtx.storageState()).cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   const reauth = await apiCtx.post("/api/v1/auth/reauth", {
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
     data: { password: ADMIN_PASSWORD },

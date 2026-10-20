@@ -22,7 +22,7 @@ test("v0.4.0: take a backup → row appears with sha256", async ({ page }) => {
 
 test("v0.4.0: backups API — POST /backups returns 202 with id/started_at", async ({ page }) => {
   const cookies = await page.context().cookies();
-  const csrf = cookies.find((c) => c.name === "burrow_csrf")?.value ?? "";
+  const csrf = cookies.find((c) => c.name === "burrow_csrf" || c.name === "__Host-burrow_csrf")?.value ?? "";
   const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
 
   const queued = await page.request.post("/api/v1/backups", { headers, data: {} });

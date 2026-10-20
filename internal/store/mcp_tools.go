@@ -80,6 +80,13 @@ func (s *Store) ListMCPTools(ctx context.Context, slug string) ([]db.MCPTool, er
 	return s.q.ListMCPTools(ctx, slug)
 }
 
+// ListMCPToolsForSlugs returns the tools of several sources in one query, by
+// source slug (see db.ListMCPToolsForSlugs). Unlike ListMCPTools it does not
+// check that each source exists: a slug without tools has no entry.
+func (s *Store) ListMCPToolsForSlugs(ctx context.Context, slugs []string) (map[string][]db.MCPTool, error) {
+	return s.q.ListMCPToolsForSlugs(ctx, slugs)
+}
+
 // MCPTool returns one tool. ErrMCPToolNotFound.
 func (s *Store) MCPTool(ctx context.Context, slug, name string) (db.MCPTool, error) {
 	t, err := s.q.GetMCPTool(ctx, slug, name)

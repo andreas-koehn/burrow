@@ -345,8 +345,8 @@ func (d Deps) checkApproverPassword(w http.ResponseWriter, r *http.Request, pass
 		return false
 	}
 	ref := ""
-	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" && bearerTokenID(r.Context()) == "" {
-		ref = sessionRef(c.Value)
+	if sid := sessionID(r); sid != "" && bearerTokenID(r.Context()) == "" {
+		ref = sessionRef(sid)
 	}
 	if ref != "" && d.reauthGuesses.blocked(ref) {
 		w.Header().Set("Retry-After", "60")
