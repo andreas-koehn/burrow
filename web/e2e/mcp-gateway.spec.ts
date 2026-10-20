@@ -66,10 +66,20 @@ test.afterAll(async ({ browser }) => {
   await context.close();
 });
 
-test("adds a local tool source and shows the burrow mcp command", async ({ page }) => {
+// openToolsPage waits until the source list has loaded. With no source yet,
+// the empty state repeats the header's two add buttons, so callers click the
+// first (the header's) of each.
+async function openToolsPage(page: Page) {
   await page.goto("/gateway/tools");
   await expect(page.getByRole("heading", { name: "Tools", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Add local source" }).click();
+  await expect(
+    page.getByText("No tool sources yet").or(page.getByRole("table", { name: "Tool sources" })),
+  ).toBeVisible();
+}
+
+test("adds a local tool source and shows the burrow mcp command", async ({ page }) => {
+  await openToolsPage(page);
+  await page.getByRole("button", { name: "Add local source" }).first().click();
   const dialog = page.getByRole("dialog", { name: "Add local source" });
   await dialog.getByLabel("Name").fill(SOURCE);
   await dialog.getByLabel("Command or address").fill("npx -y @modelcontextprotocol/server-filesystem /srv");
@@ -104,8 +114,8 @@ test("source detail: address for agents and limits that are kept", async ({ page
 });
 
 test("a remote source must be https and is refused on a private address", async ({ page }) => {
-  await page.goto("/gateway/tools");
-  await page.getByRole("button", { name: "Add remote source" }).click();
+  await openToolsPage(page);
+  await page.getByRole("button", { name: "Add remote source" }).first().click();
   const dialog = page.getByRole("dialog", { name: "Add remote source" });
   await dialog.getByLabel("Name").fill("e2e-mcp-remote");
   await dialog.getByLabel("URL").fill("http://mcp.example.com/mcp");
