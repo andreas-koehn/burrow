@@ -95,8 +95,15 @@ type GateStore interface {
 	GetUserByID(ctx context.Context, id string) (db.User, error)
 	// CreateSession creates a new browser session and returns its ID.
 	CreateSession(ctx context.Context, userID, ua, ip string) (id string, err error)
-	// ValidateSession returns the owning userID or an error for invalid/expired.
+	// ValidateSession returns the owning userID of a dashboard session, or an
+	// error for an invalid or expired one or one of the services host.
 	ValidateSession(ctx context.Context, id string) (userID string, err error)
+	// CreateServicesSession creates the services host's session that the
+	// handoff gives userID, handed off by the dashboard session parentID; it
+	// ends with that session.
+	CreateServicesSession(ctx context.Context, userID, ua, ip, parentID string) (id string, err error)
+	// ValidateServicesSession is ValidateSession for services sessions.
+	ValidateServicesSession(ctx context.Context, id string) (userID string, err error)
 	// DeleteSession removes the session with the given ID.
 	DeleteSession(ctx context.Context, id string) error
 	// ServiceForSubdomain returns the db.Service for the given subdomain.

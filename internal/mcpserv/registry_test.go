@@ -55,21 +55,21 @@ func TestRegistryFromTheRealSpec(t *testing.T) {
 		}
 	}
 
-	create, ok := r.Lookup("providerCreate")
+	create, ok := r.Lookup("aiModelCreate")
 	if !ok || create.Method != "POST" || create.Kind() != "write" || !create.BodyRequired ||
-		!slices.Equal(create.Access.AnyOf, []authz.Permission{authz.PermAIProvidersManage}) {
-		t.Fatalf("providerCreate = %+v", create)
+		!slices.Equal(create.Access.AnyOf, []authz.Permission{authz.PermAIConfigureAny}) {
+		t.Fatalf("aiModelCreate = %+v", create)
 	}
 	in := create.InputSchema()
 	props := in["properties"].(map[string]any)
 	if _, ok := props["body"]; !ok {
-		t.Error("providerCreate has no body argument")
+		t.Error("aiModelCreate has no body argument")
 	}
 	if _, ok := props["dry_run"]; !ok {
-		t.Error("providerCreate has no dry_run")
+		t.Error("aiModelCreate has no dry_run")
 	}
 	if _, ok := props["confirm"]; ok {
-		t.Error("providerCreate asks for confirm")
+		t.Error("aiModelCreate asks for confirm")
 	}
 
 	del, _ := r.Lookup("providerDelete")
@@ -231,6 +231,183 @@ func TestRegistry_ToolSourceWritesAreNotTools(t *testing.T) {
 	for _, id := range []string{"mcpSourcesList", "mcpSourceGet"} {
 		if _, ok := r.Lookup(id); !ok {
 			t.Errorf("%s is not a management tool", id)
+		}
+	}
+}
+
+// Round 2: an agent steered by untrusted text (a tool result, a model answer,
+// a sync error) must not re-route a credential nor switch off inspection
+// through /mcp/burrow. None of these writes is a tool; their reads stay.
+func TestRegistry_CredentialRoutingAndInspectionWritesAreNotTools(t *testing.T) {
+	r, err := NewRegistry(realSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{
+		// credentials routed to an address
+		"providerCreate", "providerUpdate", "providerUpstreamUpdate",
+		"serviceUpstreamCredentialUpdate", "serviceUpstreamCredentialDelete",
+		"settingsUpdate",
+		"serviceDomainCreate", "serviceDomainUpdate",
+		// outbound webhooks
+		"webhookCreate", "webhookUpdate", "webhookDelete", "webhookTest", "webhookPause", "webhookResume",
+		// inspection: guardrails, redaction, the inspector, retention, the gateway's own checks
+		"guardrailSettingsUpdate",
+		"redactionSettingsUpdate", "redactionRuleCreate", "redactionRuleUpdate", "redactionRuleDelete",
+		"serviceAiConfigUpdate", "retentionSettingsUpdate", "serviceGatewayOnlyUpdate",
+	} {
+		if _, ok := r.Lookup(id); ok {
+			t.Errorf("%s is a management tool", id)
+		}
+	}
+	for _, id := range []string{
+		"providersList", "providerGet", "serviceUpstreamCredentialGet", "settingsGet",
+		"serviceDomainsList", "serviceDomainGet", "webhooksList", "webhookDeliveriesList",
+		"guardrailSettingsGet", "redactionSettingsGet", "redactionRulesList", "serviceAiConfigGet",
+		"retentionSettingsGet", "redactionPreview", "guardrailPreview", "webhookPreview",
+	} {
+		if _, ok := r.Lookup(id); !ok {
+			t.Errorf("%s is not a management tool", id)
+		}
+	}
+}
+
+// mcpSensitiveAllowed are operations the guard below flags that stay
+// management tools on purpose, each with the reason.
+var mcpSensitiveAllowed = map[string]string{
+	"redactionPreview": "runs a body through the rules and changes nothing",
+	"guardrailPreview": "tries a pattern on a text and changes nothing",
+	"webhookPreview":   "renders a webhook's payload template with given fields and sends nothing",
+}
+
+// bodyPropertyNames collects every property name of a JSON Schema, nested
+// objects, arrays and combinations included.
+func bodyPropertyNames(s any, into map[string]bool) {
+	switch v := s.(type) {
+	case map[string]any:
+		if props, ok := v["properties"].(map[string]any); ok {
+			for k, p := range props {
+				into[k] = true
+				bodyPropertyNames(p, into)
+			}
+		}
+		for _, k := range []string{"items", "additionalProperties"} {
+			bodyPropertyNames(v[k], into)
+		}
+		for _, k := range []string{"allOf", "oneOf", "anyOf"} {
+			if list, ok := v[k].([]any); ok {
+				for _, x := range list {
+					bodyPropertyNames(x, into)
+				}
+			}
+		}
+	case []any:
+		for _, x := range v {
+			bodyPropertyNames(x, into)
+		}
+	}
+}
+
+// sensitiveWrite says why op could re-route a credential or switch off
+// inspection, or "" when nothing in it looks like that.
+func sensitiveWrite(op Operation) string {
+	if op.Method == "GET" {
+		return ""
+	}
+	for _, p := range []string{"/api/v1/redaction/", "/api/v1/guardrails/", "/api/v1/webhooks"} {
+		if strings.HasPrefix(op.Path, p) {
+			return "a redaction, guardrail or webhook write (" + p + ")"
+		}
+	}
+	names := map[string]bool{}
+	bodyPropertyNames(op.Body, names)
+	address, credential := false, false
+	for n := range names {
+		if n == "url" || strings.HasSuffix(n, "_url") || strings.HasSuffix(n, ".host") {
+			address = true
+		}
+		if n == "auth_header" || n == "header_name" || n == "extra_headers" || strings.HasSuffix(n, "username") || strings.HasSuffix(n, "password") {
+			credential = true
+		}
+	}
+	switch {
+	case names["base_url"]:
+		return "the body has base_url"
+	case names["credential_slot"] || names["slot"]:
+		return "the body names a credential slot"
+	case address && credential:
+		return "the body has an address together with a credential"
+	}
+	for _, n := range []string{"redaction", "guardrails", "inspector", "gateway_only", "presidio_url", "redact_for_logs_only",
+		"custom_patterns", "inspector_retention_count", "audit_retention_days", "redaction_retention_days", "key_pem"} {
+		if names[n] {
+			return "the body has " + n
+		}
+	}
+	return ""
+}
+
+// TestRegistry_SensitiveWritesNeedAnAllowList is the guard for operations
+// added later: a write whose body routes a credential to an address, or that
+// changes redaction, guardrails or inspection, is not a management tool
+// unless mcpSensitiveAllowed names it.
+func TestRegistry_SensitiveWritesNeedAnAllowList(t *testing.T) {
+	r, err := NewRegistry(realSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	flagged := map[string]bool{}
+	for _, op := range r.Operations() {
+		why := sensitiveWrite(op)
+		if why == "" {
+			continue
+		}
+		flagged[op.ID] = true
+		if _, ok := mcpSensitiveAllowed[op.ID]; !ok {
+			t.Errorf("%s (%s %s) is a management tool although %s: mark it x-burrow-mcp: false (an agent must not re-route credentials or switch off inspection) or add it to mcpSensitiveAllowed with the reason", op.ID, op.Method, op.Path, why)
+		}
+	}
+	for id := range mcpSensitiveAllowed {
+		if !flagged[id] {
+			t.Errorf("mcpSensitiveAllowed names %s, which is no flagged management tool: drop it", id)
+		}
+	}
+
+	// The guard itself flags each kind of body.
+	for name, paths := range map[string]string{
+		"base_url": `
+  /api/v1/things:
+    post:
+      operationId: thingCreate
+      x-burrow-permission: {kind: self, any_of: []}
+      requestBody: { content: { application/json: { schema: { type: object, properties: { base_url: { type: string } } } } } }
+      responses: { '200': { description: ok } }
+`,
+		"url and slot": `
+  /api/v1/things:
+    put:
+      operationId: thingUpdate
+      x-burrow-permission: {kind: self, any_of: []}
+      requestBody: { content: { application/json: { schema: { type: object, properties: { target: { type: object, properties: { url: { type: string }, credential_slot: { type: string } } } } } } } }
+      responses: { '200': { description: ok } }
+`,
+		"inspection": `
+  /api/v1/things/{slug}/settings:
+    parameters: [{ $ref: '#/components/parameters/PathSlug' }]
+    put:
+      operationId: thingSettingsUpdate
+      x-burrow-permission: {kind: self, any_of: []}
+      requestBody: { content: { application/json: { schema: { allOf: [ { type: object, properties: { guardrails: { type: object } } } ] } } } }
+      responses: { '200': { description: ok } }
+`,
+	} {
+		mr, err := NewRegistry([]byte(miniHead + paths))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		ops := mr.Operations()
+		if len(ops) != 1 || sensitiveWrite(ops[0]) == "" {
+			t.Errorf("%s: the guard does not flag %+v", name, ops)
 		}
 	}
 }

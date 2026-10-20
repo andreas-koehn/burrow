@@ -5,6 +5,7 @@ package proxy_test
 // dashboard user a session of the services host's own.
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -91,7 +92,7 @@ func startLogin(t *testing.T, g http.Handler, ret string, cookies ...*http.Cooki
 	if rec.Code != http.StatusFound {
 		t.Fatalf("login: status %d, want 302: %s", rec.Code, rec.Body)
 	}
-	nonce := setCookieNamed(rec, "burrow_svc_nonce")
+	nonce := nonceCookieIn(rec)
 	if nonce == nil {
 		t.Fatalf("login set no nonce cookie: %v", rec.Header().Values("Set-Cookie"))
 	}
@@ -100,6 +101,16 @@ func startLogin(t *testing.T, g http.Handler, ret string, cookies ...*http.Cooki
 		t.Fatal(err)
 	}
 	return nonce, loc
+}
+
+// nonceCookieIn is the handoff nonce cookie an answer sets (or clears).
+func nonceCookieIn(rec *httptest.ResponseRecorder) *http.Cookie {
+	for _, c := range rec.Result().Cookies() {
+		if strings.HasPrefix(c.Name, "burrow_svc_nonce_") {
+			return c
+		}
+	}
+	return nil
 }
 
 func setCookieNamed(rec *httptest.ResponseRecorder, name string) *http.Cookie {
@@ -150,12 +161,14 @@ func TestGateServices_LoginGoesToHandoff(t *testing.T) {
 		t.Fatalf("Location %q, want the handoff for %q", loc, svcReturn)
 	}
 	// The browser is given a nonce; the handoff carries only its hash.
-	nonce := setCookieNamed(rec, "burrow_svc_nonce")
+	nonce := nonceCookieIn(rec)
 	if nonce == nil || nonce.Domain != "" || !nonce.HttpOnly || !nonce.Secure || nonce.SameSite != http.SameSiteLaxMode || nonce.MaxAge != 120 {
 		t.Fatalf("nonce cookie %+v, want host-only, HttpOnly, Secure, SameSite=Lax, 2 minutes", nonce)
 	}
 	if h := loc.Query().Get("nonce"); len(h) != 64 || h == nonce.Value {
 		t.Fatalf("handoff nonce %q: want the 64-hex hash of the cookie, not the cookie", h)
+	} else if nonce.Name != "burrow_svc_nonce_"+h[:16] {
+		t.Fatalf("nonce cookie %q: want it named after the first 16 characters of the hash", nonce.Name)
 	}
 	// The password form is not offered on the services host at all.
 	post := gatePostForm(g, servicesHost, "/__burrow/login", url.Values{
@@ -200,8 +213,8 @@ func TestGateServices_HandoffHappyPath(t *testing.T) {
 	if c.Domain != "" || c.Path != "/" || !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("cookie %+v, want host-only, Path=/, HttpOnly, Secure, SameSite=Lax", c)
 	}
-	if c.Value == "dash-1" || st.sessionMap[c.Value] != "user-1" {
-		t.Fatalf("cookie value %q: want a new session of user-1, not the dashboard's", c.Value)
+	if c.Value == "dash-1" || st.svcSessions[c.Value] != "user-1" || st.parents[c.Value] != "dash-1" {
+		t.Fatalf("cookie value %q: want a new services session of user-1 handed off by dash-1, not the dashboard's", c.Value)
 	}
 	// The services host sets none of the dashboard's cookies.
 	if setCookieNamed(rec, "burrow_session") != nil || setCookieNamed(rec, "burrow_csrf") != nil {
@@ -210,7 +223,7 @@ func TestGateServices_HandoffHappyPath(t *testing.T) {
 	if rec.Header().Get("Referrer-Policy") != "no-referrer" {
 		t.Errorf("callback Referrer-Policy %q, want no-referrer", rec.Header().Get("Referrer-Policy"))
 	}
-	if n := setCookieNamed(rec, "burrow_svc_nonce"); n == nil || n.MaxAge >= 0 {
+	if n := setCookieNamed(rec, nonce.Name); n == nil || n.MaxAge >= 0 {
 		t.Errorf("callback did not clear the nonce cookie")
 	}
 
@@ -344,12 +357,12 @@ func TestGateServices_SuspendedAtCallback(t *testing.T) {
 // Signing out on the services host ends the services session only.
 func TestGateServices_Logout(t *testing.T) {
 	st, _, g := servicesGate(t)
-	st.sessionMap["svc-1"] = "user-1"
+	st.svcSessions["svc-1"] = "user-1"
 	rec := gateDo(g, "POST", servicesHost, "/__burrow/logout", &http.Cookie{Name: "burrow_svc_session", Value: "svc-1"})
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "https://"+gateAuthDomain+"/" {
 		t.Fatalf("logout: status %d Location %q", rec.Code, rec.Header().Get("Location"))
 	}
-	if _, ok := st.sessionMap["svc-1"]; ok {
+	if _, ok := st.svcSessions["svc-1"]; ok {
 		t.Fatal("the services session survived the logout")
 	}
 	if _, ok := st.sessionMap["dash-1"]; !ok {
@@ -369,7 +382,7 @@ func TestGateServices_Logout(t *testing.T) {
 func TestGateServices_WrongRoleDenied(t *testing.T) {
 	st, _, g := servicesGate(t)
 	st.policyMap["svc-g"] = []string{"admin"}
-	st.sessionMap["svc-1"] = "user-1"
+	st.svcSessions["svc-1"] = "user-1"
 	rec := gateDo(g, "GET", servicesHost, "/__burrow/login?next="+url.QueryEscape(svcReturn),
 		&http.Cookie{Name: "burrow_svc_session", Value: "svc-1"})
 	if rec.Code != http.StatusForbidden {
@@ -386,11 +399,17 @@ func TestGateServices_WrongRoleDenied(t *testing.T) {
 func TestGateServices_CallbackNeedsTheNonce(t *testing.T) {
 	_, _, g := servicesGate(t)
 	loc, nonce := handoff(t, g, svcReturn)
-	for _, cookies := range [][]*http.Cookie{
-		nil,
-		{{Name: "burrow_svc_nonce", Value: "someone-elses"}},
-		{{Name: "burrow_svc_nonce", Value: ""}},
+	for _, wrong := range []func(n *http.Cookie) []*http.Cookie{
+		func(*http.Cookie) []*http.Cookie { return nil },
+		func(n *http.Cookie) []*http.Cookie { return []*http.Cookie{{Name: n.Name, Value: "someone-elses"}} },
+		func(n *http.Cookie) []*http.Cookie { return []*http.Cookie{{Name: n.Name, Value: ""}} },
+		// the right value under the name of another handoff, or the bare name
+		func(n *http.Cookie) []*http.Cookie {
+			return []*http.Cookie{{Name: "burrow_svc_nonce_0123456789abcdef", Value: n.Value}}
+		},
+		func(n *http.Cookie) []*http.Cookie { return []*http.Cookie{{Name: "burrow_svc_nonce", Value: n.Value}} },
 	} {
+		cookies := wrong(nonce)
 		if rec := callback(g, loc, cookies...); rec.Code != http.StatusBadRequest || setCookieNamed(rec, "burrow_svc_session") != nil {
 			t.Fatalf("callback with nonce cookies %v: status %d, want 400 and no session", cookies, rec.Code)
 		}
@@ -425,7 +444,7 @@ func TestGateServices_CallbackReplacesOldSession(t *testing.T) {
 	st, _, g := servicesGate(t)
 	// A row that no longer opens anything (its user is gone), so the login
 	// starts a handoff while the browser still sends the old cookie.
-	st.sessionMap["svc-old"] = "user-gone"
+	st.svcSessions["svc-old"] = "user-gone"
 	old := &http.Cookie{Name: "burrow_svc_session", Value: "svc-old"}
 	nonce, start := startLogin(t, g, svcReturn, old)
 	rec := gateDo(g, "GET", gateAuthDomain, start.RequestURI(), &http.Cookie{Name: "burrow_session", Value: "dash-1"})
@@ -434,7 +453,7 @@ func TestGateServices_CallbackReplacesOldSession(t *testing.T) {
 	if res.Code != http.StatusFound {
 		t.Fatalf("callback: %d", res.Code)
 	}
-	if _, ok := st.sessionMap["svc-old"]; ok {
+	if _, ok := st.svcSessions["svc-old"]; ok {
 		t.Fatal("the previous services session row is still there")
 	}
 	if _, ok := st.sessionMap["dash-1"]; !ok {
@@ -452,5 +471,132 @@ func TestGateServices_TrailingDotHost(t *testing.T) {
 	}
 	if rec := gateDo(g, "GET", servicesHost+".:443", handoffTarget(svcReturn), &http.Cookie{Name: "burrow_session", Value: "dash-1"}); rec.Code != http.StatusNotFound {
 		t.Fatalf("handoff on the services host with a trailing dot: status %d, want 404", rec.Code)
+	}
+}
+
+// browserJar keeps the cookies one browser holds on the services host, by
+// name, as the gate's answers set and clear them.
+type browserJar map[string]*http.Cookie
+
+func (j browserJar) take(rec *httptest.ResponseRecorder) {
+	for _, c := range rec.Result().Cookies() {
+		if c.MaxAge < 0 {
+			delete(j, c.Name)
+			continue
+		}
+		j[c.Name] = c
+	}
+}
+
+func (j browserJar) all() []*http.Cookie {
+	var out []*http.Cookie
+	for _, c := range j {
+		out = append(out, c)
+	}
+	return out
+}
+
+// Round 2: two handoffs of one browser at the same time (two tabs opening
+// two services) each keep their own nonce: both callbacks succeed, whatever
+// the order, and each spends only its own nonce.
+func TestGateServices_ParallelHandoffs(t *testing.T) {
+	st, _, g := servicesGate(t)
+	st.serviceMap["wiki"] = db.Service{ID: "svc-w", Name: "Wiki", Subdomain: "wiki"}
+	st.policyMap["svc-w"] = []string{"user"}
+	ret2 := "https://" + servicesHost + "/svc/wiki/page"
+	dash := &http.Cookie{Name: "burrow_session", Value: "dash-1"}
+	jar := browserJar{}
+
+	starts := map[string]*url.URL{}
+	for _, ret := range []string{svcReturn, ret2} {
+		rec := gateDo(g, "GET", servicesHost, "/__burrow/login?next="+url.QueryEscape(ret), jar.all()...)
+		if rec.Code != http.StatusFound {
+			t.Fatalf("login %s: %d", ret, rec.Code)
+		}
+		jar.take(rec)
+		starts[ret], _ = url.Parse(rec.Header().Get("Location"))
+	}
+	if len(jar) != 2 {
+		t.Fatalf("the browser holds %d nonce cookies after two logins, want 2: %v", len(jar), jar)
+	}
+	callbacks := map[string]*url.URL{}
+	for ret, start := range starts {
+		rec := gateDo(g, "GET", gateAuthDomain, start.RequestURI(), dash)
+		if rec.Code != http.StatusFound {
+			t.Fatalf("handoff %s: %d %s", ret, rec.Code, rec.Body)
+		}
+		callbacks[ret], _ = url.Parse(rec.Header().Get("Location"))
+	}
+	// The second one started finishes first.
+	for _, ret := range []string{ret2, svcReturn} {
+		rec := callback(g, callbacks[ret], jar.all()...)
+		if rec.Code != http.StatusFound || rec.Header().Get("Location") != ret || setCookieNamed(rec, "burrow_svc_session") == nil {
+			t.Fatalf("callback %s: %d %q %s", ret, rec.Code, rec.Header().Get("Location"), rec.Body)
+		}
+		jar.take(rec)
+	}
+	for name := range jar {
+		if strings.HasPrefix(name, "burrow_svc_nonce") {
+			t.Errorf("nonce cookie %s left after both callbacks", name)
+		}
+	}
+}
+
+// A browser holding many unfinished handoffs (tabs that never came back) is
+// cleared at the next login, so its cookies cannot pile up.
+func TestGateServices_NonceCookiesDoNotPileUp(t *testing.T) {
+	_, _, g := servicesGate(t)
+	var held []*http.Cookie
+	for i := 0; i < 8; i++ {
+		held = append(held, &http.Cookie{Name: fmt.Sprintf("burrow_svc_nonce_%016x", i), Value: "v"})
+	}
+	rec := gateDo(g, "GET", servicesHost, "/__burrow/login?next="+url.QueryEscape(svcReturn), held...)
+	cleared, set := 0, 0
+	for _, c := range rec.Result().Cookies() {
+		switch {
+		case strings.HasPrefix(c.Name, "burrow_svc_nonce_") && c.MaxAge < 0:
+			cleared++
+		case strings.HasPrefix(c.Name, "burrow_svc_nonce_"):
+			set++
+		}
+	}
+	if cleared != 8 || set != 1 {
+		t.Fatalf("login with 8 nonces held: %d cleared, %d set; want 8 and 1", cleared, set)
+	}
+	// Fewer are left alone.
+	rec = gateDo(g, "GET", servicesHost, "/__burrow/login?next="+url.QueryEscape(svcReturn), held[:7]...)
+	for _, c := range rec.Result().Cookies() {
+		if c.MaxAge < 0 {
+			t.Fatalf("login with 7 nonces held cleared %s", c.Name)
+		}
+	}
+}
+
+// Round 2: each host takes only its own kind of session. A services session
+// sent to the dashboard's host as burrow_session does not sign anybody in
+// there (the handoff shows the sign-in form instead of issuing a code), and a
+// dashboard session sent as burrow_svc_session opens nothing on the services
+// host.
+func TestGateServices_EachHostTakesItsOwnSessionKind(t *testing.T) {
+	st, _, g := servicesGate(t)
+	st.svcSessions["svc-1"] = "user-1"
+	rec := gateDo(g, "GET", gateAuthDomain, handoffTarget(svcReturn), &http.Cookie{Name: "burrow_session", Value: "svc-1"})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `name="password"`) {
+		t.Fatalf("handoff with a services session as burrow_session: %d %q, want the sign-in form", rec.Code, rec.Header().Get("Location"))
+	}
+	rec = gateDo(g, "GET", servicesHost, "/__burrow/login?next="+url.QueryEscape(svcReturn), &http.Cookie{Name: "burrow_svc_session", Value: "dash-1"})
+	if loc := rec.Header().Get("Location"); rec.Code != http.StatusFound || !strings.HasPrefix(loc, "https://"+gateAuthDomain+"/__burrow/handoff") {
+		t.Fatalf("services login with a dashboard session as burrow_svc_session: %d %q, want the handoff", rec.Code, loc)
+	}
+	rec = gateDo(g, "GET", servicesHost, "/__burrow/login?next="+url.QueryEscape(svcReturn), &http.Cookie{Name: "burrow_svc_session", Value: "svc-1"})
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != svcReturn {
+		t.Fatalf("services login with a services session: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	// The dashboard's sign-out ends the services sessions it handed off: the
+	// store does that; a callback after the dashboard session ended issues none.
+	loc, nonce := handoff(t, g, svcReturn)
+	delete(st.sessionMap, "dash-1")
+	if rec := callback(g, loc, nonce); rec.Code == http.StatusFound || setCookieNamed(rec, "burrow_svc_session") != nil {
+		t.Fatalf("callback after the dashboard session ended: %d, want no services session", rec.Code)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/oauth"
 )
@@ -81,6 +82,10 @@ func TestOAuth_AccessTokenAtTheManagementServer(t *testing.T) {
 		!id.ExpiresAt.Equal(time.Date(2026, 10, 19, 13, 0, 0, 0, time.UTC)) {
 		t.Fatalf("replay identity = %+v, %v", id, ok)
 	}
+	// Round 2: the rows the replayed request writes name the grant too.
+	if c, ok := audit.CredentialFrom(r.Context()); !ok || c != (audit.Credential{OAuthGrantID: "grant1"}) {
+		t.Fatalf("replay audit credential = %+v, %v", c, ok)
+	}
 	fo.mu.Lock()
 	asked := slices.Clone(fo.asked)
 	fo.mu.Unlock()
@@ -121,6 +126,10 @@ func TestOAuth_AutomationTokenCarriesNoMarker(t *testing.T) {
 	r := env.api.seen[len(env.api.seen)-1]
 	if _, ok := ReplayIdentityFrom(r.Context()); ok || r.Header.Get("Authorization") != "Bearer "+testBearer {
 		t.Fatalf("automation replay: marker %v, Authorization %q", ok, r.Header.Get("Authorization"))
+	}
+	// Round 2: the rows the replayed request writes name the token.
+	if c, ok := audit.CredentialFrom(r.Context()); !ok || c != (audit.Credential{TokenID: "tok1"}) {
+		t.Fatalf("replay audit credential = %+v, %v", c, ok)
 	}
 	if _, ok := ReplayIdentityFrom(context.Background()); ok {
 		t.Fatal("a plain context carries a replay identity")

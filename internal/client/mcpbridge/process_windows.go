@@ -54,6 +54,10 @@ func (p *process) kill() {
 	_ = p.cmd.Process.Kill()
 }
 
+// groupEmpty: the job handle is the bridge's own, so ending it never reaches
+// an unrelated process; the job is always ended.
+func (p *process) groupEmpty() bool { return false }
+
 func (p *process) release() {
 	if p.group.job != 0 {
 		_ = windows.CloseHandle(p.group.job)

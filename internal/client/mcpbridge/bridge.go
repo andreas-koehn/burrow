@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -109,9 +110,17 @@ type Bridge struct {
 
 	// dialMu serialises connecting to the URL.
 	dialMu sync.Mutex
+	// listGen numbers the fetches of the tool list in the order they start.
+	listGen atomic.Uint64
 	// toolsMu serialises changes of the served tool list.
 	toolsMu sync.Mutex
 	served  map[string]string // tool name → its definition as JSON
+	// applied is the number of the fetch whose list is served; a fetch that
+	// started earlier and finishes later is dropped.
+	applied uint64
+	// refused holds the definitions the SDK refused, by tool name, so that
+	// each is logged once and not at every refresh.
+	refused map[string]string
 	// statusMu serialises OnStatus calls.
 	statusMu sync.Mutex
 
@@ -139,10 +148,11 @@ func Start(o Options) (*Bridge, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &Bridge{
 		opts: o, log: o.Logger, ln: ln, ctx: ctx, cancel: cancel,
-		kick:   make(chan struct{}, 1),
-		ready:  make(chan struct{}),
-		done:   make(chan struct{}),
-		served: map[string]string{},
+		kick:    make(chan struct{}, 1),
+		ready:   make(chan struct{}),
+		done:    make(chan struct{}),
+		served:  map[string]string{},
+		refused: map[string]string{},
 	}
 	b.client = mcp.NewClient(&mcp.Implementation{Name: "burrow", Version: version.Version}, &mcp.ClientOptions{
 		Logger: b.log,
@@ -378,6 +388,9 @@ func (b *Bridge) withSession(ctx context.Context, again bool, f func(*mcp.Client
 func (b *Bridge) refresh(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
+	// The first fetch after a connect and the refresher can overlap: the
+	// list of the fetch that started last wins.
+	gen := b.nextListGen()
 	var tools []*mcp.Tool
 	err := b.withSession(ctx, true, func(cs *mcp.ClientSession) error {
 		tools = tools[:0]
@@ -392,28 +405,50 @@ func (b *Bridge) refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	b.serve(tools)
+	b.serve(gen, tools)
 	b.markReady()
 	return nil
 }
 
-// serve makes tools the served list: new and changed tools are added, the
-// ones the server no longer has are removed.
-func (b *Bridge) serve(tools []*mcp.Tool) {
+// nextListGen numbers a fetch of the tool list that starts now.
+func (b *Bridge) nextListGen() uint64 { return b.listGen.Add(1) }
+
+// serve makes tools, the list fetch number gen read, the served list: new
+// and changed tools are added, the ones the server no longer has are
+// removed. A list older than the one served is dropped.
+func (b *Bridge) serve(gen uint64, tools []*mcp.Tool) {
 	b.toolsMu.Lock()
+	if gen < b.applied {
+		b.toolsMu.Unlock()
+		return
+	}
+	b.applied = gen
 	keep := map[string]bool{}
+	listed := map[string]bool{}
 	for _, tl := range tools {
 		def, err := json.Marshal(tl)
 		if err != nil || tl.Name == "" {
 			continue
 		}
+		listed[tl.Name] = true
 		if b.served[tl.Name] == string(def) {
 			keep[tl.Name] = true
 			continue
 		}
+		if b.refused[tl.Name] == string(def) {
+			continue // refused and logged before
+		}
 		if b.add(tl) {
 			b.served[tl.Name] = string(def)
 			keep[tl.Name] = true
+			delete(b.refused, tl.Name)
+		} else {
+			b.refused[tl.Name] = string(def)
+		}
+	}
+	for name := range b.refused {
+		if !listed[name] {
+			delete(b.refused, name)
 		}
 	}
 	var gone []string

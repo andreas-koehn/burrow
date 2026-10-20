@@ -1306,7 +1306,11 @@ func (c *countingConn) Write(p []byte) (int, error) {
 // on a services host (BURROW_SERVICES_DOMAIN) they attach the services
 // session, and during the sign-in handoff its nonce, instead. None of them is
 // the upstream's business, and an upstream must not be able to set one.
+// Each handoff has a nonce cookie of its own (servicesNonceCookie + "_" + id).
 var burrowCookies = map[string]bool{"burrow_session": true, "burrow_csrf": true, ServicesSessionCookie: true, servicesNonceCookie: true}
+
+// isBurrowCookie reports whether name is one of Burrow's own cookies.
+func isBurrowCookie(name string) bool { return burrowCookies[name] || isNonceCookie(name) }
 
 // stripBurrowCookies removes the dashboard's cookies from an outbound request
 // and leaves every other cookie untouched. It filters the raw header text
@@ -1323,7 +1327,7 @@ func stripBurrowCookies(out *http.Request) {
 		rest := pairs[:0]
 		for _, pair := range pairs {
 			name, _, _ := strings.Cut(pair, "=")
-			if !burrowCookies[strings.TrimSpace(name)] {
+			if !isBurrowCookie(strings.TrimSpace(name)) {
 				rest = append(rest, pair)
 			}
 		}
@@ -1357,7 +1361,7 @@ func dropBurrowSetCookies(h http.Header) {
 	for _, line := range lines {
 		pair, _, _ := strings.Cut(line, ";")
 		name, _, hasValue := strings.Cut(pair, "=")
-		if hasValue && burrowCookies[strings.TrimSpace(name)] {
+		if hasValue && isBurrowCookie(strings.TrimSpace(name)) {
 			continue
 		}
 		kept = append(kept, line)

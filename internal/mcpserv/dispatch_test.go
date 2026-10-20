@@ -98,7 +98,7 @@ func TestCuratedToolsFollowTheToken(t *testing.T) {
 					t.Errorf("read-only token does not see %s", name)
 				}
 			}
-			for _, name := range []string{"services_list", "provider_create", "provider_delete", "ai_model_create"} {
+			for _, name := range []string{"services_list", "budget_create", "provider_delete", "ai_model_create"} {
 				if tools[name] != nil {
 					t.Errorf("read-only token sees %s", name)
 				}
@@ -147,8 +147,8 @@ func TestDryRunSendsNothing(t *testing.T) {
 	api := &fakeAPI{}
 	hs, sink := newDispatchServer(t, api, presetPerms(authz.PresetOperator))
 	cs := connectMCP(t, hs.URL, "", testRevisions[0])
-	res, err := callTool(t, cs, "provider_create", map[string]any{
-		"dry_run": true, "body": map[string]any{"name": "Ollama", "kind": "tunnel", "service_id": "svc_1"},
+	res, err := callTool(t, cs, "budget_create", map[string]any{
+		"dry_run": true, "body": map[string]any{"scope": "global", "action_on_exceed": "throttle_zero", "daily_usd": 7.5},
 	})
 	if err != nil || res.IsError {
 		t.Fatalf("dry run: %v %+v", err, res)
@@ -157,7 +157,7 @@ func TestDryRunSendsNothing(t *testing.T) {
 		t.Fatalf("a dry run reached the API %d times", api.calls())
 	}
 	text := resultText(t, res)
-	for _, want := range []string{`"dry_run":true`, `"method":"POST"`, `"path":"/api/v1/ai/providers"`, `"Ollama"`} {
+	for _, want := range []string{`"dry_run":true`, `"method":"POST"`, `"path":"/api/v1/budgets"`, `7.5`} {
 		if !strings.Contains(text, want) {
 			t.Errorf("dry run result lacks %s: %s", want, text)
 		}
@@ -167,11 +167,11 @@ func TestDryRunSendsNothing(t *testing.T) {
 	}
 
 	// A body that breaks the schema is refused before anything is sent, dry run or not.
-	res, _ = callTool(t, cs, "provider_create", map[string]any{"body": map[string]any{"kind": "tunnel"}})
+	res, _ = callTool(t, cs, "budget_create", map[string]any{"body": map[string]any{"scope": "global"}})
 	if !res.IsError || api.calls() != 0 {
-		t.Errorf("a body without name: isError=%v calls=%d", res.IsError, api.calls())
+		t.Errorf("a body without action_on_exceed: isError=%v calls=%d", res.IsError, api.calls())
 	}
-	res, _ = callTool(t, cs, "provider_create", map[string]any{"body": map[string]any{"name": "x"}, "colour": "red"})
+	res, _ = callTool(t, cs, "budget_create", map[string]any{"body": map[string]any{"scope": "global", "action_on_exceed": "throttle_zero"}, "colour": "red"})
 	if !res.IsError || !strings.Contains(resultText(t, res), "colour") {
 		t.Errorf("unknown argument: %+v", res)
 	}

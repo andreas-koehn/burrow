@@ -49,7 +49,11 @@ type APIKeyValidator interface {
 // loop for visitors with a valid session, so production wiring MUST pass a
 // non-nil SessionValidator (cmd/server uses NewAccessCheckerWithSessionsAndLogger).
 type SessionValidator interface {
+	// ValidateSession takes dashboard sessions only (burrow_session).
 	ValidateSession(ctx context.Context, sessionID string) (userID string, err error)
+	// ValidateServicesSession takes services sessions only
+	// (burrow_svc_session on the services host).
+	ValidateServicesSession(ctx context.Context, sessionID string) (userID string, err error)
 	GetUserByID(ctx context.Context, id string) (db.User, error)
 	RoleAllowed(ctx context.Context, serviceID, role string) (bool, error)
 }
@@ -268,13 +272,20 @@ func (ac *accessChecker) checkBurrowLogin(ctx context.Context, res *Resolved, r 
 	// only the services host's own session, set by the gate's handoff, opens
 	// a service there.
 	cookieName, gateHost := gateSessionCookieName, ac.authDomain
+	var validate func(context.Context, string) (string, error)
+	if ac.sv != nil {
+		validate = ac.sv.ValidateSession
+	}
 	if pub := PublicHost(r.Context()); pub != "" {
 		cookieName, gateHost = ServicesSessionCookie, pub
+		if ac.sv != nil {
+			validate = ac.sv.ValidateServicesSession
+		}
 	}
 
 	if ac.sv != nil {
 		if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
-			uid, err := ac.sv.ValidateSession(ctx, c.Value)
+			uid, err := validate(ctx, c.Value)
 			if err == nil {
 				user, err := ac.sv.GetUserByID(ctx, uid)
 				if err == nil && user.Status != "suspended" {

@@ -35,6 +35,7 @@ func loginChecker() (*fakeGateStore, proxy.AccessChecker) {
 	st.user = db.User{ID: "user-1", Email: "alice@example.com", Role: "user", Status: "active"}
 	st.policyMap["svc-g"] = []string{"user"}
 	st.sessionMap["sess-1"] = "user-1"
+	st.svcSessions["svc-s1"] = "user-1"
 	return st, proxy.NewAccessCheckerWithSessionsAndLogger(&fakeValidator{}, st, gateAuthDomain, testLog())
 }
 
@@ -73,15 +74,21 @@ func TestAccessServicesHost_OnlyServicesSessionCounts(t *testing.T) {
 	}
 
 	svc := svcRequest("/", servicesHost)
-	svc.AddCookie(&http.Cookie{Name: "burrow_svc_session", Value: "sess-1"})
+	svc.AddCookie(&http.Cookie{Name: "burrow_svc_session", Value: "svc-s1"})
 	if ok, status, _, _ := ac.Allow(context.Background(), res, svc); !ok {
 		t.Fatalf("a valid services session was refused (status %d)", status)
+	}
+	// A dashboard session id in the services cookie counts for nothing.
+	svc = svcRequest("/", servicesHost)
+	svc.AddCookie(&http.Cookie{Name: "burrow_svc_session", Value: "sess-1"})
+	if ok, _, _, _ := ac.Allow(context.Background(), res, svc); ok {
+		t.Fatal("a dashboard session opened a service as burrow_svc_session")
 	}
 
 	// Without a services domain nothing changes: the dashboard session counts,
 	// the services cookie does not.
 	plain := svcRequest("/", "")
-	plain.AddCookie(&http.Cookie{Name: "burrow_svc_session", Value: "sess-1"})
+	plain.AddCookie(&http.Cookie{Name: "burrow_svc_session", Value: "svc-s1"})
 	if ok, _, _, _ := ac.Allow(context.Background(), res, plain); ok {
 		t.Fatal("burrow_svc_session opened a service on the dashboard's host")
 	}
@@ -89,6 +96,11 @@ func TestAccessServicesHost_OnlyServicesSessionCounts(t *testing.T) {
 	plain.AddCookie(&http.Cookie{Name: "burrow_session", Value: "sess-1"})
 	if ok, _, _, _ := ac.Allow(context.Background(), res, plain); !ok {
 		t.Fatal("the dashboard session no longer opens a service without a services domain")
+	}
+	plain = svcRequest("/", "")
+	plain.AddCookie(&http.Cookie{Name: "burrow_session", Value: "svc-s1"})
+	if ok, _, _, _ := ac.Allow(context.Background(), res, plain); ok {
+		t.Fatal("a services session opened a service as burrow_session")
 	}
 }
 

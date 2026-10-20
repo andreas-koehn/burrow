@@ -2,11 +2,14 @@ package mcpgw
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/mcptest"
+	"github.com/ankoehn/burrow/internal/observe"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -260,5 +263,91 @@ func TestAggregated_OrderIsStable(t *testing.T) {
 	}
 	if !strings.HasPrefix(first, "gh__") || !strings.Contains(first, ",other__echo,other__ping") {
 		t.Fatalf("order = %s", first)
+	}
+}
+
+// auditTool is the tool spelling of a gateway audit row's payload.
+type auditTool struct {
+	Tool           string `json:"tool"`
+	AggregatedName string `json:"aggregated_name"`
+	NativeTool     string `json:"native_tool"`
+}
+
+func lastGatewayRow(t *testing.T, g *gwFixture) (audit.Event, auditTool, observe.ToolCall) {
+	t.Helper()
+	_, events, calls := g.rec.snapshot()
+	if len(events) == 0 || len(calls) == 0 {
+		t.Fatalf("no audit row (%d) or observer event (%d)", len(events), len(calls))
+	}
+	e := events[len(events)-1]
+	var p auditTool
+	if err := json.Unmarshal(e.Payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	return e, p, calls[len(calls)-1]
+}
+
+// Round 2: on /mcp a denied call is recorded as on /mcp/<slug> also when the
+// key never named the tool's source (or names no tool at all): a denied
+// audit row and an observer event. A name no source serves leaves none.
+func TestAggregated_DeniedOnAnUnnamedSourceIsRecorded(t *testing.T) {
+	g, _ := newAggFixture(t)
+	for _, tools := range [][]string{{"gh__echo"}, nil} {
+		key, _ := g.key(t, g.userID, tools, false)
+		cs := g.connect(t, key, "", "")
+		_, before, _ := g.rec.snapshot()
+		if _, err := call(t, cs, "other__ping", map[string]any{"text": "x"}); !isUnknownTool(err) {
+			t.Fatalf("key %v: other__ping: %v", tools, err)
+		}
+		e, p, obs := lastGatewayRow(t, g)
+		_, after, _ := g.rec.snapshot()
+		if len(after) != len(before)+1 || e.Result != "denied" || e.SubjectID != "other" || p.Tool != "ping" || p.AggregatedName != "other__ping" {
+			t.Fatalf("key %v: audit %+v %s (rows %d -> %d)", tools, e, e.Payload, len(before), len(after))
+		}
+		if obs.Outcome != "denied" || obs.Source != "other" || obs.Tool != "ping" {
+			t.Fatalf("key %v: observer %+v", tools, obs)
+		}
+		for _, name := range []string{"nosuch__echo", "other__nope", "echo", "__echo"} {
+			if _, err := call(t, cs, name, map[string]any{}); !isUnknownTool(err) {
+				t.Fatalf("%s: %v", name, err)
+			}
+		}
+		if _, now, _ := g.rec.snapshot(); len(now) != len(after) {
+			t.Fatalf("key %v: names no source serves left %d rows", tools, len(now)-len(after))
+		}
+	}
+}
+
+// Round 2: every gateway audit row spells the tool the same way: tool is
+// the served name (the rename applied), aggregated_name is added on /mcp,
+// and native_tool names the upstream's own name when it differs.
+func TestAggregated_AuditSpellsTheToolOneWay(t *testing.T) {
+	g, _ := newAggFixture(t)
+	ren := "say"
+	if _, err := g.st.UpdateMCPToolOverrides(context.Background(), "gh", "echo", store.MCPToolOverridesUpdate{Rename: &ren}); err != nil {
+		t.Fatal(err)
+	}
+	key, _ := g.key(t, g.userID, []string{"gh__say"}, false)
+
+	agg := g.connect(t, key, "", "")
+	if _, err := call(t, agg, "gh__say", map[string]any{"text": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if e, p, obs := lastGatewayRow(t, g); e.Result != "ok" || p.Tool != "say" || p.AggregatedName != "gh__say" || p.NativeTool != "echo" || obs.Tool != "say" {
+		t.Fatalf("ok on /mcp: %s, observer tool %q", e.Payload, obs.Tool)
+	}
+	if _, err := call(t, agg, "gh__mutate", map[string]any{"text": "x"}); !isUnknownTool(err) {
+		t.Fatal(err)
+	}
+	if e, p, obs := lastGatewayRow(t, g); e.Result != "denied" || p.Tool != "mutate" || p.AggregatedName != "gh__mutate" || obs.Tool != "mutate" {
+		t.Fatalf("denied on /mcp: %s, observer tool %q", e.Payload, obs.Tool)
+	}
+
+	one := g.connect(t, key, "gh", "")
+	if _, err := call(t, one, "mutate", map[string]any{"text": "x"}); !isUnknownTool(err) {
+		t.Fatal(err)
+	}
+	if e, p, obs := lastGatewayRow(t, g); e.Result != "denied" || p.Tool != "mutate" || p.AggregatedName != "" || obs.Tool != "mutate" {
+		t.Fatalf("denied on /mcp/gh: %s, observer tool %q", e.Payload, obs.Tool)
 	}
 }

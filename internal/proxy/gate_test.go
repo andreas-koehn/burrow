@@ -7,6 +7,7 @@ package proxy_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,18 +24,25 @@ import (
 
 type fakeGateStore struct {
 	user       db.User
-	sessionMap map[string]string // sessionID → userID
-	serviceMap map[string]db.Service
-	policyMap  map[string][]string // serviceID → allowed roles
-	failVerify bool
-	failCreate bool
+	sessionMap map[string]string // dashboard sessionID → userID
+	// svcSessions are the services host's sessions (sessionID → userID),
+	// parents the dashboard session each was handed off by.
+	svcSessions map[string]string
+	parents     map[string]string
+	svcN        int
+	serviceMap  map[string]db.Service
+	policyMap   map[string][]string // serviceID → allowed roles
+	failVerify  bool
+	failCreate  bool
 }
 
 func newFakeGateStore() *fakeGateStore {
 	return &fakeGateStore{
-		sessionMap: make(map[string]string),
-		serviceMap: make(map[string]db.Service),
-		policyMap:  make(map[string][]string),
+		sessionMap:  make(map[string]string),
+		svcSessions: make(map[string]string),
+		parents:     make(map[string]string),
+		serviceMap:  make(map[string]db.Service),
+		policyMap:   make(map[string][]string),
 	}
 }
 
@@ -68,8 +76,37 @@ func (f *fakeGateStore) ValidateSession(_ context.Context, id string) (string, e
 	return "", db.ErrNotFound
 }
 
+func (f *fakeGateStore) CreateServicesSession(_ context.Context, userID, _, _, parentID string) (string, error) {
+	if f.failCreate {
+		return "", db.ErrNotFound
+	}
+	if f.sessionMap[parentID] != userID {
+		return "", db.ErrNotFound // the store's ErrUnauthorized
+	}
+	f.svcN++
+	id := fmt.Sprintf("svc-sess-%d", f.svcN)
+	f.svcSessions[id] = userID
+	f.parents[id] = parentID
+	return id, nil
+}
+
+func (f *fakeGateStore) ValidateServicesSession(_ context.Context, id string) (string, error) {
+	if uid, ok := f.svcSessions[id]; ok {
+		return uid, nil
+	}
+	return "", db.ErrNotFound
+}
+
+// DeleteSession ends a session of either kind and, as the store does, the
+// services sessions a dashboard session handed off.
 func (f *fakeGateStore) DeleteSession(_ context.Context, id string) error {
 	delete(f.sessionMap, id)
+	delete(f.svcSessions, id)
+	for child, parent := range f.parents {
+		if parent == id {
+			delete(f.svcSessions, child)
+		}
+	}
 	return nil
 }
 

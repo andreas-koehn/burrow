@@ -132,6 +132,7 @@ func TestProxyKeepsTheServicesNonceFromTheUpstream(t *testing.T) {
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotCookie = r.Header.Get("Cookie")
 		w.Header().Add("Set-Cookie", "burrow_svc_nonce=fixed; Path=/")
+		w.Header().Add("Set-Cookie", "burrow_svc_nonce_0123456789abcdef=fixed; Path=/__burrow/")
 		w.Header().Add("Set-Cookie", "app=2")
 		w.WriteHeader(http.StatusOK)
 	})
@@ -143,7 +144,7 @@ func TestProxyKeepsTheServicesNonceFromTheUpstream(t *testing.T) {
 
 	req, _ := http.NewRequest("GET", ts.URL+"/", nil)
 	req.Host = "sc3." + authDomain
-	req.Header.Set("Cookie", "burrow_svc_nonce=n1; app=1")
+	req.Header.Set("Cookie", "burrow_svc_nonce=n1; burrow_svc_nonce_0123456789abcdef=n2; app=1")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)

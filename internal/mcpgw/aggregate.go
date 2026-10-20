@@ -46,16 +46,21 @@ func (g *Gateway) ServeAggregated(w http.ResponseWriter, r *http.Request) {
 			named := a.tool
 			named.Name = a.name
 			g.AddTool(srv, named, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return g.Call(ctx, CallRequest{Caller: caller, Source: a.src, Tool: a.tool, Arguments: req.Params.Arguments, Info: info})
+				return g.Call(ctx, CallRequest{Caller: caller, Source: a.src, Tool: a.tool, Arguments: req.Params.Arguments, Info: info, AggregatedName: a.name})
 			})
 		}
 		byName := make(map[string]aggregatedTool, len(all))
 		for _, a := range all {
 			byName[a.name] = a
 		}
-		srv.AddReceivingMiddleware(g.denied(caller, info, func(name string) (db.MCPSource, Tool, bool) {
-			a, found := byName[name]
-			return a.src, a.tool, found
+		srv.AddReceivingMiddleware(g.denied(caller, info, func(ctx context.Context, name string) (db.MCPSource, Tool, string, bool) {
+			if a, found := byName[name]; found {
+				return a.src, a.tool, a.name, true
+			}
+			// A source the key never named was not read for the list; a
+			// call of one of its tools is looked up now, so that it is
+			// recorded as denied like any other.
+			return g.lookupAggregated(ctx, name)
 		}))
 		return srv
 	})
@@ -94,6 +99,31 @@ func (g *Gateway) AggregatedFor(ctx context.Context, c Caller) (mine, all []aggr
 		}
 	}
 	return mine, all, nil
+}
+
+// lookupAggregated finds the tool an aggregated name stands for among what
+// its source serves to anybody, reading that source only. Slugs have no "_",
+// so the name splits at its first "__".
+func (g *Gateway) lookupAggregated(ctx context.Context, name string) (db.MCPSource, Tool, string, bool) {
+	slug, _, ok := strings.Cut(name, "__")
+	if !ok {
+		return db.MCPSource{}, Tool{}, "", false
+	}
+	src, err := g.source(ctx, slug)
+	if err != nil {
+		return db.MCPSource{}, Tool{}, "", false
+	}
+	_, all, err := g.ToolsFor(ctx, src, Caller{})
+	if err != nil {
+		g.log.Warn("mcp gateway: tools not read for a denied call", "source", slug, "err", err)
+		return db.MCPSource{}, Tool{}, "", false
+	}
+	for _, t := range all {
+		if agg, issue := AggregatedName(slug, t.Name); issue == "" && agg == name {
+			return src, t, agg, true
+		}
+	}
+	return db.MCPSource{}, Tool{}, "", false
 }
 
 // namesSource reports whether an entry of the allow-list can match a tool of

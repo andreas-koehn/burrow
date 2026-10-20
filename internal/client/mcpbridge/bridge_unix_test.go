@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -132,4 +133,66 @@ func (b *Bridge) pidForTest() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.pid
+}
+
+// recordGroupSignals counts the signals sent to process groups (not the
+// probe, signal 0) while the test runs.
+func recordGroupSignals(t *testing.T) func() []syscall.Signal {
+	t.Helper()
+	var mu sync.Mutex
+	var sent []syscall.Signal
+	orig := groupSignal
+	groupSignal = func(pgid int, sig syscall.Signal) error {
+		if sig != 0 {
+			mu.Lock()
+			sent = append(sent, sig)
+			mu.Unlock()
+		}
+		return orig(pgid, sig)
+	}
+	t.Cleanup(func() { groupSignal = orig })
+	return func() []syscall.Signal {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]syscall.Signal(nil), sent...)
+	}
+}
+
+// Round 2: once the child has ended, its process group id can be reused
+// when nothing is left in the group. terminate then sends no signal to the
+// group; when something the child started is still there (which keeps the id
+// from being reused), it is killed as before.
+func TestTerminate_NoGroupKillWhenTheGroupIsEmpty(t *testing.T) {
+	sent := recordGroupSignals(t)
+	p, err := startProcess([]string{"sh", "-c", "exit 0"}, nil, nil, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.closePipes()
+	<-p.exited
+	p.terminate(time.Second)
+	if got := sent(); len(got) != 0 {
+		t.Fatalf("signals sent to the empty group of an ended child: %v", got)
+	}
+
+	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
+	p, err = startProcess([]string{"sh", "-c", `sleep 300 & echo $! > "$0"; exit 0`, pidFile}, nil, nil, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.closePipes()
+	<-p.exited
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || !alive(pid) {
+		t.Fatalf("no running grandchild (%q, %v)", raw, err)
+	}
+	p.terminate(time.Second)
+	if got := sent(); len(got) != 1 || got[0] != syscall.SIGKILL {
+		t.Fatalf("signals sent to a group with a grandchild left: %v, want one SIGKILL", got)
+	}
+	eventually(t, "the grandchild to end", func() bool { return !alive(pid) })
 }

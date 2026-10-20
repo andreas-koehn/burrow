@@ -285,3 +285,54 @@ func TestToken_EmptyBasicUserIsNoBasic(t *testing.T) {
 		t.Fatalf("empty Basic user with client_id in the body: %d %v", a.status, a.body)
 	}
 }
+
+// revokeBeforeRotate revokes the grant of the refresh token right before the
+// rotation, as a revoke that lands between the refresh's read and its write.
+type revokeBeforeRotate struct {
+	Store
+	grantID string
+	now     func() time.Time
+}
+
+func (s *revokeBeforeRotate) RotateOAuthRefresh(ctx context.Context, oldHash string, now time.Time, tokens ...db.OAuthToken) (bool, error) {
+	if s.grantID != "" {
+		if err := s.RevokeOAuthGrant(ctx, s.grantID, s.now()); err != nil {
+			return false, err
+		}
+	}
+	return s.Store.RotateOAuthRefresh(ctx, oldHash, now, tokens...)
+}
+
+// Round 2: a refresh that races a revoke of its grant fails as any refresh
+// of a revoked grant does, and writes no oauth.refresh.reuse row: nothing
+// was used twice.
+func TestRefresh_RacingARevokeIsNoReuse(t *testing.T) {
+	var rb *revokeBeforeRotate
+	h := newHarness(t, func(c *Config) {
+		rb = &revokeBeforeRotate{Store: c.Store, now: c.Now}
+		c.Store = rb
+	})
+	first := h.exchange(t, h.code(t, h.authParams()))
+	grants, err := h.s.ListGrants(context.Background(), "")
+	if err != nil || len(grants) != 1 {
+		t.Fatalf("grants: %+v %v", grants, err)
+	}
+	rb.grantID = grants[0].ID
+	wantTokenError(t, "refresh racing a revoke", h.refresh(t, first.str("refresh_token")), 400, "invalid_grant")
+	for _, a := range h.audit.actions() {
+		if a == audit.ActionOAuthRefreshReuse {
+			t.Fatalf("a refresh that raced a revoke was audited as reuse: %v", h.audit.actions())
+		}
+	}
+	// A real second use is still reuse.
+	rb.grantID = ""
+	h2 := newHarness(t)
+	a := h2.exchange(t, h2.code(t, h2.authParams()))
+	if b := h2.refresh(t, a.str("refresh_token")); b.status != 200 {
+		t.Fatalf("refresh: %v", b.body)
+	}
+	wantTokenError(t, "second use", h2.refresh(t, a.str("refresh_token")), 400, "invalid_grant")
+	if got := strings.Join(h2.audit.actions(), ","); !strings.Contains(got, audit.ActionOAuthRefreshReuse) {
+		t.Fatalf("a real second use is not audited as reuse: %s", got)
+	}
+}

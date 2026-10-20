@@ -45,7 +45,8 @@ services host, and does not count there. The service needs a session of the
 services host instead, in the host-only cookie `burrow_svc_session`:
 
 1. The gate on the services host gives the browser a short-lived nonce cookie
-   (`burrow_svc_nonce`, two minutes) and sends the visitor to
+   of this sign-in's own (`burrow_svc_nonce_<id>`, two minutes; two tabs that
+   sign in at once each keep theirs) and sends the visitor to
    `https://<dashboard>/__burrow/handoff?return=<service address>`.
 2. The dashboard's host asks for the password if the visitor is not signed in
    to the dashboard, then issues a one-time code (60 seconds, single use, bound
@@ -57,9 +58,11 @@ services host instead, in the host-only cookie `burrow_svc_session`:
    goes on to the service. Each handoff is audited as `auth.handoff`.
 
 No password is ever typed on the services host. Signing out there ends the
-services session only, and signing out of the dashboard does not end it: the
-services session lasts until it expires (seven days) or is revoked under
-Sessions.
+services session only. The services session belongs to the dashboard session
+that handed it off: signing out of the dashboard, or revoking that session
+under Sessions, ends it too, and it never lasts longer than that session.
+"Sign out everywhere else" ends every services session. The dashboard does not
+accept a services session, and the services host accepts nothing else.
 
 **When to use:** internal tools that your team members access via a browser
 after logging in to `https://burrow.insingo.com`.

@@ -22,7 +22,20 @@ type Session struct {
 	ID, UserID           string
 	ExpiresAt, CreatedAt time.Time
 	UserAgent, IP        string
+	// Kind is SessionKindDashboard (the burrow_session cookie of the
+	// dashboard's host; "" is taken for it on create) or SessionKindServices
+	// (burrow_svc_session on the services host, made by the sign-in handoff).
+	Kind string
+	// ParentID is the dashboard session that handed a services session off;
+	// "" for a dashboard session. Ending the parent ends the services session.
+	ParentID string
 }
+
+// The kinds of a session.
+const (
+	SessionKindDashboard = "dashboard"
+	SessionKindServices  = "services"
+)
 
 // ClientToken is a row of the client_tokens table (token_hash only).
 type ClientToken struct {

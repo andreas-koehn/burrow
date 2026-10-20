@@ -255,12 +255,21 @@ func (d Deps) PostMCPSourceSync(w http.ResponseWriter, r *http.Request) {
 		msg := mcpgw.Describe(err)
 		d.warn("tool source sync failed", "source", slug, "reason", msg)
 		d.auditMCPTool(r, audit.ActionMCPSourceSync, slug, "error", map[string]any{"error": msg})
-		writeErr(w, http.StatusBadGateway, msg)
+		writeErr(w, http.StatusBadGateway, upstreamTextFor(r, msg))
 		return
 	}
 	d.auditMCPTool(r, audit.ActionMCPSourceSync, slug, "ok", map[string]any{
 		"added": res.Added, "changed": res.Changed, "removed": res.Removed, "pending": res.Pending, "skipped": len(res.Skipped),
 	})
+	if bearerTokenID(r.Context()) != "" {
+		// The names of skipped tools are the upstream's words: a token
+		// learns how many there were, not what they say.
+		withheld := make([]string, len(res.Skipped))
+		for i := range withheld {
+			withheld[i] = "(name withheld)"
+		}
+		res.Skipped = withheld
+	}
 	writeJSON(w, http.StatusOK, res)
 }
 

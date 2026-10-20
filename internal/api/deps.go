@@ -320,11 +320,15 @@ type MCPSourceStore interface {
 }
 
 // MCPGateway is the upstream side of the MCP gateway the management API
-// drives: the tool sync, and dropping a source's session after the source
-// changed. *mcpgw.Pool satisfies it.
+// drives: the tool sync, dropping a source's session after the source
+// changed (Invalidate; its call limits and rate bucket stay, so editing a
+// source does not hand out a fresh minute of calls), and forgetting a
+// deleted source (Removed: its session and its limits). *mcpgw.Pool
+// satisfies it.
 type MCPGateway interface {
 	Sync(ctx context.Context, slug string) (mcpgw.SyncResult, error)
 	Invalidate(slug string)
+	Removed(slug string)
 }
 
 // MCPToolServer serves tool sources to MCP clients behind gateway keys: one

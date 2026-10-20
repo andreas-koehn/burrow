@@ -30,8 +30,6 @@ var curatedTools = []curatedTool{
 	// Write
 	{ID: "serviceCreate"},
 	{ID: "serviceAccessModeUpdate"},
-	{ID: "providerCreate"},
-	{ID: "providerUpdate"},
 	{ID: "providerModelsSync"},
 	{ID: "aiModelCreate"},
 	{ID: "aiModelUpdate"},

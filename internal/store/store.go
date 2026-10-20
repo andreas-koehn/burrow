@@ -421,17 +421,60 @@ func (s *Store) MarkTunnelSeen(ctx context.Context, tunnelID string) error {
 	return s.q.TouchTunnelLastSeen(ctx, tunnelID)
 }
 
-// CreateSession creates a new browser session for the given user, returning
-// the session ID. The session expires after 7 days.
+// CreateSession creates a new dashboard session for the given user,
+// returning the session ID. The session expires after 7 days.
 func (s *Store) CreateSession(ctx context.Context, userID, ua, ip string) (id string, err error) {
+	return s.createSession(ctx, db.Session{
+		UserID: userID, ExpiresAt: time.Now().UTC().Add(sessionTTL), UserAgent: ua, IP: ip, Kind: db.SessionKindDashboard,
+	})
+}
+
+// CreateServicesSession creates the session of the services host that the
+// sign-in handoff gives userID, handed off by the dashboard session
+// parentID. It lives no longer than its parent, and ends with it (logout or
+// revoke of the parent). ErrUnauthorized when parentID is not a live
+// dashboard session of userID.
+func (s *Store) CreateServicesSession(ctx context.Context, userID, ua, ip, parentID string) (string, error) {
+	parent, err := s.q.GetSession(ctx, parentID)
+	if errors.Is(err, db.ErrNotFound) {
+		return "", ErrUnauthorized
+	}
+	if err != nil {
+		return "", err
+	}
+	now := time.Now().UTC()
+	if parent.UserID != userID || !isKind(parent, db.SessionKindDashboard) || !now.Before(parent.ExpiresAt) {
+		return "", ErrUnauthorized
+	}
+	return s.createSession(ctx, db.Session{
+		UserID: userID, ExpiresAt: minTime(now.Add(sessionTTL), parent.ExpiresAt.UTC()), UserAgent: ua, IP: ip,
+		Kind: db.SessionKindServices, ParentID: parentID,
+	})
+}
+
+func minTime(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
+}
+
+// isKind reports whether sess is of kind (a row without one is a
+// dashboard session).
+func isKind(sess db.Session, kind string) bool {
+	k := sess.Kind
+	if k == "" {
+		k = db.SessionKindDashboard
+	}
+	return k == kind
+}
+
+// createSession stores sess under a new id and audits it.
+func (s *Store) createSession(ctx context.Context, sess db.Session) (id string, err error) {
 	id = uuid.NewString()
-	if err := s.q.CreateSession(ctx, db.Session{
-		ID:        id,
-		UserID:    userID,
-		ExpiresAt: time.Now().UTC().Add(sessionTTL),
-		UserAgent: ua,
-		IP:        ip,
-	}); err != nil {
+	sess.ID = id
+	userID, ua, ip := sess.UserID, sess.UserAgent, sess.IP
+	if err := s.q.CreateSession(ctx, sess); err != nil {
 		return "", err
 	}
 	// session.create is unusual: the actor *is* the new session's user (a
@@ -454,10 +497,21 @@ func (s *Store) CreateSession(ctx context.Context, userID, ua, ip string) (id st
 	return id, nil
 }
 
-// ValidateSession looks up a session by ID and returns the owning user ID.
-// Returns ErrUnauthorized if the session does not exist or has expired.
+// ValidateSession looks up a dashboard session by ID and returns the owning
+// user ID. Returns ErrUnauthorized if the session does not exist, has
+// expired or is a services session (those count on the services host only).
 // Expired sessions are deleted best-effort before returning.
 func (s *Store) ValidateSession(ctx context.Context, id string) (userID string, err error) {
+	return s.validateSession(ctx, id, db.SessionKindDashboard)
+}
+
+// ValidateServicesSession is ValidateSession for the services host: only a
+// services session made by the sign-in handoff counts there.
+func (s *Store) ValidateServicesSession(ctx context.Context, id string) (userID string, err error) {
+	return s.validateSession(ctx, id, db.SessionKindServices)
+}
+
+func (s *Store) validateSession(ctx context.Context, id, kind string) (string, error) {
 	sess, err := s.q.GetSession(ctx, id)
 	if errors.Is(err, db.ErrNotFound) {
 		return "", ErrUnauthorized
@@ -467,6 +521,9 @@ func (s *Store) ValidateSession(ctx context.Context, id string) (userID string, 
 	}
 	if time.Now().UTC().After(sess.ExpiresAt) {
 		_ = s.q.DeleteSession(ctx, id)
+		return "", ErrUnauthorized
+	}
+	if !isKind(sess, kind) {
 		return "", ErrUnauthorized
 	}
 	return sess.UserID, nil

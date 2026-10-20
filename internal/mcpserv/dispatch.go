@@ -280,6 +280,9 @@ func (s *Server) send(ctx context.Context, tok *authedToken, op Operation, targe
 	if tok.grantID != "" {
 		ctx = withReplayIdentity(ctx, ReplayIdentity{GrantID: tok.grantID, UserID: tok.userID, Permissions: tok.perms, ExpiresAt: tok.expiresAt})
 	}
+	// Every audit row the call writes on its way through the API names the
+	// credential, as the mcp.tool.call row does.
+	ctx = audit.WithCredential(ctx, audit.Credential{TokenID: tok.tokenID, OAuthGrantID: tok.grantID})
 	req, err := http.NewRequestWithContext(ctx, op.Method, apiBase+target, bytes.NewReader(body))
 	if err != nil {
 		return errorResult(fmt.Errorf("the request cannot be built: %w", err)), "error"

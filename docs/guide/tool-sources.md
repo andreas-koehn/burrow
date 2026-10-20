@@ -227,6 +227,11 @@ announces a change.
   list in the dashboard shows `aggregated_issue` (`name_too_long` or
   `name_invalid`) for it. Rename the tool to fix that. A tool in a name
   conflict is served nowhere.
+- **Every call is audited the same way.** An `mcp.gateway.call` row names the
+  tool by its served name (`tool`), the upstream's own name when a rename
+  differs (`native_tool`) and, for a call on `/mcp`, the name it was called by
+  there (`aggregated_name`). A call of a tool the key may not use is a
+  `denied` row, on `/mcp` also when the key names nothing of that source.
 
 - **Tools only.** The bridge passes `tools/list` and `tools/call` and nothing
   else. Resources, prompts, sampling, elicitation, roots and logging are not

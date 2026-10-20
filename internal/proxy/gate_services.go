@@ -10,18 +10,21 @@ package proxy
 //
 //  1. The access checker sends a visitor without a services session to
 //     https://<services>/__burrow/login?next=<service URL>. The gate gives the
-//     browser a random nonce in the cookie burrow_svc_nonce (2 minutes) and
-//     sends it on to
+//     browser a random nonce in a cookie of this handoff's own,
+//     burrow_svc_nonce_<id> (2 minutes; <id> is the first 16 hex characters
+//     of the nonce's hash, so two tabs signing in at once do not overwrite
+//     each other's), and sends it on to
 //     https://<dashboard>/__burrow/handoff?return=<service URL>&nonce=<sha256 of the nonce>.
 //  2. The dashboard host needs its own session (it shows a sign-in form when
 //     there is none), then issues a one-time code: 60 s, single use, in memory,
 //     bound to the user, the exact return address and the nonce hash. It
-//     redirects to https://<services>/__burrow/callback?code=…&return=….
+//     redirects to https://<services>/__burrow/callback?code=…&return=…&nid=<id>.
 //  3. The callback takes the code, which only the browser holding the nonce
 //     can use (no login CSRF with somebody else's code), replaces the
-//     browser's previous services session if any, creates a session row for
-//     the user and sets the host-only cookie burrow_svc_session (HttpOnly,
-//     Secure, SameSite=Lax), then redirects to the return address.
+//     browser's previous services session if any, creates a services session
+//     for the user, linked to the dashboard session that handed off (it ends
+//     with that one), and sets the host-only cookie burrow_svc_session
+//     (HttpOnly, Secure, SameSite=Lax), then redirects to the return address.
 //
 // Every return address must be a canonical /svc/<slug> address on the services
 // host (svcURLOn), at the handoff and at the callback.
@@ -52,12 +55,32 @@ const (
 	// meets.
 	handoffCodesMax = 10000
 
-	// servicesNonceCookie binds a handoff to the browser that started it.
-	// It is sent to the gate's paths only.
+	// servicesNonceCookie binds a handoff to the browser that started it:
+	// each handoff has its own cookie, servicesNonceCookie + "_" + its id.
+	// The bare name is the one handoffs used before; a callback still reads
+	// it when the address carries no id. Sent to the gate's paths only.
 	servicesNonceCookie = "burrow_svc_nonce"
 	servicesNoncePath   = "/__burrow/"
 	servicesNonceMaxAge = 120
+	// nonceIDLen is the length of a handoff's id: a prefix of the nonce hash.
+	nonceIDLen = 16
+	// maxNonceCookies is how many handoff nonces a browser may hold; a
+	// login that finds more clears them first (each also expires on its own
+	// after servicesNonceMaxAge).
+	maxNonceCookies = 8
 )
+
+// nonceCookieName is the cookie of the handoff with id nid.
+func nonceCookieName(nid string) string { return servicesNonceCookie + "_" + nid }
+
+// isNonceCookie reports whether name is a handoff nonce cookie, the bare
+// name of earlier versions included.
+func isNonceCookie(name string) bool {
+	return name == servicesNonceCookie || strings.HasPrefix(name, servicesNonceCookie+"_")
+}
+
+// validNonceID reports whether nid has the shape of a handoff id.
+func validNonceID(nid string) bool { return len(nid) == nonceIDLen && validHex(nid) }
 
 // registerServicesRoutes registers the services-origin routes. Each handler
 // answers on its own host only and 404s on the other one.
@@ -95,13 +118,19 @@ func privatePage(w http.ResponseWriter) {
 	h.Set("Content-Security-Policy", "frame-ancestors 'none'")
 }
 
-// sessionUser returns the active user of the session in the named cookie.
+// sessionUser returns the active user of the session in the named cookie:
+// a services session in burrow_svc_session, a dashboard session in
+// burrow_session. A session of the other kind counts for nothing.
 func (g *Gate) sessionUser(r *http.Request, cookie string) (db.User, bool) {
 	c, err := r.Cookie(cookie)
 	if err != nil || c.Value == "" {
 		return db.User{}, false
 	}
-	uid, err := g.st.ValidateSession(r.Context(), c.Value)
+	validate := g.st.ValidateSession
+	if cookie == ServicesSessionCookie {
+		validate = g.st.ValidateServicesSession
+	}
+	uid, err := validate(r.Context(), c.Value)
 	if err != nil {
 		return db.User{}, false
 	}
@@ -142,8 +171,22 @@ func (g *Gate) handleServicesLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	g.setNonceCookie(w, nonce, servicesNonceMaxAge)
-	http.Redirect(w, r, "https://"+g.authDomain+"/__burrow/handoff?return="+url.QueryEscape(next)+"&nonce="+nonceHash(nonce), http.StatusFound)
+	// A browser that piled up handoffs (each tab that opened a service
+	// without finishing) starts afresh.
+	var held []string
+	for _, c := range r.Cookies() {
+		if isNonceCookie(c.Name) {
+			held = append(held, c.Name)
+		}
+	}
+	if len(held) >= maxNonceCookies {
+		for _, name := range held {
+			g.setNonceCookie(w, name, "", -1)
+		}
+	}
+	h := nonceHash(nonce)
+	g.setNonceCookie(w, nonceCookieName(h[:nonceIDLen]), nonce, servicesNonceMaxAge)
+	http.Redirect(w, r, "https://"+g.authDomain+"/__burrow/handoff?return="+url.QueryEscape(next)+"&nonce="+h, http.StatusFound)
 }
 
 // randomHex is 32 random bytes as 64 hex characters.
@@ -163,11 +206,11 @@ func nonceHash(nonce string) string {
 }
 
 // validNonceHash reports whether h has the shape nonceHash produces.
-func validNonceHash(h string) bool {
-	if len(h) != 64 {
-		return false
-	}
-	for _, c := range h {
+func validNonceHash(h string) bool { return len(h) == 64 && validHex(h) }
+
+// validHex reports whether s is lowercase hex.
+func validHex(s string) bool {
+	for _, c := range s {
 		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
@@ -175,10 +218,11 @@ func validNonceHash(h string) bool {
 	return true
 }
 
-// setNonceCookie sets (maxAge > 0) or clears (maxAge < 0) the nonce cookie.
-func (g *Gate) setNonceCookie(w http.ResponseWriter, value string, maxAge int) {
+// setNonceCookie sets (maxAge > 0) or clears (maxAge < 0) the nonce cookie
+// called name.
+func (g *Gate) setNonceCookie(w http.ResponseWriter, name, value string, maxAge int) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     servicesNonceCookie,
+		Name:     name,
 		Value:    value,
 		Path:     servicesNoncePath,
 		HttpOnly: true,
@@ -226,7 +270,8 @@ func (g *Gate) handleHandoff(w http.ResponseWriter, r *http.Request) {
 		g.renderHandoffLogin(w, ret, nh, "")
 		return
 	}
-	g.issueHandoff(w, r, user, ret, nh)
+	c, _ := r.Cookie(gateSessionCookieName) // sessionUser read it
+	g.issueHandoff(w, r, user, c.Value, ret, nh)
 }
 
 // handlePostHandoff is the sign-in form of the handoff on the dashboard's
@@ -272,7 +317,7 @@ func (g *Gate) handlePostHandoff(w http.ResponseWriter, r *http.Request) {
 		g.setCSRFCookie(w, token)
 	}
 	g.log.Info("gate: login success", "email", email)
-	g.issueHandoff(w, r, user, ret, nh)
+	g.issueHandoff(w, r, user, sid, ret, nh)
 }
 
 // checkCredentials returns the active user with this email and password.
@@ -294,16 +339,18 @@ func (g *Gate) checkCredentials(ctx context.Context, email, password string) (db
 	return user, true
 }
 
-// issueHandoff issues a code for user, ret and the nonce hash nh, and sends
-// the browser to the callback on the services host.
-func (g *Gate) issueHandoff(w http.ResponseWriter, r *http.Request, user db.User, ret, nh string) {
-	code, err := g.codes.issue(user.ID, ret, nh, g.now())
+// issueHandoff issues a code for user, ret and the nonce hash nh, handed off
+// by the dashboard session parent, and sends the browser to the callback on
+// the services host.
+func (g *Gate) issueHandoff(w http.ResponseWriter, r *http.Request, user db.User, parent, ret, nh string) {
+	code, err := g.codes.issue(user.ID, parent, ret, nh, g.now())
 	if err != nil {
 		g.log.Warn("gate: handoff code not issued", "err", err)
 		http.Error(w, "try again in a minute", http.StatusServiceUnavailable)
 		return
 	}
-	target := "https://" + g.servicesDomain + "/__burrow/callback?code=" + code + "&return=" + url.QueryEscape(ret)
+	// The handoff's id names the nonce cookie the callback reads.
+	target := "https://" + g.servicesDomain + "/__burrow/callback?code=" + code + "&return=" + url.QueryEscape(ret) + "&nid=" + nh[:nonceIDLen]
 	//nolint:gosec // G710: the services host is configuration, ret is svcURLOn-validated, code is hex.
 	http.Redirect(w, r, target, http.StatusFound)
 }
@@ -322,13 +369,18 @@ func (g *Gate) handleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid return address", http.StatusBadRequest)
 		return
 	}
-	// The nonce is spent by this answer whatever it is.
+	// The handoff's nonce is spent by this answer whatever it is; the
+	// nonces of other handoffs under way in the same browser stay.
+	name := servicesNonceCookie // a handoff begun before handoffs had ids
+	if nid := q.Get("nid"); validNonceID(nid) {
+		name = nonceCookieName(nid)
+	}
 	var nh string
-	if c, err := r.Cookie(servicesNonceCookie); err == nil && c.Value != "" {
+	if c, err := r.Cookie(name); err == nil && c.Value != "" {
 		nh = nonceHash(c.Value)
 	}
-	g.setNonceCookie(w, "", -1)
-	uid, ok := g.codes.take(q.Get("code"), ret, nh, g.now())
+	g.setNonceCookie(w, name, "", -1)
+	uid, parent, ok := g.codes.take(q.Get("code"), ret, nh, g.now())
 	if !ok {
 		http.Error(w, "This sign-in link is not valid or has expired. Open the service again.", http.StatusBadRequest)
 		return
@@ -343,10 +395,13 @@ func (g *Gate) handleCallback(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(ServicesSessionCookie); err == nil && c.Value != "" {
 		_ = g.st.DeleteSession(r.Context(), c.Value)
 	}
-	sid, err := g.st.CreateSession(r.Context(), user.ID, r.UserAgent(), clientHost(r))
+	// The services session is linked to the dashboard session that handed it
+	// off: it ends when that one does (sign-out, revoke), and none is made
+	// when that one ended within the code's minute.
+	sid, err := g.st.CreateServicesSession(r.Context(), user.ID, r.UserAgent(), clientHost(r), parent)
 	if err != nil {
-		g.log.Error("gate: create services session error", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		g.log.Warn("gate: services session not created", "err", err)
+		http.Error(w, "This sign-in link is not valid or has expired. Open the service again.", http.StatusBadRequest)
 		return
 	}
 	g.setServicesCookie(w, sid, int(gateSessionMaxAge.Seconds()))
@@ -403,6 +458,7 @@ type handoffCodes struct {
 
 type handoffCode struct {
 	userID    string
+	parent    string // the dashboard session that handed off
 	ret       string
 	nonceHash string
 	expires   time.Time
@@ -414,7 +470,7 @@ func newHandoffCodes() *handoffCodes { return &handoffCodes{m: map[string]handof
 
 // issue returns a new code for userID, good for ret and the browser whose
 // nonce hashes to nonceHash until now+handoffCodeTTL.
-func (c *handoffCodes) issue(userID, ret, nonceHash string, now time.Time) (string, error) {
+func (c *handoffCodes) issue(userID, parent, ret, nonceHash string, now time.Time) (string, error) {
 	code, err := randomHex()
 	if err != nil {
 		return "", err
@@ -429,16 +485,17 @@ func (c *handoffCodes) issue(userID, ret, nonceHash string, now time.Time) (stri
 	if len(c.m) >= handoffCodesMax {
 		return "", errHandoffFull
 	}
-	c.m[code] = handoffCode{userID: userID, ret: ret, nonceHash: nonceHash, expires: now.Add(handoffCodeTTL)}
+	c.m[code] = handoffCode{userID: userID, parent: parent, ret: ret, nonceHash: nonceHash, expires: now.Add(handoffCodeTTL)}
 	return code, nil
 }
 
 // take spends code: whatever the outcome, it cannot be presented again. It
-// returns the user the code was issued to when the code is known, not
-// expired, and was issued for exactly ret and the nonce hash nonceHash.
-func (c *handoffCodes) take(code, ret, nonceHash string, now time.Time) (string, bool) {
+// returns the user the code was issued to and the dashboard session that
+// handed off when the code is known, not expired, and was issued for exactly
+// ret and the nonce hash nonceHash.
+func (c *handoffCodes) take(code, ret, nonceHash string, now time.Time) (userID, parent string, ok bool) {
 	if code == "" {
-		return "", false
+		return "", "", false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -446,7 +503,7 @@ func (c *handoffCodes) take(code, ret, nonceHash string, now time.Time) (string,
 	delete(c.m, code)
 	if !ok || !now.Before(e.expires) || e.ret != ret || nonceHash == "" ||
 		subtle.ConstantTimeCompare([]byte(e.nonceHash), []byte(nonceHash)) != 1 {
-		return "", false
+		return "", "", false
 	}
-	return e.userID, true
+	return e.userID, e.parent, true
 }

@@ -69,7 +69,7 @@ type mcpSourceResp struct {
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
-func (d Deps) mcpSourceView(s db.MCPSource) mcpSourceResp {
+func (d Deps) mcpSourceView(r *http.Request, s db.MCPSource) mcpSourceResp {
 	v := mcpSourceResp{
 		Slug: s.Slug, Name: s.Name, Kind: s.Kind, ServiceID: s.ServiceID,
 		URL: s.URL, CredentialSlot: s.CredentialSlot, CredentialPresent: d.credentialPresent(s.CredentialSlot),
@@ -81,7 +81,20 @@ func (d Deps) mcpSourceView(s db.MCPSource) mcpSourceResp {
 	if d.AuthDomain != "" {
 		v.EndpointURL = "https://" + d.AuthDomain + "/mcp/" + s.Slug
 	}
+	v.LastSyncError = upstreamTextFor(r, v.LastSyncError)
 	return v
+}
+
+// upstreamTextFor returns msg, a message that may carry text a tool source's
+// upstream wrote, as the caller of r may read it: a dashboard session reads
+// it whole; a token (an automation token or an OAuth grant, which may be an
+// agent on /mcp/burrow) gets only its fixed class (mcpgw.Classify), so that
+// nothing the upstream wrote reaches an agent as words it could follow.
+func upstreamTextFor(r *http.Request, msg string) string {
+	if bearerTokenID(r.Context()) == "" {
+		return msg
+	}
+	return mcpgw.Classify(msg)
 }
 
 // postMCPSourceReq is the body of POST /api/v1/mcp/sources. url and the
@@ -189,7 +202,7 @@ func (d Deps) GetMCPSources(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]mcpSourceResp, 0, len(rows))
 	for _, s := range rows {
-		out = append(out, d.mcpSourceView(s))
+		out = append(out, d.mcpSourceView(r, s))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -207,7 +220,7 @@ func (d Deps) GetMCPSource(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, d.mcpSourceView(s))
+	writeJSON(w, http.StatusOK, d.mcpSourceView(r, s))
 }
 
 // PostMCPSource handles POST /api/v1/mcp/sources (mcp:sources:manage).
@@ -289,7 +302,7 @@ func (d Deps) PostMCPSource(w http.ResponseWriter, r *http.Request) {
 		// Binding closed the service's direct doors; say so on the service.
 		d.auditGatewayOnly(r, src.ServiceID)
 	}
-	writeJSON(w, http.StatusCreated, d.mcpSourceView(src))
+	writeJSON(w, http.StatusCreated, d.mcpSourceView(r, src))
 }
 
 // PutMCPSource handles PUT /api/v1/mcp/sources/{slug} (mcp:sources:manage).
@@ -343,7 +356,7 @@ func (d Deps) PutMCPSource(w http.ResponseWriter, r *http.Request) {
 		// read them now, off the request.
 		d.syncInBackground(r, slug)
 	}
-	writeJSON(w, http.StatusOK, d.mcpSourceView(src))
+	writeJSON(w, http.StatusOK, d.mcpSourceView(r, src))
 }
 
 // backgroundSyncRetry is how long a background sync waits before it tries
@@ -440,7 +453,7 @@ func (d Deps) DeleteMCPSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if d.MCPGateway != nil {
-		d.MCPGateway.Invalidate(slug)
+		d.MCPGateway.Removed(slug)
 	}
 	// The inspector ring and the like of a remote source's backing row go
 	// with it, as for any deleted service.

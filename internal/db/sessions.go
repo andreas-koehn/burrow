@@ -8,11 +8,19 @@ import (
 )
 
 // CreateSession inserts a new session row. The expiry is written in UTC:
-// SQLite stores it as text, and DeleteExpiredSessions compares that text.
+// SQLite stores it as text, and DeleteExpiredSessions compares that text. An
+// empty Kind is a dashboard session; an empty ParentID is stored as NULL.
 func (x *DB) CreateSession(ctx context.Context, s Session) error {
+	if s.Kind == "" {
+		s.Kind = SessionKindDashboard
+	}
+	var parent any
+	if s.ParentID != "" {
+		parent = s.ParentID
+	}
 	_, err := x.sqlDB.ExecContext(ctx,
-		`INSERT INTO sessions(id, user_id, expires_at, user_agent, ip) VALUES(?,?,?,?,?)`,
-		s.ID, s.UserID, s.ExpiresAt.UTC(), s.UserAgent, s.IP,
+		`INSERT INTO sessions(id, user_id, expires_at, user_agent, ip, kind, parent_id) VALUES(?,?,?,?,?,?,?)`,
+		s.ID, s.UserID, s.ExpiresAt.UTC(), s.UserAgent, s.IP, s.Kind, parent,
 	)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -25,8 +33,8 @@ func (x *DB) CreateSession(ctx context.Context, s Session) error {
 func (x *DB) GetSession(ctx context.Context, id string) (Session, error) {
 	var s Session
 	err := x.sqlDB.QueryRowContext(ctx,
-		`SELECT id, user_id, expires_at, created_at, COALESCE(user_agent,''), COALESCE(ip,'') FROM sessions WHERE id=?`, id,
-	).Scan(&s.ID, &s.UserID, &s.ExpiresAt, &s.CreatedAt, &s.UserAgent, &s.IP)
+		`SELECT `+sessionCols+` FROM sessions WHERE id=?`, id,
+	).Scan(&s.ID, &s.UserID, &s.ExpiresAt, &s.CreatedAt, &s.UserAgent, &s.IP, &s.Kind, &s.ParentID)
 	if err == sql.ErrNoRows {
 		return Session{}, ErrNotFound
 	}
@@ -36,9 +44,13 @@ func (x *DB) GetSession(ctx context.Context, id string) (Session, error) {
 	return s, nil
 }
 
-// DeleteSession removes the session with the given ID.
+// sessionCols are the columns a Session is scanned from, in its field order.
+const sessionCols = `id, user_id, expires_at, created_at, COALESCE(user_agent,''), COALESCE(ip,''), kind, COALESCE(parent_id,'')`
+
+// DeleteSession removes the session with the given ID and the services
+// sessions it handed off.
 func (x *DB) DeleteSession(ctx context.Context, id string) error {
-	_, err := x.sqlDB.ExecContext(ctx, `DELETE FROM sessions WHERE id=?`, id)
+	_, err := x.sqlDB.ExecContext(ctx, `DELETE FROM sessions WHERE id=? OR parent_id=?`, id, id)
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
@@ -48,7 +60,7 @@ func (x *DB) DeleteSession(ctx context.Context, id string) error {
 // ListSessionsByUser returns the user's sessions, newest first.
 func (x *DB) ListSessionsByUser(ctx context.Context, userID string) ([]Session, error) {
 	rows, err := x.sqlDB.QueryContext(ctx,
-		`SELECT id, user_id, expires_at, created_at, COALESCE(user_agent,''), COALESCE(ip,'')
+		`SELECT `+sessionCols+`
 		   FROM sessions WHERE user_id=? ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
@@ -57,7 +69,7 @@ func (x *DB) ListSessionsByUser(ctx context.Context, userID string) ([]Session, 
 	var out []Session
 	for rows.Next() {
 		var s Session
-		if err := rows.Scan(&s.ID, &s.UserID, &s.ExpiresAt, &s.CreatedAt, &s.UserAgent, &s.IP); err != nil {
+		if err := rows.Scan(&s.ID, &s.UserID, &s.ExpiresAt, &s.CreatedAt, &s.UserAgent, &s.IP, &s.Kind, &s.ParentID); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		out = append(out, s)
@@ -68,11 +80,12 @@ func (x *DB) ListSessionsByUser(ctx context.Context, userID string) ([]Session, 
 	return out, nil
 }
 
-// DeleteSessionForUser deletes one session scoped to its owner.
-// Returns ErrNotFound if no row matched (missing or owned by another user).
+// DeleteSessionForUser deletes one session scoped to its owner, with the
+// services sessions it handed off. Returns ErrNotFound if the session itself
+// is missing or owned by another user.
 func (x *DB) DeleteSessionForUser(ctx context.Context, id, userID string) error {
 	res, err := x.sqlDB.ExecContext(ctx,
-		`DELETE FROM sessions WHERE id=? AND user_id=?`, id, userID)
+		`DELETE FROM sessions WHERE user_id=? AND (id=? OR parent_id=?)`, userID, id, id)
 	if err != nil {
 		return fmt.Errorf("delete session for user: %w", err)
 	}

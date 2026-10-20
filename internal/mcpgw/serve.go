@@ -563,16 +563,22 @@ func (g *Gateway) deniedCalls(c Caller, src db.MCPSource, all []Tool, info Reque
 	for _, t := range all {
 		byName[t.Name] = t
 	}
-	return g.denied(c, info, func(name string) (db.MCPSource, Tool, bool) {
+	return g.denied(c, info, func(_ context.Context, name string) (db.MCPSource, Tool, string, bool) {
 		t, ok := byName[name]
-		return src, t, ok
+		return src, t, "", ok
 	})
 }
 
+// servedLookup finds a requested tool name among everything an endpoint
+// serves to anybody: the source, the tool, and its aggregated name on /mcp
+// ("" on /mcp/<slug>).
+type servedLookup func(ctx context.Context, name string) (src db.MCPSource, t Tool, aggregated string, found bool)
+
 // denied is the middleware behind deniedCalls: served looks a requested name
 // up among everything the endpoint serves to anybody; a name found there that
-// the caller may not use is recorded as denied.
-func (g *Gateway) denied(c Caller, info RequestInfo, served func(name string) (db.MCPSource, Tool, bool)) mcp.Middleware {
+// the caller may not use is recorded as denied, under the served name (and
+// the aggregated one on /mcp), as a call is.
+func (g *Gateway) denied(c Caller, info RequestInfo, served servedLookup) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (res mcp.Result, err error) {
 			defer func() {
@@ -583,9 +589,11 @@ func (g *Gateway) denied(c Caller, info RequestInfo, served func(name string) (d
 			}()
 			if method == "tools/call" {
 				if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && p != nil {
-					if src, t, found := served(p.Name); found && !c.May(src.Slug, t) {
-						g.observe(c, src, p.Name, outcomeDenied, 0, 0)
-						g.appendAudit(ctx, c, src, info, outcomeDenied, map[string]any{"tool": p.Name, "reason": "not allowed for this key"})
+					if src, t, aggregated, found := served(ctx, p.Name); found && !c.May(src.Slug, t) {
+						g.observe(c, src, t.Name, outcomeDenied, 0, 0)
+						payload := toolPayload(c, t, aggregated)
+						payload["reason"] = "not allowed for this key"
+						g.appendAudit(ctx, c, src, info, outcomeDenied, payload)
 					}
 				}
 			}
@@ -640,6 +648,29 @@ type CallRequest struct {
 	Tool      Tool
 	Arguments json.RawMessage
 	Info      RequestInfo
+	// AggregatedName is the tool's name on /mcp ("<slug>__<served name>");
+	// "" for a call on /mcp/<slug>.
+	AggregatedName string
+}
+
+// toolPayload starts the audit payload of a call or a refusal: the credential,
+// the tool under its served name, the upstream's own name when a rename
+// differs from it, and the aggregated name of a call on /mcp. One spelling
+// for every row of the gateway.
+func toolPayload(c Caller, t Tool, aggregated string) map[string]any {
+	payload := map[string]any{"tool": t.Name}
+	if c.GrantID != "" {
+		payload["oauth_grant_id"] = c.GrantID
+	} else {
+		payload["gateway_key_id"] = c.GatewayKeyID
+	}
+	if t.Native != "" && t.Native != t.Name {
+		payload["native_tool"] = t.Native
+	}
+	if aggregated != "" {
+		payload["aggregated_name"] = aggregated
+	}
+	return payload
 }
 
 // callRecord collects what the pipeline did, for the records at the end.
@@ -1111,15 +1142,8 @@ func (g *Gateway) finish(ctx context.Context, req CallRequest, rec *callRecord, 
 	if rec.policy.Inspect && g.opts.Inspector != nil {
 		g.capture(req, rec, took)
 	}
-	payload := map[string]any{"tool": req.Tool.Name, "status": rec.status, "latency_ms": took.Milliseconds()}
-	if req.Caller.GrantID != "" {
-		payload["oauth_grant_id"] = req.Caller.GrantID
-	} else {
-		payload["gateway_key_id"] = req.Caller.GatewayKeyID
-	}
-	if req.Tool.Native != req.Tool.Name {
-		payload["native_tool"] = req.Tool.Native
-	}
+	payload := toolPayload(req.Caller, req.Tool, req.AggregatedName)
+	payload["status"], payload["latency_ms"] = rec.status, took.Milliseconds()
 	if rec.reason != "" {
 		payload["reason"] = rec.reason
 	}

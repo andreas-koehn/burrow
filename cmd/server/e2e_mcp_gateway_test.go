@@ -354,3 +354,39 @@ func TestE2E_MCPGatewayAggregated(t *testing.T) {
 		t.Fatalf("no key: %d", resp.StatusCode)
 	}
 }
+
+// Round 2: a PUT of a source that changes neither rpm nor max_concurrent
+// (a new name, say) keeps the source's rate bucket: a key that used up the
+// source's rpm is not given a fresh one by somebody editing the name.
+func TestE2E_MCPGatewaySourceEditKeepsTheRateBucket(t *testing.T) {
+	up := mcptest.NewServer(t, mcptest.Opts{TLS: true, Authorize: func(r *http.Request) bool {
+		return r.Header.Get("Authorization") == "Bearer "+gwAlphaSecret
+	}})
+	e := bootMCPGatewayE2E(t, &fakeHTTPTunnelLookup{}, up)
+	e.source(t, map[string]any{"slug": "gh", "kind": "remote", "url": up.URL, "credential_slot": "ALPHA", "rpm": 2})
+	cs := e.connect(t, "gh", e.key(t, []string{"gh__*"}, false))
+	callEcho := func() error {
+		_, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "echo", Arguments: map[string]any{"text": "x"}})
+		return err
+	}
+	for i := 0; i < 2; i++ {
+		if err := callEcho(); err != nil {
+			t.Fatalf("call %d: %v", i+1, err)
+		}
+	}
+	limited := func(err error) bool {
+		var rpc *jsonrpc.Error
+		return errors.As(err, &rpc) && rpc.Code == mcpgw.CodeLimitExceeded
+	}
+	if err := callEcho(); !limited(err) {
+		t.Fatalf("third call within the minute: %v, want the source_rpm limit", err)
+	}
+	for _, body := range []map[string]any{{"name": "GitHub tools"}, {"timeout_s": 30}, {"rpm": 2, "max_concurrent": 16}} {
+		if code, raw := e.admin(t, "PUT", "/api/v1/mcp/sources/gh", body); code != http.StatusOK {
+			t.Fatalf("PUT %v: %d %s", body, code, raw)
+		}
+		if err := callEcho(); !limited(err) {
+			t.Fatalf("after PUT %v: %v, want the bucket still empty", body, err)
+		}
+	}
+}

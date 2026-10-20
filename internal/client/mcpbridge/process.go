@@ -16,7 +16,11 @@ type process struct {
 	stdout io.ReadCloser  // our end
 	exited chan struct{}  // closed once Wait returned
 	err    error          // what Wait returned; read after exited
-	group  platformGroup  // the process group (Unix) or job object (Windows)
+	// empty: nothing was left in the child's group when it was reaped, so
+	// there is nothing to end and the group id must not be signalled (it
+	// may belong to another process by now). Read after exited.
+	empty bool
+	group platformGroup // the process group (Unix) or job object (Windows)
 }
 
 // startProcess starts argv with this process's environment plus env. stderr
@@ -51,6 +55,7 @@ func startProcess(argv, env []string, stderr io.Writer, grace time.Duration) (*p
 	p.started()
 	go func() {
 		p.err = cmd.Wait()
+		p.empty = p.groupEmpty()
 		close(p.exited)
 	}()
 	return p, nil
@@ -59,11 +64,12 @@ func startProcess(argv, env []string, stderr io.Writer, grace time.Duration) (*p
 // terminate ends the child and what it started: a polite stop (SIGTERM to
 // its process group; on Windows there is none, so the job is ended at once),
 // and a kill when it is still there after grace. It returns once the child
-// has been waited for. A child that already ended gets its leftovers killed.
+// has been waited for. A child that already ended gets its leftovers killed,
+// unless its group was empty when it was reaped.
 func (p *process) terminate(grace time.Duration) {
 	select {
 	case <-p.exited:
-		p.kill()
+		p.killLeftovers()
 		p.release()
 		return
 	default:
@@ -73,12 +79,19 @@ func (p *process) terminate(grace time.Duration) {
 	defer t.Stop()
 	select {
 	case <-p.exited:
-		p.kill() // grandchildren that ignored the stop
+		p.killLeftovers() // grandchildren that ignored the stop
 	case <-t.C:
 		p.kill()
 		<-p.exited
 	}
 	p.release()
+}
+
+// killLeftovers kills what is left in the group of a child that was reaped.
+func (p *process) killLeftovers() {
+	if !p.empty {
+		p.kill()
+	}
 }
 
 func (p *process) closePipes() {

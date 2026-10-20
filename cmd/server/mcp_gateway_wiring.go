@@ -67,16 +67,21 @@ func mcpToolPolicy(loader aigw.ConfigLoader, global func(context.Context) guardr
 	}
 }
 
-// mcpGatewayParts is what the management API drives: the pool's sync, and
-// on a source change or delete both the pool's session and the gateway's
-// limits of that source are dropped.
+// mcpGatewayParts is what the management API drives: the pool's sync; on a
+// source change the pool's session is dropped, and on a delete also the
+// gateway's limits of that source.
 type mcpGatewayParts struct {
 	*mcpgw.Pool
 	tools *mcpgw.Gateway
 }
 
-// Invalidate drops the source's upstream session and its idle limits.
-func (p mcpGatewayParts) Invalidate(slug string) {
+// Invalidate drops the source's upstream session. The gateway's limits of
+// the source stay: they follow a change of rpm or max_concurrent by
+// themselves, and dropping them would refill the rate bucket on any edit.
+func (p mcpGatewayParts) Invalidate(slug string) { p.Pool.Invalidate(slug) }
+
+// Removed drops the upstream session and the idle limits of a deleted source.
+func (p mcpGatewayParts) Removed(slug string) {
 	p.Pool.Invalidate(slug)
 	p.tools.Forget(slug)
 }

@@ -235,8 +235,6 @@ every token.
 | `connection_logs_list` | List per-tunnel connection log entries, newest first | read |
 | `service_create` | Pre-provision a service | write |
 | `service_access_mode_update` | Set a service's access mode | write |
-| `provider_create` | Create a provider | write |
-| `provider_update` | Change a provider's slug and name | write |
 | `provider_models_sync` | Read the model list from a direct provider's upstream | delete (needs `confirm`) |
 | `ai_model_create` | Create a synthetic model | write |
 | `ai_model_update` | Replace a synthetic model | write |
@@ -306,7 +304,35 @@ names the curated tool, or `burrow_call_operation/<operationId>` for a generic
 call, with the outcome (`ok`, `error`, `denied` or `dry_run`), the client's
 address and user agent (each cut to 256 bytes), and the credential that made
 the call: `token_id` for an automation token, `oauth_grant_id` for an OAuth
-connection. Arguments and results are not recorded. See **Settings → Audit log**.
+connection. The rows the API writes for the call carry the same `token_id` or
+`oauth_grant_id` in their payload. Arguments and results are not recorded. See
+**Settings → Audit log**.
+
+### What an agent cannot do {#not-tools}
+
+Some operations are never tools, whatever the token holds: an agent can be
+steered by text it reads (a tool result, a model answer, a sync error), and
+these writes would let such text re-route a credential or switch off
+inspection. They are: creating and changing a provider and its upstream,
+binding a service's upstream credential, the SMTP settings, custom domains,
+webhooks, the guardrail and redaction settings and rules, a service's AI
+config, the retention settings, a service's gateway-only switch, and creating
+or changing a tool source or approving its tools. Their reads stay tools. Make
+these changes in the dashboard or with the REST API. The full list is in the
+[API reference](../reference/api.md).
+
+::: warning Text from upstreams reaches the agent
+Some answers carry text that a tool source's upstream or a model wrote, and a
+model may follow instructions hidden in it. Burrow limits this where it can:
+for a token, `last_sync_error` of a tool source and the message of a failed
+sync are cut to a fixed class (`upstream error`, `upstream unreachable`,
+`tools skipped` and the like), and the names of skipped tools are withheld;
+the dashboard shows the full text. Captured request and response bodies
+(`inspector_request_get`) and audit rows are returned as they are, because
+reading them is what those tools are for. A token that holds `inspector:read:own`,
+`inspector:read:any` or `audit:read` can therefore hand upstream text to the model. Leave those
+permissions off a token for an agent that does not need them.
+:::
 
 ::: warning Secrets end up in the conversation
 An operation that creates a key or a token returns the secret in its result.

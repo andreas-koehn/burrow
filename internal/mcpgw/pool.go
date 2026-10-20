@@ -289,6 +289,9 @@ func (p *Pool) Invalidate(slug string) {
 	}
 }
 
+// Removed forgets a deleted source: its upstream session, as Invalidate.
+func (p *Pool) Removed(slug string) { p.Invalidate(slug) }
+
 // Close stops the background sync and closes every upstream session. Calls
 // after Close fail with ErrClosed.
 func (p *Pool) Close() {
@@ -695,6 +698,38 @@ func Describe(err error) string {
 		return "the tool source refused the credential"
 	}
 	return "the tool source could not be reached"
+}
+
+// Classify cuts a message Describe made (or a sync warning) down to a short
+// fixed class with no upstream text in it, for callers that may be agents:
+// a JSON-RPC error message and the names of skipped tools are written by
+// the upstream and could be worded to steer whoever reads them.
+func Classify(msg string) string {
+	switch {
+	case msg == "":
+		return ""
+	case strings.HasPrefix(msg, "the tool source answered with an error"):
+		return "upstream error"
+	case strings.Contains(msg, "tool(s) skipped"):
+		return "tools skipped"
+	case msg == "the tool source refused the credential":
+		return "upstream refused the credential"
+	case msg == ErrCredentialMissing.Error():
+		return "credential missing"
+	case msg == ErrTunnelOffline.Error():
+		return "client not connected"
+	case msg == ErrSourceDisabled.Error():
+		return "source disabled"
+	case msg == ErrSyncRunning.Error():
+		return "sync already running"
+	case msg == errTooManyTools.Error(), msg == ErrResponseTooLarge.Error():
+		return "upstream response too large"
+	case msg == "the tool source could not be reached", msg == "the tool source did not answer in time",
+		msg == ErrBackingOff.Error(), strings.HasPrefix(msg, "the tool source's address is private"),
+		strings.HasPrefix(msg, "the tool source lost the session"):
+		return "upstream unreachable"
+	}
+	return "sync failed"
 }
 
 // rootMessage is the message of the first of the pool's own errors in err's

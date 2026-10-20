@@ -205,6 +205,9 @@ func (l *Logger) appendRow(ctx context.Context, e Event) error {
 	if len(e.Payload) == 0 {
 		e.Payload = json.RawMessage(`{}`)
 	}
+	if c, ok := CredentialFrom(ctx); ok {
+		e.Payload = withCredential(e.Payload, c)
+	}
 
 	select {
 	case l.appending <- struct{}{}:

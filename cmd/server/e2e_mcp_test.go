@@ -267,11 +267,11 @@ func TestE2EMCP_CuratedToolsThroughTheAPI(t *testing.T) {
 			ro := mcpConnect(t, mcpURL, readOnly, revision)
 			names := mcpToolNames(t, ro)
 			if !contains(names, "providers_list") || !contains(names, "me_get") ||
-				contains(names, "services_list") || contains(names, "provider_create") {
+				contains(names, "services_list") || contains(names, "budget_create") {
 				t.Fatalf("read-only token lists %v", names)
 			}
 			// A tool it does not see is refused like one that does not exist.
-			_, errHidden := ro.CallTool(ctx, &mcp.CallToolParams{Name: "provider_create", Arguments: map[string]any{}})
+			_, errHidden := ro.CallTool(ctx, &mcp.CallToolParams{Name: "budget_create", Arguments: map[string]any{}})
 			_, errUnknown := ro.CallTool(ctx, &mcp.CallToolParams{Name: "no_such_tool", Arguments: map[string]any{}})
 			var hidden, unknown *jsonrpc.Error
 			if !errors.As(errHidden, &hidden) || !errors.As(errUnknown, &unknown) || hidden.Code != unknown.Code {
@@ -393,7 +393,10 @@ func TestE2EMCP_WritesLeaveTheAuditTrailOfTheAPI(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create service: %v", err)
 	}
-	bearer := e.mint(t, "audit-trail", []string{"services:configure:own", "audit:read"})
+	tokenRow, bearer, err := e.st.MintAutomationToken(ctx, e.admin.ID, "admin", "audit-trail", []string{"services:configure:own", "audit:read"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	mcpURL := e.serve(t, "burrow.example.com") + mcpserv.EndpointPath
 	const agent = "burrow-e2e-agent/1"
 	setMode := func(cs *mcp.ClientSession, wantError bool, body map[string]any) string {
@@ -443,6 +446,13 @@ func TestE2EMCP_WritesLeaveTheAuditTrailOfTheAPI(t *testing.T) {
 				}
 				if r.SourceIP != "127.0.0.1" || r.UserAgent != agent || r.RequestID == "" {
 					t.Errorf("%s %s: source ip %q, user agent %q, request id %q", r.Action, r.SubjectLabel, r.SourceIP, r.UserAgent, r.RequestID)
+				}
+				// Round 2: the API's rows name the token, as the MCP row does.
+				var p struct {
+					TokenID string `json:"token_id"`
+				}
+				if err := json.Unmarshal([]byte(r.Payload), &p); err != nil || p.TokenID != tokenRow.ID {
+					t.Errorf("%s %s: payload %s, want token_id %q", r.Action, r.SubjectLabel, r.Payload, tokenRow.ID)
 				}
 			}
 			for action, n := range want {
@@ -561,7 +571,7 @@ func TestE2EMCP_GenericCallsGoThroughTheGate(t *testing.T) {
 				t.Fatalf("mint: %v", err)
 			}
 			us := mcpConnect(t, mcpURL, plain, revision)
-			unknown(us, "providerCreate", map[string]any{"body": map[string]any{"name": "sneaky", "kind": "direct", "base_url": "https://example.com", "credential_slot": "x"}})
+			unknown(us, "providerDelete", map[string]any{"slug": "sneaky", "confirm": "sneaky"})
 			var providers []struct {
 				Slug string `json:"slug"`
 			}

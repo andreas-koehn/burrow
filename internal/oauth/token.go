@@ -297,7 +297,13 @@ func (s *Server) refresh(r *http.Request, client clientIdent) (tokenResponse, *t
 		return tokenResponse{}, &tokenError{http.StatusInternalServerError, "server_error", "the token could not be rotated"}
 	}
 	if !ok {
-		// Used between the read and the rotation: a second use all the same.
+		// Gone between the read and the rotation. A revoke of the grant
+		// deletes its tokens: that is no second use, and the grant is
+		// already ended. Otherwise the token was used meanwhile: a second
+		// use all the same.
+		if cur, err := s.store.GetOAuthGrant(ctx, g.ID); errors.Is(err, db.ErrNotFound) || (err == nil && cur.RevokedAt != nil) {
+			return tokenResponse{}, invalid
+		}
 		s.refreshReused(ctx, g)
 		return tokenResponse{}, invalid
 	}

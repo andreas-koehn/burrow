@@ -33,8 +33,8 @@ var testRevisions = []string{"2026-07-28", "2025-11-25", "2025-06-18", "2025-03-
 const allCuratedTools = "ai_model_create,ai_model_delete,ai_model_update,ai_models_list,ai_requests_list," +
 	"audit_events_list,budget_create,budgets_list,connection_logs_list,cost_summary_get," +
 	"gateway_key_delete,gateway_keys_list,inspector_request_get,known_clients_list,me_get," +
-	"provider_create,provider_delete,provider_get,provider_metrics_get,provider_models_sync," +
-	"provider_update,providers_list,service_access_mode_update,service_create,service_get,services_list"
+	"provider_delete,provider_get,provider_metrics_get,provider_models_sync," +
+	"providers_list,service_access_mode_update,service_create,service_get,services_list"
 
 // ---------- fakes ----------------------------------------------------------
 
@@ -314,7 +314,7 @@ func TestMCP_Annotations(t *testing.T) {
 			"provider_delete":            {false, true, false},
 			"provider_models_sync":       {false, true, false}, // POST, x-burrow-destructive
 			"service_access_mode_update": {false, false, true},
-			"provider_create":            {false, false, false},
+			"budget_create":              {false, false, false},
 		} {
 			a := tools[name].Annotations
 			if a.ReadOnlyHint != want[0] || *a.DestructiveHint != want[1] || a.IdempotentHint != want[2] {
@@ -335,9 +335,9 @@ func TestMCP_Descriptions(t *testing.T) {
 	if got := byName["me_get"].Description; !strings.HasPrefix(got, "Who this token acts for") {
 		t.Errorf("me_get description = %q", got)
 	}
-	op, _ := s.reg.Lookup("providerCreate")
-	if got := byName["provider_create"].Description; !strings.HasPrefix(got, op.Summary) || strings.Contains(got, "\n\n\n") {
-		t.Errorf("provider_create description = %q", got)
+	op, ok := s.reg.Lookup("aiModelCreate")
+	if got := byName["ai_model_create"].Description; !ok || op.Summary == "" || !strings.HasPrefix(got, op.Summary) || strings.Contains(got, "\n\n\n") {
+		t.Errorf("ai_model_create description = %q", got)
 	}
 	for _, d := range s.Tools() {
 		if d.Description == "" || len(d.Description) > maxDescriptionBytes {
@@ -386,8 +386,8 @@ func TestMCP_ToolDescriptors(t *testing.T) {
 	if d := byName["provider_delete"]; d.Kind != "delete" || !strings.Contains(string(d.ParametersSchema), `"confirm"`) {
 		t.Errorf("provider_delete = %+v", d)
 	}
-	if d := byName["provider_create"]; d.Kind != "write" || !strings.Contains(string(d.ParametersSchema), `"dry_run"`) {
-		t.Errorf("provider_create = %+v", d)
+	if d := byName["budget_create"]; d.Kind != "write" || !strings.Contains(string(d.ParametersSchema), `"dry_run"`) {
+		t.Errorf("budget_create = %+v", d)
 	}
 	if s.OperationCount() != len(s.reg.Operations()) || s.OperationCount() < 100 {
 		t.Errorf("OperationCount = %d", s.OperationCount())
@@ -714,13 +714,13 @@ func TestMCP_ToolPanic_IsContained(t *testing.T) {
 // arguments, not the answer, which can hold a secret the API handed out.
 func TestMCP_ArgumentsAndAnswers_StayOutOfTheAuditLog(t *testing.T) {
 	const secret = "bgk_SECRET-handed-out"
-	api := &fakeAPI{status: http.StatusCreated, reply: `{"slug":"ollama","key":"` + secret + `"}`}
+	api := &fakeAPI{status: http.StatusCreated, reply: `{"id":"g1","key":"` + secret + `"}`}
 	hs, sink := newSDKTestServer(t, api, presetPerms(authz.PresetFull), "admin")
 	cs := connectMCP(t, hs.URL, "", "2026-07-28")
 
-	res, err := callTool(t, cs, "provider_create", map[string]any{"body": map[string]any{"name": "ARG-VALUE", "kind": "tunnel", "service_id": "svc1"}})
+	res, err := callTool(t, cs, "budget_create", map[string]any{"body": map[string]any{"scope": "user", "subject_id": "ARG-VALUE", "action_on_exceed": "throttle_zero"}})
 	if err != nil || res.IsError {
-		t.Fatalf("provider_create: err=%v result=%+v", err, res)
+		t.Fatalf("budget_create: err=%v result=%+v", err, res)
 	}
 	if !strings.Contains(resultText(t, res), secret) {
 		t.Errorf("the caller did not get the answer: %s", resultText(t, res))

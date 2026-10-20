@@ -344,7 +344,16 @@ components:
         timeout_s: { type: integer, description: 'Per-call timeout, 1-300.' }
         enabled: { type: boolean }
         last_sync_at: { type: string, format: date-time, nullable: true }
-        last_sync_error: { type: string }
+        last_sync_error:
+          type: string
+          description: >
+            Why the last sync failed, or what it skipped; "" after a clean
+            sync. A token caller (automation token or OAuth grant) gets only
+            a fixed class (upstream error, upstream unreachable, upstream
+            refused the credential, credential missing, client not connected,
+            tools skipped, upstream response too large, source disabled,
+            sync already running, sync failed): the full text can carry words
+            the upstream wrote. A dashboard session gets the full text.
         tool_count: { type: integer, description: 'Tools the upstream offers, not counting removed ones.' }
         pending_count: { type: integer, description: 'Tools waiting for approval.' }
         created_at: { type: string, format: date-time }
@@ -450,7 +459,10 @@ components:
         skipped:
           type: array
           items: { type: string }
-          description: Tools that were not stored (an invalid or repeated name, or a definition over 64 KiB).
+          description: >
+            Tools that were not stored (an invalid or repeated name, or a
+            definition over 64 KiB). A token caller gets "(name withheld)"
+            for each: the names are the upstream's words.
     AIProviderUpstream:
       type: object
       description: >
@@ -3470,6 +3482,7 @@ paths:
       tags: [services]
       operationId: serviceGatewayOnlyUpdate
       x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      x-burrow-mcp: false
       summary: Reach the service through the AI gateway only
       description: |
         With `gateway_only` true the service answers 404 at `/svc/<slug>/`, on
@@ -3478,6 +3491,8 @@ paths:
         (`/ai/<provider>/`, `/openai/v1`, `/anthropic`), where the provider's
         policy and key checks apply as before. Same permission as the other
         service settings. Audited as `service.gateway_only.update`.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
         required: true
@@ -3670,6 +3685,7 @@ paths:
       tags: [services, cache]
       operationId: serviceAiConfigUpdate
       x-burrow-permission: {kind: needs, any_of: ["ai:configure:own", "ai:configure:any"]}
+      x-burrow-mcp: false
       summary: Store per-service AI gateway configuration
       description: >
         Persists the service-level AI config blob. Validates
@@ -3677,6 +3693,8 @@ paths:
         cache.semantic.embedding_mode (must be "local" or "none"). All
         other fields are stored as-is. Permission: service owner OR
         ai:configure:any (admin).
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
         required: true
@@ -3955,7 +3973,10 @@ paths:
       tags: [redaction]
       operationId: redactionRuleCreate
       x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
+      x-burrow-mcp: false
       summary: Create a new redaction rule
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       requestBody:
         required: true
         content:
@@ -3976,7 +3997,10 @@ paths:
       tags: [redaction]
       operationId: redactionRuleUpdate
       x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
+      x-burrow-mcp: false
       summary: Update a redaction rule
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
         required: true
@@ -3994,7 +4018,10 @@ paths:
       tags: [redaction]
       operationId: redactionRuleDelete
       x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
+      x-burrow-mcp: false
       summary: Delete a redaction rule
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
         '204': { description: Deleted. }
@@ -4018,7 +4045,10 @@ paths:
       tags: [redaction]
       operationId: redactionSettingsUpdate
       x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
+      x-burrow-mcp: false
       summary: Replace redaction settings
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       requestBody:
         required: true
         content:
@@ -4087,6 +4117,7 @@ paths:
       tags: [guardrails]
       operationId: guardrailSettingsUpdate
       x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
+      x-burrow-mcp: false
       summary: Replace guardrail settings
       description: >
         400 when action is not log_only, refuse_403 or refuse_safe, when
@@ -4103,6 +4134,8 @@ paths:
         timeout_ms outside 500 to 30000, or a check or on_failure outside
         their values. answers, custom_patterns and judge keep their stored
         values when the body leaves them out.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       requestBody:
         required: true
         content:
@@ -4656,7 +4689,10 @@ paths:
       tags: [webhooks]
       operationId: webhookCreate
       x-burrow-permission: {kind: needs, any_of: ["webhooks:manage"]}
+      x-burrow-mcp: false
       summary: Create a webhook (signing_secret returned ONCE)
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       requestBody:
         required: true
         content:
@@ -4702,7 +4738,10 @@ paths:
       tags: [webhooks]
       operationId: webhookUpdate
       x-burrow-permission: {kind: needs, any_of: ["webhooks:manage"]}
+      x-burrow-mcp: false
       summary: Update a webhook
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
         required: true
@@ -4719,7 +4758,10 @@ paths:
       tags: [webhooks]
       operationId: webhookDelete
       x-burrow-permission: {kind: needs, any_of: ["webhooks:manage"]}
+      x-burrow-mcp: false
       summary: Delete a webhook
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
         '204': { description: Deleted. }
@@ -4731,7 +4773,10 @@ paths:
       tags: [webhooks]
       operationId: webhookTest
       x-burrow-permission: {kind: needs, any_of: ["webhooks:manage"]}
+      x-burrow-mcp: false
       summary: Trigger a synchronous test delivery
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
         '204': { description: A webhook.test event went through the delivery cycle. GET /api/v1/webhooks/deliveries shows the outcome. }
@@ -4749,7 +4794,10 @@ paths:
       tags: [webhooks]
       operationId: webhookPause
       x-burrow-permission: {kind: needs, any_of: ["webhooks:manage"]}
+      x-burrow-mcp: false
       summary: Pause webhook deliveries
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
         '204': { description: Paused. }
@@ -4760,7 +4808,10 @@ paths:
       tags: [webhooks]
       operationId: webhookResume
       x-burrow-permission: {kind: needs, any_of: ["webhooks:manage"]}
+      x-burrow-mcp: false
       summary: Resume webhook deliveries
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
         '204': { description: Resumed. }
@@ -5296,7 +5347,10 @@ paths:
       tags: [settings]
       operationId: settingsUpdate
       x-burrow-permission: {kind: needs, any_of: ["settings:manage"]}
+      x-burrow-mcp: false
       summary: Replace admin settings (admin)
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       requestBody:
         required: true
         content:
@@ -5363,10 +5417,13 @@ paths:
       tags: [settings]
       operationId: retentionSettingsUpdate
       x-burrow-permission: {kind: needs, any_of: ["settings:manage"]}
+      x-burrow-mcp: false
       summary: Replace retention settings (admin)
       description: >
         Validates and persists one or more retention settings. Omitted fields
         are left unchanged. Returns 204 on success, 400 on out-of-range values.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       requestBody:
         required: true
         content:
@@ -6143,7 +6200,10 @@ paths:
       tags: [services]
       operationId: serviceUpstreamCredentialUpdate
       x-burrow-permission: {kind: needs, any_of: ["ai:configure:own", "ai:configure:any"]}
+      x-burrow-mcp: false
       summary: Bind an upstream credential slot to a service
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       parameters:
         - name: serviceID
           in: path
@@ -6170,7 +6230,10 @@ paths:
       tags: [services]
       operationId: serviceUpstreamCredentialDelete
       x-burrow-permission: {kind: needs, any_of: ["ai:configure:own", "ai:configure:any"]}
+      x-burrow-mcp: false
       summary: Unbind the upstream credential from a service
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       parameters:
         - name: serviceID
           in: path
@@ -6211,7 +6274,10 @@ paths:
       tags: [services]
       operationId: serviceDomainCreate
       x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      x-burrow-mcp: false
       summary: Add a custom domain to a service
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       parameters:
         - name: serviceID
           in: path
@@ -6266,7 +6332,10 @@ paths:
       tags: [services]
       operationId: serviceDomainUpdate
       x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      x-burrow-mcp: false
       summary: Replace the cert/key for a custom domain
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       parameters:
         - name: serviceID
           in: path
@@ -6695,7 +6764,9 @@ paths:
         request patterns and hits are stored with the tool. A failed sync
         keeps the tools as they were and records its reason in the source's
         `last_sync_error`. The same recent-confirmation rule as for
-        creating a source applies.
+        creating a source applies. A token caller gets the 502 message as a
+        fixed class (see `last_sync_error`) and skipped tools as
+        "(name withheld)": both can carry the upstream's words.
       responses:
         '200':
           description: What the sync found.
@@ -6967,6 +7038,7 @@ paths:
       tags: [models]
       operationId: providerCreate
       x-burrow-permission: {kind: needs, any_of: ["ai:providers:manage"]}
+      x-burrow-mcp: false
       summary: Create a provider (admin)
       description: |
         Kind "tunnel" registers an existing http service in API-key mode as
@@ -6986,6 +7058,8 @@ paths:
         they are refused with 400 instead of being dropped. So are
         supports_responses and max_concurrent on a tunnel create: a tunnel
         provider gets them with PUT /api/v1/ai/providers/{slug}.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       requestBody:
         required: true
         content:
@@ -7067,6 +7141,7 @@ paths:
       tags: [models]
       operationId: providerUpdate
       x-burrow-permission: {kind: needs, any_of: ["ai:providers:manage"]}
+      x-burrow-mcp: false
       summary: Change a provider's slug and name (admin)
       description: |
         After a slug change the old base URL stops working immediately;
@@ -7087,6 +7162,8 @@ paths:
         format of a provider that a synthetic model targets cannot change:
         409, and the rest stays as it was; naming the format the provider
         already has is not a change.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       requestBody:
         required: true
         content:
@@ -7170,6 +7247,7 @@ paths:
       tags: [models]
       operationId: providerUpstreamUpdate
       x-burrow-permission: {kind: needs, any_of: ["ai:providers:manage"]}
+      x-burrow-mcp: false
       summary: Change a direct provider's upstream settings (admin)
       description: |
         A field that is left out keeps its stored value, so the credential
@@ -7180,6 +7258,8 @@ paths:
         never returned. Concurrent updates of different fields are both
         kept. A field this body does not have (for example api_key) is
         refused with 400 naming the field.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
       requestBody:
         required: true
         content:
