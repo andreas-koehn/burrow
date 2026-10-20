@@ -17,6 +17,7 @@ package api
 // credential_present tells whether that slot holds a value.
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/mcpgw"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -336,7 +338,72 @@ func (d Deps) PutMCPSource(w http.ResponseWriter, r *http.Request) {
 	payload := mcpSourceAudit(src)
 	payload["tools_back_to_pending"] = repending
 	d.auditMCPSource(r, audit.ActionMCPSourceUpdate, src, payload)
+	if src.URL != cur.URL || src.CredentialSlot != cur.CredentialSlot {
+		// Nothing can be approved until the new upstream's tools are read:
+		// read them now, off the request.
+		d.syncInBackground(r, slug)
+	}
 	writeJSON(w, http.StatusOK, d.mcpSourceView(src))
+}
+
+// backgroundSyncRetry is how long a background sync waits before it tries
+// again while another sync of the source is running.
+const backgroundSyncRetry = 250 * time.Millisecond
+
+// syncInBackground syncs the source off the request path, with the pool's
+// own sync, and audits the outcome as mcp.source.sync (background). A sync
+// already running may have read the old upstream, so this one waits for it
+// and runs after it, until mcpSyncTimeout has passed.
+func (d Deps) syncInBackground(r *http.Request, slug string) {
+	gw := d.MCPGateway
+	if gw == nil {
+		return
+	}
+	lc := audit.LogContextFrom(r.Context())
+	job := func() {
+		ctx, cancel := context.WithTimeout(audit.WithLogContext(context.Background(), lc), mcpSyncTimeout)
+		defer cancel()
+		var res mcpgw.SyncResult
+		var err error
+		for {
+			res, err = gw.Sync(ctx, slug)
+			if !errors.Is(err, mcpgw.ErrSyncRunning) {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backgroundSyncRetry):
+			}
+		}
+		if d.AuditAppender == nil {
+			return
+		}
+		e := audit.Event{
+			ActorID: lc.ActorID, ActorEmail: lc.ActorEmail, Action: audit.ActionMCPSourceSync,
+			SubjectID: slug, SubjectLabel: slug, Result: "ok",
+			SourceIP: lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
+		}
+		switch {
+		case errors.Is(err, mcpgw.ErrSourceNotFound):
+			return
+		case err != nil:
+			msg := mcpgw.Describe(err) // never a URL, a header value or a credential
+			d.warn("tool source background sync failed", "source", slug, "reason", msg)
+			e.Result, e.Payload = "error", audit.MustJSON(map[string]any{"error": msg, "background": true})
+		default:
+			e.Payload = audit.MustJSON(map[string]any{
+				"added": res.Added, "changed": res.Changed, "removed": res.Removed, "pending": res.Pending,
+				"skipped": len(res.Skipped), "background": true,
+			})
+		}
+		_ = d.AuditAppender.Append(ctx, e)
+	}
+	if d.runInBackground != nil {
+		d.runInBackground(job)
+		return
+	}
+	go job()
 }
 
 // DeleteMCPSource handles DELETE /api/v1/mcp/sources/{slug}

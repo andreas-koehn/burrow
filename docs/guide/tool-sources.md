@@ -58,7 +58,10 @@ wait for approval as above. An address on a private network is refused unless
 An approval holds for the address and the credential slot it was given for.
 Changing a remote source's address or credential slot sends every approved
 tool back to **pending**, and none is served until it is approved again, even
-if the new server lists the same definitions. The audit entry of the change
+if the new server lists the same definitions. The relay reads the tools from
+the new address in the background right after the change; until that sync
+has run, the old definitions are still shown but cannot be approved (409).
+The audit entry of the change
 (`mcp.source.update`) says how many tools went back in
 `tools_back_to_pending`. Other changes (name, limits, timeout, enabling and
 disabling) keep the approvals. Creating and changing a source, and reading its

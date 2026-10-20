@@ -6626,8 +6626,12 @@ paths:
         `url` or `credential_slot` changes, every approved tool of the
         source goes back to pending (and is not served until approved
         again), and the audit entry `mcp.source.update` says how many in
-        `tools_back_to_pending`. Other fields leave the approvals as they
-        are. Not offered as a management MCP tool, for the reason given at
+        `tools_back_to_pending`. Every tool's `current_hash` is cleared as
+        well: the old definition stays readable, but approving it answers
+        409 until a sync has read the new upstream. The relay starts that
+        sync in the background right after the change (audited as
+        `mcp.source.sync` with `background: true`). Other fields leave the
+        approvals as they are. Not offered as a management MCP tool, for the reason given at
         creating a source.
       requestBody:
         required: true

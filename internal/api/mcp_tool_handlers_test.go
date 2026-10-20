@@ -28,6 +28,23 @@ type mcpToolsFixture struct {
 	up    *mcptest.Server
 	admin func(*http.Request)
 	pool  *mcpgw.Pool
+	// background holds the jobs the API handed to Deps.runInBackground; a
+	// test runs them when it chooses.
+	bmu        sync.Mutex
+	background []func()
+}
+
+// runBackground runs and forgets the queued background jobs; it returns how
+// many there were.
+func (f *mcpToolsFixture) runBackground() int {
+	f.bmu.Lock()
+	jobs := f.background
+	f.background = nil
+	f.bmu.Unlock()
+	for _, j := range jobs {
+		j()
+	}
+	return len(jobs)
 }
 
 func newMCPToolsFixture(t *testing.T, opts mcptest.Opts) *mcpToolsFixture {
@@ -39,9 +56,14 @@ func newMCPToolsFixture(t *testing.T, opts mcptest.Opts) *mcpToolsFixture {
 	tr.TLSClientConfig = f.up.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
 	t.Cleanup(tr.CloseIdleConnections)
 	f.mcpSourceFixture = newMCPSourceFixture(t, func(d *Deps) {
-		f.pool = mcpgw.New(mcpgw.Options{Store: d.MCPSources.(*store.Store), Vault: secretVault{"GH_MCP": mcpTestSecret}, Remote: tr})
+		f.pool = mcpgw.New(mcpgw.Options{Store: d.MCPSources.(*store.Store), Vault: secretVault{"GH_MCP": mcpTestSecret, "GH_MCP2": mcpTestSecret}, Remote: tr})
 		t.Cleanup(f.pool.Close)
 		d.MCPGateway = f.pool
+		d.runInBackground = func(job func()) {
+			f.bmu.Lock()
+			defer f.bmu.Unlock()
+			f.background = append(f.background, job)
+		}
 	})
 	f.admin = f.session(t, "admin")
 	rec := f.do(t, http.MethodPost, "/api/v1/mcp/sources", map[string]any{
@@ -647,5 +669,51 @@ func TestMCPSources_UpstreamChangeRevokesApprovals(t *testing.T) {
 	put(map[string]any{"credential_slot": "OTHER_SLOT"})
 	if s := statuses(); strings.Count(s, "=pending") != 5 {
 		t.Fatalf("after a credential change: %q", s)
+	}
+}
+
+// Final re-review: the definition the old host gave stays readable after a
+// url or slot change, but it can no longer be approved (its current hash is
+// cleared, so an approval of what the admin saw answers 409). The PUT hands a
+// sync of the source to the background; once it has run, the new host's
+// definitions can be approved. Other changes start no sync.
+func TestMCPSources_UpstreamChangeNeedsASyncBeforeApproval(t *testing.T) {
+	f := newMCPToolsFixture(t, mcptest.Opts{})
+	f.sync(t)
+	f.approveAllTools(t)
+	seen := f.tools(t)["echo"].CurrentHash
+
+	if rec := f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh", map[string]any{"rpm": 7}, f.admin); rec.Code != http.StatusOK {
+		t.Fatalf("put rpm: %d %s", rec.Code, rec.Body.String())
+	}
+	if n := f.runBackground(); n != 0 {
+		t.Fatalf("an rpm change started %d background jobs", n)
+	}
+
+	if rec := f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh", map[string]any{"credential_slot": "GH_MCP2"}, f.admin); rec.Code != http.StatusOK {
+		t.Fatalf("put slot: %d %s", rec.Code, rec.Body.String())
+	}
+	if echo := f.tools(t)["echo"]; echo.Status != "pending" || echo.CurrentHash != "" || echo.Served {
+		t.Fatalf("echo after the slot change: %+v", echo)
+	}
+	approve := func(hash string) *httptest.ResponseRecorder {
+		return f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/tools/echo/approve", map[string]any{"hash": hash}, f.admin)
+	}
+	if rec := approve(seen); rec.Code != http.StatusConflict {
+		t.Fatalf("approve of the old host's definition: %d %s", rec.Code, rec.Body.String())
+	}
+
+	if n := f.runBackground(); n != 1 {
+		t.Fatalf("%d background jobs after the slot change, want 1 (the sync)", n)
+	}
+	echo := f.tools(t)["echo"]
+	if echo.CurrentHash == "" || echo.Status != "pending" {
+		t.Fatalf("echo after the background sync: %+v", echo)
+	}
+	if rec := approve(echo.CurrentHash); rec.Code != http.StatusOK {
+		t.Fatalf("approve after the sync: %d %s", rec.Code, rec.Body.String())
+	}
+	if !f.tools(t)["echo"].Served {
+		t.Fatal("echo is not served after the approval")
 	}
 }

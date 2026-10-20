@@ -505,6 +505,10 @@ type Deps struct {
 	reauthGuesses *guessLimiter
 	// reauthUserWrong counts them per user and hour (ReauthUserCeiling).
 	reauthUserWrong *guessLimiter
+	// runInBackground starts work that must not hold up the request, such
+	// as the sync after a tool source's upstream changed. nil: a goroutine.
+	// Tests replace it to run the work when they choose.
+	runInBackground func(func())
 	// ClientDownloadBase is where /download/ redirects to:
 	// <base>/<tag>/<archive>. Empty means config.DefaultClientDownloadBase.
 	ClientDownloadBase string

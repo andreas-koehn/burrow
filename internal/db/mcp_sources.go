@@ -179,8 +179,9 @@ func (x *DB) ListMCPSources(ctx context.Context) ([]MCPSource, error) {
 // changes url or credential_slot, every approved tool of the source becomes
 // pending again in the same transaction, and every tool loses its approved
 // hash and definition, so that neither a later sync nor a removed tool that
-// comes back is approved by the old hash. repending is how many tools were
-// approved before.
+// comes back is approved by the old hash. Every tool's current hash is
+// cleared too, so nothing can be approved until a sync from the new upstream
+// has run. repending is how many tools were approved before.
 func (x *DB) ModifyMCPSource(ctx context.Context, slug string, modify func(MCPSource) (MCPSource, error)) (repending int, err error) {
 	for i := 0; i < modifyUpstreamAttempts; i++ {
 		old, err := x.GetMCPSource(ctx, slug)
@@ -232,12 +233,15 @@ func (x *DB) modifyMCPSourceOnce(ctx context.Context, slug string, old, s MCPSou
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM mcp_tools WHERE source_slug=? AND status=?`, slug, MCPToolApproved).Scan(&repending); err != nil {
 			return 0, false, fmt.Errorf("modify tool source: count approved tools: %w", err)
 		}
+		// current_hash goes as well: the definition stays readable, but it
+		// is the old host's, and approveTx refuses every hash until a sync
+		// from the new upstream has stored one.
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE mcp_tools SET status = CASE WHEN status=? THEN ? ELSE status END,
 			   updated_at = CASE WHEN status=? THEN ? ELSE updated_at END,
-			   approved_hash='', approved_definition=''
-			 WHERE source_slug=? AND (approved_hash<>'' OR status=?)`,
-			MCPToolApproved, MCPToolPending, MCPToolApproved, now, slug, MCPToolApproved); err != nil {
+			   approved_hash='', approved_definition='', current_hash=''
+			 WHERE source_slug=?`,
+			MCPToolApproved, MCPToolPending, MCPToolApproved, now, slug); err != nil {
 			return 0, false, fmt.Errorf("modify tool source: tools back to pending: %w", err)
 		}
 	}
