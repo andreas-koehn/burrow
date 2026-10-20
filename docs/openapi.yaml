@@ -3206,7 +3206,10 @@ paths:
       tags: [tokens]
       operationId: clientTokenCreate
       x-burrow-permission: {kind: needs, any_of: ["tokens:manage:own", "tokens:manage:any"]}
+      x-burrow-mcp: false
       summary: Issue a new client token (plaintext returned ONCE)
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       requestBody:
         required: true
         content:
@@ -3279,7 +3282,10 @@ paths:
       tags: [tunnels]
       operationId: tunnelAccessModeUpdate
       x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      x-burrow-mcp: false
       summary: Set tunnel access mode (v0.2 back-compat — delegates to services)
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
         required: true
@@ -3429,7 +3435,10 @@ paths:
       tags: [services]
       operationId: serviceAccessModeUpdate
       x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      x-burrow-mcp: false
       summary: Set the service's access mode
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
         required: true
@@ -3539,7 +3548,10 @@ paths:
       tags: [services]
       operationId: serviceApiKeyCreate
       x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      x-burrow-mcp: false
       summary: Mint a new per-service API key (plaintext returned ONCE)
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
         required: true
@@ -4541,6 +4553,13 @@ paths:
       operationId: auditEventsList
       x-burrow-permission: {kind: needs, any_of: ["audit:read"]}
       summary: Query audit events
+      description: |
+        For a token caller (automation token or OAuth grant) the `reason` of
+        `mcp.gateway.call` rows and the `error` of `mcp.source.sync` rows are
+        shown as fixed classes (such as `upstream error`, `upstream
+        unreachable`, `refused by a guardrail`, `limit reached`): they can
+        carry words a tool source's upstream wrote. A dashboard session sees
+        them as stored. The stored rows and the chain are not changed.
       parameters:
         - name: action
           in: query
@@ -5126,7 +5145,10 @@ paths:
       tags: [roles]
       operationId: roleCreate
       x-burrow-permission: {kind: needs, any_of: ["roles:manage"]}
+      x-burrow-mcp: false
       summary: Create a custom role
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       requestBody:
         required: true
         content:
@@ -5181,7 +5203,10 @@ paths:
       tags: [roles]
       operationId: roleUpdate
       x-burrow-permission: {kind: needs, any_of: ["roles:manage"]}
+      x-burrow-mcp: false
       summary: Update a custom role
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       parameters:
         - name: name
           in: path
@@ -5209,7 +5234,10 @@ paths:
       tags: [roles]
       operationId: roleDelete
       x-burrow-permission: {kind: needs, any_of: ["roles:manage"]}
+      x-burrow-mcp: false
       summary: Delete a custom role
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       parameters:
         - name: name
           in: path
@@ -5259,7 +5287,10 @@ paths:
       tags: [users]
       operationId: userCreate
       x-burrow-permission: {kind: needs, any_of: ["users:manage"]}
+      x-burrow-mcp: false
       summary: Create a user (admin)
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       requestBody:
         required: true
         content:
@@ -5285,7 +5316,10 @@ paths:
       tags: [users]
       operationId: userUpdate
       x-burrow-permission: {kind: needs, any_of: ["users:manage"]}
+      x-burrow-mcp: false
       summary: Update a user (role / status) — admin
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
         required: true
@@ -5309,7 +5343,10 @@ paths:
       tags: [users]
       operationId: userDelete
       x-burrow-permission: {kind: needs, any_of: ["users:manage"]}
+      x-burrow-mcp: false
       summary: Delete a user (admin)
+      description: |
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       responses:
         '204': { description: Deleted. }
@@ -6007,6 +6044,7 @@ paths:
       tags: [oauth]
       operationId: oauthClientCreate
       x-burrow-permission: {kind: needs, any_of: ["oauth:clients:manage"]}
+      x-burrow-mcp: false
       summary: Pre-register an OAuth client
       description: >
         For an MCP client without a client metadata document. A public
@@ -6014,6 +6052,8 @@ paths:
         address (any port matches at authorization) or an app scheme with a
         dot (com.example.app:/cb); no fragment. Audited as
         `oauth.client.create`.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent must not register where authorization codes are sent.
       requestBody:
         required: true
         content:
@@ -7501,6 +7541,7 @@ paths:
       tags: [models]
       operationId: aiModelCreate
       x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
+      x-burrow-mcp: false
       summary: Create a synthetic model (admin or ai:configure:any)
       description: |
         Allowed for a dashboard session of an admin or of a role with
@@ -7513,6 +7554,8 @@ paths:
         out means true, translate left out means false; a timeout left out
         or 0 means its default. Every target must name an existing provider,
         and its dialect, when given, must equal that provider's api_format.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       requestBody:
         required: true
         content:
@@ -7571,6 +7614,7 @@ paths:
       tags: [models]
       operationId: aiModelUpdate
       x-burrow-permission: {kind: needs, any_of: ["ai:configure:any"]}
+      x-burrow-mcp: false
       summary: Replace a synthetic model (admin or ai:configure:any)
       description: |
         The body replaces the model; targets is the new list. Three fields
@@ -7580,6 +7624,8 @@ paths:
         Setting enabled to false on, or renaming, the model that an enabled guardrail judge
         uses is refused with 400 (model "…" is the guardrail judge; change the
         judge first).
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       requestBody:
         required: true
         content:
@@ -7747,6 +7793,7 @@ paths:
       tags: [models]
       operationId: gatewayKeyUpdate
       x-burrow-permission: {kind: needs, any_of: ["ai:configure:own", "ai:configure:any"]}
+      x-burrow-mcp: false
       summary: Change a gateway key
       description: |
         Changes the name, the system text, the model and tool allow-lists and
@@ -7759,6 +7806,8 @@ paths:
         exist. The body is at most 64 KiB. While the global request
         guardrails are on, a system_text that a request pattern (bundled or
         custom) matches is refused with 400 naming the pattern.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       parameters: [ { $ref: '#/components/parameters/PathID' } ]
       requestBody:
         required: true

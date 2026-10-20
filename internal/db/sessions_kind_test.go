@@ -51,15 +51,21 @@ func checkSessionKindAndParent(t *testing.T, x *DB, userID string) {
 	}
 
 	// Logout of a dashboard session ends the services session it handed off.
-	if err := x.DeleteSession(ctx, userID+"-dash"); err != nil {
-		t.Fatal(err)
+	if children, err := x.DeleteSessionWithChildren(ctx, userID+"-dash"); err != nil || len(children) != 1 || children[0] != userID+"-svc" {
+		t.Fatalf("logout: children %v (%v), want [%s]", children, err, userID+"-svc")
 	}
 	if _, err := x.GetSession(ctx, userID+"-svc"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("the linked services session survived the logout: %v", err)
 	}
 	// Revoking one (scoped to its owner) does the same.
-	if err := x.DeleteSessionForUser(ctx, userID+"-dash2", userID); err != nil {
-		t.Fatal(err)
+	if _, err := x.DeleteSessionForUserWithChildren(ctx, userID+"-dash2", "someone-else"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoke of another user's session: %v", err)
+	}
+	if _, err := x.GetSession(ctx, userID+"-svc2"); err != nil {
+		t.Fatalf("a refused revoke ended the services session: %v", err)
+	}
+	if children, err := x.DeleteSessionForUserWithChildren(ctx, userID+"-dash2", userID); err != nil || len(children) != 1 || children[0] != userID+"-svc2" {
+		t.Fatalf("revoke: children %v (%v)", children, err)
 	}
 	if _, err := x.GetSession(ctx, userID+"-svc2"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("the linked services session survived the revoke: %v", err)

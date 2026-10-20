@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/db"
 )
 
@@ -74,5 +75,51 @@ func TestSessionKinds(t *testing.T) {
 	}
 	if _, err := st.ValidateServicesSession(ctx, svc); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("services session after the dashboard logout: %v", err)
+	}
+}
+
+// Fix round 1: ending a dashboard session ends the services sessions it
+// handed off, and each of them leaves its own session.delete row, under the
+// hash of its id, whether the parent ended by logout or by a revoke.
+func TestSessionKinds_CascadeIsAudited(t *testing.T) {
+	ctx := context.Background()
+	st, sqlDB := newStoreWithDB(t)
+	if err := db.Wrap(sqlDB).CreateUser(ctx, db.User{ID: "u1", Email: "a@x", PasswordHash: "h", Role: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	sink := &auditSink{}
+	st.SetAuditLogger(sink)
+	deleted := func() map[string]bool {
+		out := map[string]bool{}
+		for _, e := range sink.ev {
+			if e.Action == audit.ActionSessionDelete {
+				out[e.SubjectID] = true
+			}
+		}
+		return out
+	}
+	for _, end := range []func(parent string) error{
+		func(parent string) error { return st.DeleteSession(ctx, parent) },
+		func(parent string) error { return st.RevokeSession(ctx, parent, "u1") },
+	} {
+		sink.ev = nil
+		parent, _ := st.CreateSession(ctx, "u1", "ua", "127.0.0.1")
+		a, _ := st.CreateServicesSession(ctx, "u1", "ua", "127.0.0.1", parent)
+		b, _ := st.CreateServicesSession(ctx, "u1", "ua", "127.0.0.1", parent)
+		if err := end(parent); err != nil {
+			t.Fatal(err)
+		}
+		got := deleted()
+		for _, id := range []string{parent, a, b} {
+			if !got[audit.SessionRef(id)] {
+				t.Errorf("no session.delete row for %s (rows: %v)", audit.SessionRef(id), got)
+			}
+			if got[id] {
+				t.Errorf("a session.delete row names the raw id %s", id)
+			}
+		}
+		if len(got) != 3 {
+			t.Errorf("%d session.delete rows, want 3", len(got))
+		}
 	}
 }

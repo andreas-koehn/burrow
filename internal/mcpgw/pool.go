@@ -732,6 +732,34 @@ func Classify(msg string) string {
 	return "sync failed"
 }
 
+// ClassifyCallReason is Classify for the reason of an mcp.gateway.call
+// audit row: the gateway's own fixed reasons stay, guardrail and redaction
+// refusals lose the pattern or rule name, limit refusals become one class,
+// and anything else, which may be the upstream's words, is "upstream error"
+// (never "sync failed").
+func ClassifyCallReason(reason string) string {
+	switch reason {
+	case "", "not allowed for this key", "internal error", "arguments are not an object", "redaction failed",
+		"the redacted arguments are not valid JSON", "the result could not be encoded", "the redacted result is not valid",
+		"the tool reported an error":
+		return reason
+	}
+	switch {
+	case strings.HasPrefix(reason, "guardrail "):
+		return "refused by a guardrail"
+	case strings.HasPrefix(reason, "redaction rule "):
+		return "refused by a redaction rule"
+	case strings.HasPrefix(reason, "result over "):
+		return "upstream response too large"
+	case strings.Contains(reason, "calls per minute"), strings.Contains(reason, "calls at a time"), strings.Contains(reason, "rate limit"):
+		return "limit reached"
+	}
+	if c := Classify(reason); c != "sync failed" {
+		return c
+	}
+	return "upstream error"
+}
+
 // rootMessage is the message of the first of the pool's own errors in err's
 // chain.
 func rootMessage(err error) string {

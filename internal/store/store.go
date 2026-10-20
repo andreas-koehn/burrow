@@ -531,13 +531,23 @@ func (s *Store) validateSession(ctx context.Context, id, kind string) (string, e
 
 // DeleteSession removes the session with the given ID.
 func (s *Store) DeleteSession(ctx context.Context, id string) error {
-	if err := s.q.DeleteSession(ctx, id); err != nil {
+	children, err := s.q.DeleteSessionWithChildren(ctx, id)
+	if err != nil {
 		return err
 	}
-	s.emitAudit(ctx, audit.ActionSessionDelete, func(e *audit.Event) {
-		e.SubjectID = audit.SessionRef(id)
-	})
+	s.auditSessionsDeleted(ctx, append([]string{id}, children...))
 	return nil
+}
+
+// auditSessionsDeleted writes one session.delete row per ended session,
+// under the hash of its id: the session asked for and the services sessions
+// that went with it.
+func (s *Store) auditSessionsDeleted(ctx context.Context, ids []string) {
+	for _, id := range ids {
+		s.emitAudit(ctx, audit.ActionSessionDelete, func(e *audit.Event) {
+			e.SubjectID = audit.SessionRef(id)
+		})
+	}
 }
 
 // ChangePassword verifies currentPassword, enforces minimum length on newPassword,
@@ -923,12 +933,11 @@ func (s *Store) ListSessions(ctx context.Context, userID string) ([]db.Session, 
 
 // RevokeSession deletes one of the user's sessions (scoped).
 func (s *Store) RevokeSession(ctx context.Context, id, userID string) error {
-	if err := s.q.DeleteSessionForUser(ctx, id, userID); err != nil {
+	children, err := s.q.DeleteSessionForUserWithChildren(ctx, id, userID)
+	if err != nil {
 		return err
 	}
-	s.emitAudit(ctx, audit.ActionSessionDelete, func(e *audit.Event) {
-		e.SubjectID = audit.SessionRef(id)
-	})
+	s.auditSessionsDeleted(ctx, append([]string{id}, children...))
 	return nil
 }
 

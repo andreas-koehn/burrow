@@ -130,9 +130,11 @@ const (
 
 // assertMCPKnowsTheAuthDomain checks, on the relay `serve` started with an
 // auth domain, that the MCP server replays its calls through the relay's own
-// router (main.go's SetAPIHandler): service_access_mode_update accepts
-// burrow_login, which the router refuses on a relay without an auth domain,
-// and a server without the router answers "the relay is starting". Everything is done as an operator does it:
+// router (main.go's SetAPIHandler): a write made with
+// service_access_policy_update is what service_get then reads, while a
+// server without the router answers "the relay is starting". (The access
+// mode, which needed the auth domain, is no management tool any more.)
+// Everything is done as an operator does it:
 // log in, create a service and an automation token over the JSON API, then
 // call the tool at /mcp/burrow.
 func assertMCPKnowsTheAuthDomain(t *testing.T, base string) {
@@ -191,15 +193,15 @@ func assertMCPKnowsTheAuthDomain(t *testing.T, base string) {
 	}
 
 	cs := mcpConnect(t, base+"/mcp/burrow", bearer, "2026-07-28")
-	if got := mcpCall(t, cs, false, "service_access_mode_update", map[string]any{
-		"serviceID": serviceID, "body": map[string]any{"access_mode": "burrow_login"},
+	if got := mcpCall(t, cs, false, "service_access_policy_update", map[string]any{
+		"serviceID": serviceID, "body": map[string]any{"roles": []string{"admin"}},
 	}); got != `{"status":204}` {
-		t.Fatalf("service_access_mode_update burrow_login on a relay with an auth domain: %s", got)
+		t.Fatalf("service_access_policy_update through the relay's router: %s", got)
 	}
 	var svc struct {
-		AccessMode string `json:"access_mode"`
+		AccessPolicy []string `json:"access_policy"`
 	}
-	if err := json.Unmarshal([]byte(mcpCall(t, cs, false, "service_get", map[string]any{"serviceID": serviceID})), &svc); err != nil || svc.AccessMode != "burrow_login" {
-		t.Fatalf("service_get after the change: access_mode %q, err %v", svc.AccessMode, err)
+	if err := json.Unmarshal([]byte(mcpCall(t, cs, false, "service_get", map[string]any{"serviceID": serviceID})), &svc); err != nil || len(svc.AccessPolicy) != 1 || svc.AccessPolicy[0] != "admin" {
+		t.Fatalf("service_get after the change: access_policy %v, err %v", svc.AccessPolicy, err)
 	}
 }

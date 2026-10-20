@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/ankoehn/burrow/internal/store"
@@ -70,6 +71,20 @@ func TestSessions_ServicesSessionsFollowTheirDashboardSession(t *testing.T) {
 	rec := h.do(t, http.MethodGet, "/api/v1/sessions", nil, cookieSession(me))
 	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &list) != nil {
 		t.Fatalf("list: %d %s", rec.Code, rec.Body)
+	}
+	// The list shows the services sessions too, by the hash of their id
+	// only, so that one can be revoked on its own.
+	ids := map[string]bool{}
+	for _, s := range list {
+		ids[s.ID] = true
+	}
+	for _, sid := range []string{me, other, otherSvc, mySvc} {
+		if !ids[sessionRef(sid)] {
+			t.Errorf("session %s is not listed by its hash (listed: %v)", sessionRef(sid), ids)
+		}
+	}
+	if raw := rec.Body.String(); strings.Contains(raw, otherSvc) || strings.Contains(raw, mySvc) {
+		t.Fatalf("the list holds a raw services session id: %s", raw)
 	}
 	if rec := h.do(t, http.MethodDelete, "/api/v1/sessions/"+sessionRef(other), nil, cookieSession(me)); rec.Code != http.StatusNoContent {
 		t.Fatalf("revoke: %d %s", rec.Code, rec.Body)

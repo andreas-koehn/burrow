@@ -29,10 +29,8 @@ var curatedTools = []curatedTool{
 	{ID: "connectionLogsList"},
 	// Write
 	{ID: "serviceCreate"},
-	{ID: "serviceAccessModeUpdate"},
+	{ID: "serviceAccessPolicyUpdate"},
 	{ID: "providerModelsSync"},
-	{ID: "aiModelCreate"},
-	{ID: "aiModelUpdate"},
 	{ID: "budgetCreate"},
 	// Delete
 	{ID: "providerDelete"},

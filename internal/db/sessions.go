@@ -50,11 +50,63 @@ const sessionCols = `id, user_id, expires_at, created_at, COALESCE(user_agent,''
 // DeleteSession removes the session with the given ID and the services
 // sessions it handed off.
 func (x *DB) DeleteSession(ctx context.Context, id string) error {
-	_, err := x.sqlDB.ExecContext(ctx, `DELETE FROM sessions WHERE id=? OR parent_id=?`, id, id)
+	_, err := x.DeleteSessionWithChildren(ctx, id)
+	return err
+}
+
+// DeleteSessionWithChildren removes the session with the given ID and the
+// services sessions it handed off, in one transaction, and returns the ids
+// of those services sessions (for their audit rows).
+func (x *DB) DeleteSessionWithChildren(ctx context.Context, id string) ([]string, error) {
+	children, _, err := x.deleteSessionTree(ctx, id, "")
+	return children, err
+}
+
+// deleteSessionTree deletes session id (scoped to userID when it is not "")
+// and its services sessions, and returns the children's ids and whether the
+// session itself was there.
+func (x *DB) deleteSessionTree(ctx context.Context, id, userID string) ([]string, bool, error) {
+	tx, err := x.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("delete session: %w", err)
+		return nil, false, fmt.Errorf("begin delete session: %w", err)
 	}
-	return nil
+	defer func() { _ = tx.Rollback() }()
+	scope, args := "", []any{id}
+	if userID != "" {
+		scope, args = " AND user_id=?", []any{id, userID}
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id=?`+scope, args...)
+	if err != nil {
+		return nil, false, fmt.Errorf("delete session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, false, fmt.Errorf("delete session rows affected: %w", err)
+	}
+	if n == 0 {
+		// Not this caller's session (or gone): its children are left alone.
+		return nil, false, tx.Commit()
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM sessions WHERE parent_id=?`, id)
+	if err != nil {
+		return nil, false, fmt.Errorf("list services sessions: %w", err)
+	}
+	var children []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			_ = rows.Close()
+			return nil, false, fmt.Errorf("scan services session: %w", err)
+		}
+		children = append(children, c)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE parent_id=?`, id); err != nil {
+		return nil, false, fmt.Errorf("delete services sessions: %w", err)
+	}
+	return children, true, tx.Commit()
 }
 
 // ListSessionsByUser returns the user's sessions, newest first.
@@ -84,19 +136,21 @@ func (x *DB) ListSessionsByUser(ctx context.Context, userID string) ([]Session, 
 // services sessions it handed off. Returns ErrNotFound if the session itself
 // is missing or owned by another user.
 func (x *DB) DeleteSessionForUser(ctx context.Context, id, userID string) error {
-	res, err := x.sqlDB.ExecContext(ctx,
-		`DELETE FROM sessions WHERE user_id=? AND (id=? OR parent_id=?)`, userID, id, id)
+	_, err := x.DeleteSessionForUserWithChildren(ctx, id, userID)
+	return err
+}
+
+// DeleteSessionForUserWithChildren is DeleteSessionForUser that also
+// returns the ids of the services sessions it deleted with the session.
+func (x *DB) DeleteSessionForUserWithChildren(ctx context.Context, id, userID string) ([]string, error) {
+	children, found, err := x.deleteSessionTree(ctx, id, userID)
 	if err != nil {
-		return fmt.Errorf("delete session for user: %w", err)
+		return nil, err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("delete session for user rows affected: %w", err)
+	if !found {
+		return nil, ErrNotFound
 	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return children, nil
 }
 
 // DeleteSessionsByUserExcept deletes all of the user's sessions except keepID

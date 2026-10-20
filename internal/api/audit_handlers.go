@@ -12,6 +12,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/mcpgw"
 )
 
 // AuditQueryStore is the read surface backing the JSON API. *db.DB
@@ -69,10 +70,13 @@ type auditEventResp struct {
 	Hash         string          `json:"hash"`
 }
 
-func toAuditEventResp(e db.AuditEvent, cutoff string) auditEventResp {
+func toAuditEventResp(e db.AuditEvent, cutoff string, forToken bool) auditEventResp {
 	pl := json.RawMessage(e.Payload)
 	if len(pl) == 0 {
 		pl = json.RawMessage(`{}`)
+	}
+	if forToken {
+		pl = classifyUpstreamText(e.Action, pl)
 	}
 	// Rows of older relays hold the raw session id; show its hash instead.
 	// Only the response changes: the stored row and the chain stay as they are.
@@ -83,6 +87,39 @@ func toAuditEventResp(e db.AuditEvent, cutoff string) auditEventResp {
 		Result: e.Result, SourceIP: e.SourceIP, UserAgent: e.UserAgent,
 		RequestID: e.RequestID, Payload: pl, PrevHash: e.PrevHash, Hash: e.Hash,
 	}
+}
+
+// classifyUpstreamText rewrites, for a token caller (an automation token or
+// an OAuth grant, which may be an agent on /mcp/burrow), the payload fields
+// of the rows that can carry a tool source's upstream text into fixed
+// classes: reason of mcp.gateway.call, error of mcp.source.sync. Only the
+// response changes; the stored row and the chain stay as they are.
+func classifyUpstreamText(action string, pl json.RawMessage) json.RawMessage {
+	var field string
+	var classify func(string) string
+	switch action {
+	case audit.ActionMCPGatewayCall:
+		field, classify = "reason", mcpgw.ClassifyCallReason
+	case audit.ActionMCPSourceSync:
+		field, classify = "error", mcpgw.Classify
+	default:
+		return pl
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(pl, &m) != nil {
+		return pl
+	}
+	var text string
+	if raw, ok := m[field]; !ok || json.Unmarshal(raw, &text) != nil {
+		return pl
+	}
+	b, _ := json.Marshal(classify(text))
+	m[field] = b
+	out, err := json.Marshal(m)
+	if err != nil {
+		return pl
+	}
+	return out
 }
 
 // auditEventsLimit is the default per-page cap when ?limit= is absent.
@@ -151,7 +188,7 @@ func (d Deps) GetAuditEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]auditEventResp, 0, len(rows))
 	for _, e := range rows {
-		out = append(out, toAuditEventResp(e, d.AuditSessionRefCutoff))
+		out = append(out, toAuditEventResp(e, d.AuditSessionRefCutoff, bearerTokenID(r.Context()) != ""))
 	}
 	writeJSON(w, http.StatusOK, out)
 }

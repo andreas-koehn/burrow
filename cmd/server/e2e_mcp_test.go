@@ -399,9 +399,17 @@ func TestE2EMCP_WritesLeaveTheAuditTrailOfTheAPI(t *testing.T) {
 	}
 	mcpURL := e.serve(t, "burrow.example.com") + mcpserv.EndpointPath
 	const agent = "burrow-e2e-agent/1"
-	setMode := func(cs *mcp.ClientSession, wantError bool, body map[string]any) string {
+	setPolicy := func(cs *mcp.ClientSession, wantError bool, body map[string]any) string {
 		t.Helper()
-		return mcpCall(t, cs, wantError, "service_access_mode_update", map[string]any{"serviceID": serviceID, "body": body})
+		return mcpCall(t, cs, wantError, "service_access_policy_update", map[string]any{"serviceID": serviceID, "body": body})
+	}
+	policy := func() []string {
+		t.Helper()
+		roles, err := e.st.GetAccessPolicy(ctx, e.admin.ID, "admin", serviceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return roles
 	}
 
 	for _, revision := range []string{"2026-07-28", "2025-11-25"} {
@@ -412,23 +420,22 @@ func TestE2EMCP_WritesLeaveTheAuditTrailOfTheAPI(t *testing.T) {
 				seen[r.ID] = true
 			}
 
-			setMode(cs, false, map[string]any{"access_mode": "api_key", "api_key_header": "X-Api-Key"})
+			setPolicy(cs, false, map[string]any{"roles": []string{"admin"}})
 			// Input the REST route refuses is refused, and nothing is stored.
-			if got := setMode(cs, true, map[string]any{"access_mode": "api_key", "api_key_header": "X Bad: header\r\nInjected"}); got != "400 Bad Request: api_key_header must be a valid HTTP header name (RFC 7230 token)" {
-				t.Errorf("bad header name: %q", got)
+			if got := setPolicy(cs, true, map[string]any{"roles": []string{"no-such-role"}}); !strings.HasPrefix(got, "400 Bad Request: ") {
+				t.Errorf("unknown role: %q", got)
 			}
-			if svc, err := e.st.ServiceByID(ctx, serviceID); err != nil || svc.AccessMode != "api_key" || svc.APIKeyHeader != "X-Api-Key" {
-				t.Errorf("after the refused call: mode %q header %q err %v", svc.AccessMode, svc.APIKeyHeader, err)
+			if got := policy(); len(got) != 1 || got[0] != "admin" {
+				t.Errorf("after the refused call: policy %v", got)
 			}
-			// No header is the default one, as on the REST route.
-			setMode(cs, false, map[string]any{"access_mode": "api_key"})
-			if svc, err := e.st.ServiceByID(ctx, serviceID); err != nil || svc.APIKeyHeader != "Authorization" {
-				t.Errorf("api_key without a header: header %q err %v", svc.APIKeyHeader, err)
+			setPolicy(cs, false, map[string]any{"roles": []string{"admin", "user"}})
+			if got := policy(); len(got) != 2 {
+				t.Errorf("after the second call: policy %v", got)
 			}
 
 			want := map[string]int{
-				audit.ActionServiceAccessModeUpdate: 2,
-				audit.ActionMCPToolCall:             3,
+				audit.ActionServiceAccessPolicyUpdate: 2,
+				audit.ActionMCPToolCall:               3,
 			}
 			got := map[string]int{}
 			requestIDs := map[string]map[string]bool{} // action -> request ids
@@ -464,27 +471,12 @@ func TestE2EMCP_WritesLeaveTheAuditTrailOfTheAPI(t *testing.T) {
 				t.Errorf("new audit rows %v, want only %v", got, want)
 			}
 			// The API's row of a change carries the request id of its MCP row.
-			for id := range requestIDs[audit.ActionServiceAccessModeUpdate] {
+			for id := range requestIDs[audit.ActionServiceAccessPolicyUpdate] {
 				if !requestIDs[audit.ActionMCPToolCall][id] {
 					t.Errorf("the API row's request id %q is on no mcp.tool.call row", id)
 				}
 			}
 		})
-	}
-
-	// burrow_login follows the relay's auth domain, as on the REST route.
-	with := mcpConnect(t, mcpURL, bearer, "2026-07-28")
-	setMode(with, false, map[string]any{"access_mode": "open"})
-	without := mcpConnect(t, e.serve(t, "")+mcpserv.EndpointPath, bearer, "2026-07-28")
-	if got := setMode(without, true, map[string]any{"access_mode": "burrow_login"}); got != "409 Conflict: burrow_login requires a configured auth_domain" {
-		t.Errorf("burrow_login without an auth domain: %q", got)
-	}
-	if svc, err := e.st.ServiceByID(ctx, serviceID); err != nil || svc.AccessMode != "open" {
-		t.Errorf("after the refused burrow_login: mode %q err %v", svc.AccessMode, err)
-	}
-	setMode(with, false, map[string]any{"access_mode": "burrow_login"})
-	if svc, err := e.st.ServiceByID(ctx, serviceID); err != nil || svc.AccessMode != "burrow_login" {
-		t.Errorf("burrow_login with an auth domain: mode %q err %v", svc.AccessMode, err)
 	}
 
 	// No audit row holds the bearer.

@@ -30,11 +30,11 @@ var testRevisions = []string{"2026-07-28", "2025-11-25", "2025-06-18", "2025-03-
 
 // allCuratedTools are the tool names of curatedTools, sorted: what a token
 // of the full preset of an admin sees.
-const allCuratedTools = "ai_model_create,ai_model_delete,ai_model_update,ai_models_list,ai_requests_list," +
+const allCuratedTools = "ai_model_delete,ai_models_list,ai_requests_list," +
 	"audit_events_list,budget_create,budgets_list,connection_logs_list,cost_summary_get," +
 	"gateway_key_delete,gateway_keys_list,inspector_request_get,known_clients_list,me_get," +
 	"provider_delete,provider_get,provider_metrics_get,provider_models_sync," +
-	"providers_list,service_access_mode_update,service_create,service_get,services_list"
+	"providers_list,service_access_policy_update,service_create,service_get,services_list"
 
 // ---------- fakes ----------------------------------------------------------
 
@@ -310,11 +310,11 @@ func TestMCP_Annotations(t *testing.T) {
 		}
 		// Spelled out.
 		for name, want := range map[string][3]bool{ // readOnly, destructive, idempotent
-			"providers_list":             {true, false, false},
-			"provider_delete":            {false, true, false},
-			"provider_models_sync":       {false, true, false}, // POST, x-burrow-destructive
-			"service_access_mode_update": {false, false, true},
-			"budget_create":              {false, false, false},
+			"providers_list":               {true, false, false},
+			"provider_delete":              {false, true, false},
+			"provider_models_sync":         {false, true, false}, // POST, x-burrow-destructive
+			"service_access_policy_update": {false, false, true},
+			"budget_create":                {false, false, false},
 		} {
 			a := tools[name].Annotations
 			if a.ReadOnlyHint != want[0] || *a.DestructiveHint != want[1] || a.IdempotentHint != want[2] {
@@ -335,9 +335,9 @@ func TestMCP_Descriptions(t *testing.T) {
 	if got := byName["me_get"].Description; !strings.HasPrefix(got, "Who this token acts for") {
 		t.Errorf("me_get description = %q", got)
 	}
-	op, ok := s.reg.Lookup("aiModelCreate")
-	if got := byName["ai_model_create"].Description; !ok || op.Summary == "" || !strings.HasPrefix(got, op.Summary) || strings.Contains(got, "\n\n\n") {
-		t.Errorf("ai_model_create description = %q", got)
+	op, ok := s.reg.Lookup("budgetCreate")
+	if got := byName["budget_create"].Description; !ok || op.Summary == "" || !strings.HasPrefix(got, op.Summary) || strings.Contains(got, "\n\n\n") {
+		t.Errorf("budget_create description = %q", got)
 	}
 	for _, d := range s.Tools() {
 		if d.Description == "" || len(d.Description) > maxDescriptionBytes {
@@ -409,7 +409,7 @@ func TestMCP_ListShowsOnlyWhatTheTokenMayCall(t *testing.T) {
 		// only the :own permissions of a standard user.
 		{"minter demoted to user", presetPerms(authz.PresetFull), "user",
 			"ai_models_list,ai_requests_list,gateway_key_delete,gateway_keys_list,inspector_request_get,me_get," +
-				"provider_get,provider_metrics_get,providers_list,service_access_mode_update,service_get,services_list"},
+				"provider_get,provider_metrics_get,providers_list,service_access_policy_update,service_get,services_list"},
 		{"tunnels of anyone", []string{"tunnels:read:any"}, "admin", "known_clients_list,me_get"},
 		{"no tool permission", []string{"webhooks:manage"}, "admin", "me_get"},
 		// A token that declares nothing still reads who it acts for.
@@ -569,8 +569,8 @@ func TestMCP_WriteSendsTheBody(t *testing.T) {
 	hs, sink := newSDKTestServer(t, api, presetPerms(authz.PresetOperator), "admin")
 	cs := connectMCP(t, hs.URL, "", "2026-07-28")
 
-	res, err := callTool(t, cs, "service_access_mode_update", map[string]any{
-		"serviceID": "svc1", "body": map[string]any{"access_mode": "api_key", "api_key_header": "X-Key"},
+	res, err := callTool(t, cs, "service_access_policy_update", map[string]any{
+		"serviceID": "svc1", "body": map[string]any{"roles": []string{"user", "admin"}},
 	})
 	if err != nil || res.IsError {
 		t.Fatalf("call: err=%v result=%+v", err, res)
@@ -579,13 +579,13 @@ func TestMCP_WriteSendsTheBody(t *testing.T) {
 		t.Errorf("text = %s", got)
 	}
 	r := api.seen[0]
-	if r.Method != http.MethodPut || r.URL.Path != "/api/v1/services/svc1/access-mode" || r.Header.Get("Content-Type") != "application/json" {
+	if r.Method != http.MethodPut || r.URL.Path != "/api/v1/services/svc1/access-policy" || r.Header.Get("Content-Type") != "application/json" {
 		t.Errorf("request = %s %s %q", r.Method, r.URL.Path, r.Header.Get("Content-Type"))
 	}
-	if !sameJSON(t, api.bodies[0], `{"access_mode":"api_key","api_key_header":"X-Key"}`) {
+	if !sameJSON(t, api.bodies[0], `{"roles":["user","admin"]}`) {
 		t.Errorf("body = %s", api.bodies[0])
 	}
-	if rows := sink.all(); len(rows) != 1 || rows[0].SubjectLabel != "service_access_mode_update" || rows[0].Result != "ok" {
+	if rows := sink.all(); len(rows) != 1 || rows[0].SubjectLabel != "service_access_policy_update" || rows[0].Result != "ok" {
 		t.Fatalf("audit rows = %+v", rows)
 	}
 }

@@ -98,7 +98,7 @@ func TestCuratedToolsFollowTheToken(t *testing.T) {
 					t.Errorf("read-only token does not see %s", name)
 				}
 			}
-			for _, name := range []string{"services_list", "budget_create", "provider_delete", "ai_model_create"} {
+			for _, name := range []string{"services_list", "budget_create", "provider_delete", "service_access_policy_update"} {
 				if tools[name] != nil {
 					t.Errorf("read-only token sees %s", name)
 				}

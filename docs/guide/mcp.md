@@ -234,10 +234,8 @@ every token.
 | `audit_events_list` | Query audit events | read |
 | `connection_logs_list` | List per-tunnel connection log entries, newest first | read |
 | `service_create` | Pre-provision a service | write |
-| `service_access_mode_update` | Set a service's access mode | write |
+| `service_access_policy_update` | Replace a service's role allowlist | write |
 | `provider_models_sync` | Read the model list from a direct provider's upstream | delete (needs `confirm`) |
-| `ai_model_create` | Create a synthetic model | write |
-| `ai_model_update` | Replace a synthetic model | write |
 | `budget_create` | Create a budget | write |
 | `provider_delete` | Delete a provider | delete |
 | `ai_model_delete` | Delete a synthetic model | delete |
@@ -313,12 +311,17 @@ connection. The rows the API writes for the call carry the same `token_id` or
 Some operations are never tools, whatever the token holds: an agent can be
 steered by text it reads (a tool result, a model answer, a sync error), and
 these writes would let such text re-route a credential or switch off
-inspection. They are: creating and changing a provider and its upstream,
-binding a service's upstream credential, the SMTP settings, custom domains,
-webhooks, the guardrail and redaction settings and rules, a service's AI
-config, the retention settings, a service's gateway-only switch, and creating
-or changing a tool source or approving its tools. Their reads stay tools. Make
-these changes in the dashboard or with the REST API. The full list is in the
+inspection, widen access or plant secrets and instructions. They are:
+creating and changing a provider and its upstream, binding a service's
+upstream credential, the SMTP settings, custom domains, webhooks, the
+guardrail and redaction settings and rules, a service's AI config, the
+retention settings, a service's gateway-only switch, creating or changing a
+tool source or approving its tools, registering an OAuth client, a service's
+or tunnel's access mode, changing a gateway key, minting a client token or a
+service API key, creating, changing and deleting users and roles, and
+creating or changing a synthetic model (its `system_text` reaches other
+users' requests). Their reads stay tools. Make these changes in the dashboard
+or with the REST API. The full list is in the
 [API reference](../reference/api.md).
 
 ::: warning Text from upstreams reaches the agent
@@ -397,12 +400,12 @@ like this:
 | `tunnels_list` | `burrow_call_operation` with `tunnelsList` |
 | `services_list` | `services_list` |
 | `services_get` | `service_get` |
-| `services_set_access_mode` | `service_access_mode_update` |
+| `services_set_access_mode` | none: the dashboard or the REST API (`PUT /api/v1/services/{id}/access-mode`) |
 | `api_keys_list` | `burrow_call_operation` with `serviceApiKeysList` |
-| `api_keys_create` | `burrow_call_operation` with `serviceApiKeyCreate` |
+| `api_keys_create` | none: the dashboard or the REST API |
 | `api_keys_delete` | `burrow_call_operation` with `serviceApiKeyDelete` |
 | `tokens_list` | `burrow_call_operation` with `clientTokensList` |
-| `tokens_mint` | `burrow_call_operation` with `clientTokenCreate` |
+| `tokens_mint` | none: the dashboard or the REST API |
 | `users_list` | `burrow_call_operation` with `usersList` |
 | `audit_search` | `audit_events_list` |
 | `metrics_snapshot` | `burrow_call_operation` with `metricsGet` |

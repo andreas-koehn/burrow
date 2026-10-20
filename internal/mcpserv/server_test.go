@@ -251,7 +251,7 @@ func TestHTTP_TokenStoreFails_500(t *testing.T) {
 func TestHTTP_MinterDemoted_TokenNarrowsAtOnce(t *testing.T) {
 	env := newTestEnv(t, []string{"audit:read", "services:configure:own"}, "admin")
 	cs := connectMCP(t, env.url, testBearer, "2026-07-28")
-	const asAdmin = "audit_events_list,connection_logs_list,me_get,service_access_mode_update,service_get,services_list"
+	const asAdmin = "audit_events_list,connection_logs_list,me_get,service_access_policy_update,service_get,services_list"
 	if got := sortedNames(listedTools(t, cs)); got != asAdmin {
 		t.Fatalf("as admin: %s", got)
 	}
@@ -260,7 +260,7 @@ func TestHTTP_MinterDemoted_TokenNarrowsAtOnce(t *testing.T) {
 	u.Role = "user"
 	env.users.users[testUserID] = u
 
-	if got := sortedNames(listedTools(t, cs)); got != "me_get,service_access_mode_update,service_get,services_list" {
+	if got := sortedNames(listedTools(t, cs)); got != "me_get,service_access_policy_update,service_get,services_list" {
 		t.Errorf("after the demotion: %s", got)
 	}
 	_, err := callTool(t, cs, "audit_events_list", nil)
@@ -568,10 +568,10 @@ func TestHTTP_AuditContext_ReachesTheAPIAndTheRow(t *testing.T) {
 			}
 
 			for _, id := range []string{"svc1", "svc2"} {
-				if res, err := callTool(t, cs, "service_access_mode_update", map[string]any{
-					"serviceID": id, "body": map[string]any{"access_mode": "open"},
+				if res, err := callTool(t, cs, "service_access_policy_update", map[string]any{
+					"serviceID": id, "body": map[string]any{"roles": []string{"user"}},
 				}); err != nil || res.IsError {
-					t.Fatalf("service_access_mode_update: %v %+v", err, res)
+					t.Fatalf("service_access_policy_update: %v %+v", err, res)
 				}
 			}
 			_, _ = callTool(t, cs, "audit_events_list", nil) // not this token's tool
@@ -585,7 +585,7 @@ func TestHTTP_AuditContext_ReachesTheAPIAndTheRow(t *testing.T) {
 					SourceIP: r.SourceIP, UserAgent: r.UserAgent, RequestID: r.RequestID,
 				})
 			}
-			if want := "service_access_mode_update=ok,service_access_mode_update=ok,audit_events_list=denied"; strings.Join(got, ",") != want {
+			if want := "service_access_policy_update=ok,service_access_policy_update=ok,audit_events_list=denied"; strings.Join(got, ",") != want {
 				t.Fatalf("audit rows %v, want %s", got, want)
 			}
 			// Each call is a request of its own.
@@ -636,8 +636,8 @@ func TestHTTP_AuditRow_WithoutRequestID(t *testing.T) {
 func TestHTTP_RefusedArguments_ValueStaysOut(t *testing.T) {
 	env := newTestEnv(t, []string{"services:configure:own"}, "admin")
 	cs := connectMCP(t, env.url, testBearer, "2025-11-25")
-	res, err := callTool(t, cs, "service_access_mode_update", map[string]any{
-		"serviceID": "svc1", "body": map[string]any{"access_mode": "open"}, "extra": "MARKERVALUE",
+	res, err := callTool(t, cs, "service_access_policy_update", map[string]any{
+		"serviceID": "svc1", "body": map[string]any{"roles": []string{"user"}}, "extra": "MARKERVALUE",
 	})
 	if err != nil || !res.IsError {
 		t.Fatalf("err=%v result=%+v", err, res)
@@ -649,7 +649,7 @@ func TestHTTP_RefusedArguments_ValueStaysOut(t *testing.T) {
 		t.Errorf("refused arguments reached the API %d times", env.api.calls())
 	}
 	logs := env.logs.String()
-	if !strings.Contains(logs, "service_access_mode_update") || strings.Contains(logs, "MARKERVALUE") {
+	if !strings.Contains(logs, "service_access_policy_update") || strings.Contains(logs, "MARKERVALUE") {
 		t.Errorf("log: %s", logs)
 	}
 	if rows := env.audit.all(); len(rows) != 1 || rows[0].Result != "error" {
