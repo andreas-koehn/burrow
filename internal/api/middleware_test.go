@@ -18,6 +18,8 @@ import (
 
 type fakeUsers struct {
 	validate func(id string) (string, error)
+	// validateBare is ValidateBareSession; nil: validate.
+	validateBare func(id string) (string, error)
 }
 
 func (f fakeUsers) VerifyUserPassword(_ context.Context, _, _ string) (bool, error) {
@@ -40,6 +42,12 @@ func (f fakeUsers) CreateSession(_ context.Context, _, _, _ string) (string, err
 	return "sid", nil
 }
 func (f fakeUsers) ValidateSession(_ context.Context, id string) (string, error) {
+	return f.validate(id)
+}
+func (f fakeUsers) ValidateBareSession(_ context.Context, id string) (string, error) {
+	if f.validateBare != nil {
+		return f.validateBare(id)
+	}
 	return f.validate(id)
 }
 func (f fakeUsers) DeleteSession(_ context.Context, _ string) error        { return nil }
@@ -239,6 +247,9 @@ type infraErrUsers struct {
 
 func (u *infraErrUsers) ValidateSession(_ context.Context, _ string) (string, error) {
 	return "", u.sessionErr
+}
+func (u *infraErrUsers) ValidateBareSession(ctx context.Context, id string) (string, error) {
+	return u.ValidateSession(ctx, id)
 }
 
 // TestEventsStreamSessionInfraError500JSON asserts that when ValidateSession

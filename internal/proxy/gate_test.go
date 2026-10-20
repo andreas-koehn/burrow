@@ -34,6 +34,9 @@ type fakeGateStore struct {
 	policyMap   map[string][]string // serviceID → allowed roles
 	failVerify  bool
 	failCreate  bool
+	// afterCutoff are the dashboard sessions created after the bare-cookie
+	// cutoff: ValidateBareSession refuses them.
+	afterCutoff map[string]bool
 }
 
 func newFakeGateStore() *fakeGateStore {
@@ -74,6 +77,13 @@ func (f *fakeGateStore) ValidateSession(_ context.Context, id string) (string, e
 		return uid, nil
 	}
 	return "", db.ErrNotFound
+}
+
+func (f *fakeGateStore) ValidateBareSession(ctx context.Context, id string) (string, error) {
+	if f.afterCutoff[id] {
+		return "", db.ErrNotFound
+	}
+	return f.ValidateSession(ctx, id)
 }
 
 func (f *fakeGateStore) CreateServicesSession(_ context.Context, userID, _, _, parentID string) (string, error) {

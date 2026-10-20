@@ -52,6 +52,10 @@ type APIKeyValidator interface {
 type SessionValidator interface {
 	// ValidateSession takes dashboard sessions only (burrow_session).
 	ValidateSession(ctx context.Context, sessionID string) (userID string, err error)
+	// ValidateBareSession is ValidateSession for a dashboard session read
+	// from the bare burrow_session name while Secure cookies are on: only one
+	// created before the bare-cookie cutoff counts.
+	ValidateBareSession(ctx context.Context, sessionID string) (userID string, err error)
 	// ValidateServicesSession takes services sessions only
 	// (burrow_svc_session on the services host).
 	ValidateServicesSession(ctx context.Context, sessionID string) (userID string, err error)
@@ -76,6 +80,22 @@ type accessChecker struct {
 	// gate→service→gate loop makes burrow_login non-functional).
 	authDomain string
 	log        *slog.Logger
+	// secureCookies says the dashboard's cookies are Secure, and so written
+	// under the __Host- name: a bare burrow_session then counts only for a
+	// session from before the upgrade (WithAccessSecureCookies).
+	secureCookies bool
+}
+
+// AccessOption configures the checker of NewAccessCheckerWithSessionsAndLogger.
+type AccessOption func(*accessChecker)
+
+// WithAccessSecureCookies says whether the dashboard's cookies are Secure
+// (the relay's effective http_secure_cookies). With Secure cookies a session
+// read from the bare burrow_session name is checked with
+// ValidateBareSession: only one created before the bare-cookie cutoff
+// counts, as in the dashboard's API.
+func WithAccessSecureCookies(secure bool) AccessOption {
+	return func(ac *accessChecker) { ac.secureCookies = secure }
 }
 
 // NewAccessChecker returns an AccessChecker that enforces the access policy
@@ -109,13 +129,17 @@ func NewAccessCheckerWithLogger(v APIKeyValidator, authDomain string, log *slog.
 // when the visitor already has a valid session cookie + allowed role. Without
 // this, every burrow_login request 302s to the gate and the gate then 302s
 // back, creating an infinite redirect loop. cmd/server uses this constructor.
-func NewAccessCheckerWithSessionsAndLogger(v APIKeyValidator, sv SessionValidator, authDomain string, log *slog.Logger) AccessChecker {
-	return &accessChecker{
+func NewAccessCheckerWithSessionsAndLogger(v APIKeyValidator, sv SessionValidator, authDomain string, log *slog.Logger, opts ...AccessOption) AccessChecker {
+	ac := &accessChecker{
 		v:          v,
 		sv:         sv,
 		authDomain: authDomain,
 		log:        log,
 	}
+	for _, o := range opts {
+		o(ac)
+	}
+	return ac
 }
 
 // Allow enforces the access mode policy for a single request.
@@ -285,7 +309,10 @@ func (ac *accessChecker) checkBurrowLogin(ctx context.Context, res *Resolved, r 
 	}
 
 	if ac.sv != nil {
-		if sid, _ := auth.ReadCookie(r, cookieName); sid != "" {
+		if sid, name := auth.ReadCookie(r, cookieName); sid != "" {
+			if cookieName == gateSessionCookieName && ac.secureCookies && !auth.IsHostCookie(name) {
+				validate = ac.sv.ValidateBareSession
+			}
 			uid, err := validate(ctx, sid)
 			if err == nil {
 				user, err := ac.sv.GetUserByID(ctx, uid)

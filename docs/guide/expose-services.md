@@ -506,7 +506,11 @@ answers. Only what the model wrote is checked, not the JSON around it;
 escaped characters are decoded first, so `sk-…` counts as `sk-…`. The
 arguments of tool calls count as what the model wrote (an answer can hand a
 secret to a tool): whole, the strings of the arguments' JSON are checked;
-streamed, the pieces of the arguments as they arrive. Embeddings, counting
+streamed, the pieces of the arguments as they arrive, which are raw JSON.
+Their simple escapes (`\n`, `\r`, `\t`, `\b`, `\f`, `\"`, `\\` and `\/`)
+are decoded first, also when one is split across two events, so a key right
+after `\n` follows a line break and is found; a `\uXXXX` escape is checked
+as it stands. Embeddings, counting
 tokens and answers that are not text (audio, images) are not inspected. Neither is an
 error answer of the provider, or an answer larger than the inspector's
 capture limit (256 KiB); the log says so once.
@@ -563,16 +567,29 @@ The bundled answer patterns:
 | `burrow_automation_token` | a Burrow automation token (`bua_…`) |
 | `burrow_gateway_key` | a Burrow gateway key (`bgw_…`) |
 
-A key glued to the word before it (`tokenghp_…`, `KEY_AKIA…`) is found too
+A key glued to the word before it (`Slackxoxb-…`, `KEY_AKIA…`) is found too
 where the prefix is distinctive enough that no word ends in it. The OpenAI
 shapes are found only where they start a word: `sk-` ends English words and
 CSS or resource names (`task-…`, `kiosk-admin-…`), which are no keys. For
 the same reason an Anthropic key may follow a digit or punctuation but no
 letter (`task-ant-design-…` is a CSS name). An AWS key id may follow an
-underscore but no letter or digit. A Google key must start the text or follow
-a character that base64 text does not use (not a letter, digit, `+`, `/`,
-`-`, `_` or `.`), so `AIza` inside a data URI or a JWT is no key, while
-`?key=AIza…` and a quoted key are.
+underscore but no letter or digit. A Google key, a GitHub token and a Burrow
+token or key (`AIza…`, `ghp_…`, `github_pat_…`, `bua_…`, `bgw_…`) must start
+the text or follow a character that base64 text does not use (not a letter,
+digit, `+`, `/`, `-`, `_` or `.`): such a prefix inside a data URI or a JWT
+is no key, while `?key=AIza…`, `TOKEN=ghp_…` and a quoted key are.
+
+Since tool-call arguments are inspected, text a model writes into a file or
+a command through a tool is checked like any other answer text. Two bundled
+patterns then hit on things that are no leak: AWS's documented example key
+id (`AKIAIOSFODNN7EXAMPLE`) and the `-----BEGIN … PRIVATE KEY-----` header
+line in code that reads or writes PEM files. The bundled patterns cannot be
+switched off one by one, and custom patterns run only next to them (with
+answer inspection on) and only add matches: a custom pattern cannot exempt a
+bundled hit. If such answers must go through, set the answer action to
+**flag** instead of **block**: they are delivered, and the request is only
+marked with `aws_access_key` or `private_key_pem`, which you can tell apart
+from a real leak in the request inspector.
 
 A pattern matches as soon as the prefix and 20 key characters are there (an
 AWS key id: its 16), not only the whole token. In a streamed answer with
@@ -675,7 +692,10 @@ The verdict:
   `tier: "judge"`, `direction: "request"` and no pattern.
 
 With `requests_and_answers`, an answer that comes in one piece is held until
-it is complete, checked against the answer patterns, then shown to the judge;
+it is complete, checked against the answer patterns, then shown to the judge.
+Its text is what the model wrote: the text, and the arguments of its tool
+calls (an answer of tool calls only is judged too), on the chat, responses,
+messages and legacy `/v1/completions` endpoints;
 on a `block` it is replaced by an error with status `502` and code
 `guardrail_judge_blocked_answer`. **Streamed answers are never judged**: a
 verdict after the fact cannot stop what was already sent, and holding a
@@ -694,10 +714,12 @@ so a judge that is down does not write an entry per request; the request
 inspector marks every judged request. Blocks are kept the same way (one
 `guardrail.refused` entry per service, direction and gateway key per hour);
 every block's reason is in the inspector. When both the request and its
-answer were judged, the inspector keeps both verdicts (the answer's as the
-judge mark, the request's next to it), and an answer a pattern flagged
-before the judge withheld it announces both: the pattern's flag and the
-judge's block.
+answer were marked (judged, or matched by a pattern), the API returns both:
+the answer's mark in `judge` and `guardrail`, the request's in
+`request_judge` and `request_guardrail`. The dashboard shows the answer's
+mark only. An answer a pattern flagged before the judge withheld it
+announces both: the pattern's flag and the judge's block.
+
 Then `on_failure` decides:
 
 - `allow` keeps apps running while the judge is slow or down, at the price
@@ -714,21 +736,27 @@ it.
 whatever `on_failure` says:
 
 - requests to endpoints without text to read (embeddings, counting tokens,
-  audio uploads); answers of the image, speech, transcription, rerank and
-  legacy completions endpoints;
+  audio uploads); answers of the image, speech, transcription and rerank
+  endpoints;
 - the middle of a text longer than 16384 bytes (see above);
 - streamed answers;
-- requests and answers without text (an image-only request, an answer of
-  tool calls only); the inspector marks them "not judged: no text";
-- answers served from the response cache that were stored before the judge
-  checked answers, or while a failed judgement was allowed through.
+- requests and answers without text (an image-only request); the inspector
+  marks them "not judged: no text";
+- answers served from the response cache that were stored while a failed
+  judgement was allowed through. An entry stored under other judge settings
+  (before the judge checked answers, with another model, policy or
+  `on_failure`, or by a version before v0.12.1) is not served: it is a miss,
+  and the answer is fetched and judged again.
 
 Judge calls cost like any request to that model: each one is a usage row of
 the judge model for the judged request's service, without a gateway key, and
 counts as spend in costs and budgets. Budgets do not stop judge calls, and
 the judged service's rate limits do not count them: their number is bounded
 by the requests the limits let through (one judge call for the request, and
-one more for its answer with `requests_and_answers`). Size the judge model for the
+one more for its answer with `requests_and_answers`). With
+`requests_and_answers`, every tool-call turn of an agent that does not stream
+is held and judged as well, so an agent loop pays one judge call and the
+judge's latency per turn on top of the request's. Size the judge model for the
 traffic it judges; an overloaded judge shows up as timeouts, and then
 `on_failure` decides. The IP/geo policy of the judge provider's service does
 not apply to judge calls either: they are the relay calling itself, with no

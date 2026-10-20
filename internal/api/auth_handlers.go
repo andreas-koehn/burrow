@@ -23,11 +23,12 @@ type userResp struct {
 
 // Login verifies credentials, creates a session, and sets the cookie.
 //
-// A text/plain body is refused (415): it is what a page on another site can
-// send without a preflight, from a form or a no-cors fetch. (The route also
-// refuses cross-origin browser requests outright, see sameOriginOnly.)
+// The body must be application/json (else 415): a page on another site can
+// send text/plain, a form or multipart without a preflight, and no client
+// of Burrow signs in with anything but JSON. (The route also refuses
+// cross-origin browser requests outright, see sameOriginOnly.)
 func (d Deps) Login(w http.ResponseWriter, r *http.Request) {
-	if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt == "text/plain" {
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
 		writeErr(w, http.StatusUnsupportedMediaType, "send the body as application/json")
 		return
 	}

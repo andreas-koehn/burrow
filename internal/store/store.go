@@ -128,6 +128,11 @@ type Store struct {
 	// was approved or denied in the database and before the decision is
 	// audited and answered. A test seam: it lets a poll land in that gap.
 	clientLoginAfterDecide func()
+
+	// bareCookieCutoff is auth.BareCookieCutoffKey (SetBareCookieCutoff):
+	// ValidateBareSession accepts only sessions created before it. Zero
+	// (start-up did not set it) accepts none.
+	bareCookieCutoff time.Time
 }
 
 // New builds a Store over an open, migrated *sql.DB.
@@ -511,7 +516,28 @@ func (s *Store) ValidateServicesSession(ctx context.Context, id string) (userID 
 	return s.validateSession(ctx, id, db.SessionKindServices)
 }
 
+// SetBareCookieCutoff sets the time before which a dashboard session may be
+// presented under the bare cookie name while Secure cookies are on (see
+// auth.BareCookieCutoffKey and ValidateBareSession). Call it before serving.
+func (s *Store) SetBareCookieCutoff(t time.Time) { s.bareCookieCutoff = t }
+
+// ValidateBareSession is ValidateSession for a session id read from the bare
+// burrow_session cookie while Secure cookies are on: only a session created
+// before the bare-cookie cutoff counts (a browser's cookie from before the
+// upgrade). A newer one was planted by another host of the site, since
+// Burrow writes only the __Host- name with Secure cookies; it is refused with
+// ErrUnauthorized, and so is every one while no cutoff is set.
+func (s *Store) ValidateBareSession(ctx context.Context, id string) (string, error) {
+	return s.validate(ctx, id, db.SessionKindDashboard, true)
+}
+
 func (s *Store) validateSession(ctx context.Context, id, kind string) (string, error) {
+	return s.validate(ctx, id, kind, false)
+}
+
+// validate checks a session of kind; bare also asks for one created before
+// the bare-cookie cutoff.
+func (s *Store) validate(ctx context.Context, id, kind string, bare bool) (string, error) {
 	sess, err := s.q.GetSession(ctx, id)
 	if errors.Is(err, db.ErrNotFound) {
 		return "", ErrUnauthorized
@@ -524,6 +550,9 @@ func (s *Store) validateSession(ctx context.Context, id, kind string) (string, e
 		return "", ErrUnauthorized
 	}
 	if !isKind(sess, kind) {
+		return "", ErrUnauthorized
+	}
+	if bare && (s.bareCookieCutoff.IsZero() || !sess.CreatedAt.Before(s.bareCookieCutoff)) {
 		return "", ErrUnauthorized
 	}
 	return sess.UserID, nil

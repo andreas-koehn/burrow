@@ -103,6 +103,10 @@ type GateStore interface {
 	// ValidateSession returns the owning userID of a dashboard session, or an
 	// error for an invalid or expired one or one of the services host.
 	ValidateSession(ctx context.Context, id string) (userID string, err error)
+	// ValidateBareSession is ValidateSession for a session read from the
+	// bare burrow_session name while Secure cookies are on: only one created
+	// before the bare-cookie cutoff counts.
+	ValidateBareSession(ctx context.Context, id string) (userID string, err error)
 	// CreateServicesSession creates the services host's session that the
 	// handoff gives userID, handed off by the dashboard session parentID; it
 	// ends with that session.
@@ -243,8 +247,8 @@ func (g *Gate) handleGetLogin(w http.ResponseWriter, r *http.Request) {
 	nextURL := g.sanitizeNext(nextRaw)
 
 	// Check for an existing session cookie.
-	if sid, _ := auth.ReadCookie(r, gateSessionCookieName); sid != "" {
-		uid, err := g.st.ValidateSession(r.Context(), sid)
+	if sid, name := auth.ReadCookie(r, gateSessionCookieName); sid != "" {
+		uid, err := g.validateDashboardSession(r.Context(), sid, name)
 		if err == nil {
 			// Valid session — look up the user and check role against target service.
 			user, err := g.st.GetUserByID(r.Context(), uid)
@@ -357,6 +361,16 @@ func (g *Gate) handlePostLogin(w http.ResponseWriter, r *http.Request) {
 
 	//nolint:gosec // G710: nextURL is sanitizeNext()-validated to https + authDomain + /svc/ path only; not attacker-controlled.
 	http.Redirect(w, r, nextURL, http.StatusFound)
+}
+
+// validateDashboardSession checks the dashboard session sid read from the
+// cookie name: with Secure cookies, one read from the bare name counts only
+// when it was created before the bare-cookie cutoff (ValidateBareSession).
+func (g *Gate) validateDashboardSession(ctx context.Context, sid, name string) (string, error) {
+	if g.secure && !auth.IsHostCookie(name) {
+		return g.st.ValidateBareSession(ctx, sid)
+	}
+	return g.st.ValidateSession(ctx, sid)
 }
 
 // handlePostLogout deletes the session from the store and clears the session

@@ -1,9 +1,11 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestCookieName(t *testing.T) {
@@ -68,5 +70,52 @@ func TestIsHostCookie(t *testing.T) {
 	}
 	if BaseCookieName("__Host-burrow_svc_nonce_ab") != "burrow_svc_nonce_ab" || BaseCookieName("x") != "x" {
 		t.Fatal("BaseCookieName")
+	}
+}
+
+type memSettings map[string]string
+
+func (m memSettings) GetSettings(context.Context) (map[string]string, error) {
+	out := map[string]string{}
+	for k, v := range m {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (m memSettings) SaveSettings(_ context.Context, kv map[string]string) error {
+	for k, v := range kv {
+		m[k] = v
+	}
+	return nil
+}
+
+// The bare-cookie cutoff is minted at the first start and kept: later starts
+// read the stored one.
+func TestEnsureBareCookieCutoff(t *testing.T) {
+	ctx := context.Background()
+	ss := memSettings{}
+	before := time.Now().Add(-time.Second)
+	c1, err := EnsureBareCookieCutoff(ctx, ss)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c1.Before(before) || c1.After(time.Now().Add(time.Second)) {
+		t.Fatalf("cutoff %v is not now", c1)
+	}
+	if ss[BareCookieCutoffKey] == "" {
+		t.Fatalf("not stored: %v", ss)
+	}
+	ss[BareCookieCutoffKey] = "2026-10-01T12:00:00Z"
+	c2, err := EnsureBareCookieCutoff(ctx, ss)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC); !c2.Equal(want) {
+		t.Fatalf("stored cutoff not kept: %v", c2)
+	}
+	ss[BareCookieCutoffKey] = "garbage"
+	if _, err := EnsureBareCookieCutoff(ctx, ss); err == nil {
+		t.Fatal("a broken stored cutoff was accepted")
 	}
 }

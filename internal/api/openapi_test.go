@@ -333,6 +333,10 @@ func (*fullDepsStub) ValidateSession(context.Context, string) (string, error) {
 	stubPanic("ValidateSession")
 	return "", nil
 }
+func (*fullDepsStub) ValidateBareSession(context.Context, string) (string, error) {
+	stubPanic("ValidateBareSession")
+	return "", nil
+}
 func (*fullDepsStub) DeleteSession(context.Context, string) error {
 	stubPanic("DeleteSession")
 	return nil

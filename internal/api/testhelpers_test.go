@@ -91,6 +91,9 @@ func (u *fakeUserStore) CreateSession(_ context.Context, _, _, _ string) (string
 func (u *fakeUserStore) ValidateSession(_ context.Context, _ string) (string, error) {
 	return u.id(), nil
 }
+func (u *fakeUserStore) ValidateBareSession(ctx context.Context, id string) (string, error) {
+	return u.ValidateSession(ctx, id)
+}
 func (u *fakeUserStore) TouchUserLastLogin(_ context.Context, _ string) error {
 	u.lastLoginTouched = true
 	return nil

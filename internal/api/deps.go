@@ -92,6 +92,10 @@ type UserStore interface {
 	RevokeClientToken(ctx context.Context, id, userID string) error
 	CreateSession(ctx context.Context, userID, ua, ip string) (string, error)
 	ValidateSession(ctx context.Context, id string) (string, error)
+	// ValidateBareSession is ValidateSession for a session read from the
+	// bare burrow_session cookie while Secure cookies are on: only a session
+	// created before the bare-cookie cutoff counts (auth.BareCookieCutoffKey).
+	ValidateBareSession(ctx context.Context, id string) (string, error)
 	DeleteSession(ctx context.Context, id string) error
 	// Multi-user methods.
 	ChangePassword(ctx context.Context, userID, currentPassword, newPassword string) error

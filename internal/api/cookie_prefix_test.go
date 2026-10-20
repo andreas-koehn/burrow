@@ -122,3 +122,47 @@ func TestCSRF_FollowsTheSessionCookieName(t *testing.T) {
 		t.Fatalf("legacy pair: %d deleted=%q", rec.Code, au.deleted)
 	}
 }
+
+// With Secure cookies a bare burrow_session counts only for a session created
+// before the bare-cookie cutoff (a browser's cookie from before the upgrade):
+// a newer one can only have been planted by another host of the site, since
+// Burrow writes the __Host- name. The __Host- session always wins. Without
+// Secure cookies the bare name is the only one and is read as before.
+func TestSession_BareCookieOnlyForSessionsBeforeTheCutoff(t *testing.T) {
+	users := map[string]string{"sid-old": "u-old", "sid-new": "u-new"}
+	validate := func(id string) (string, error) {
+		if uid, ok := users[id]; ok {
+			return uid, nil
+		}
+		return "", store.ErrUnauthorized
+	}
+	d := testDeps(validate)
+	d.Users = fakeUsers{validate: validate, validateBare: func(id string) (string, error) {
+		if id != "sid-old" { // sid-new was created after the cutoff
+			return "", store.ErrUnauthorized
+		}
+		return validate(id)
+	}}
+	d.SecureCookies = true
+	cases := []struct {
+		cookie string
+		code   int
+		user   string
+	}{
+		{"burrow_session=sid-old", http.StatusOK, "u-old"},
+		{"burrow_session=sid-new", http.StatusUnauthorized, ""},
+		{"burrow_session=sid-old; __Host-burrow_session=sid-new", http.StatusOK, "u-new"},
+		{"__Host-burrow_session=sid-new; burrow_session=sid-old", http.StatusOK, "u-new"},
+		{"__Host-burrow_session=sid-new", http.StatusOK, "u-new"},
+	}
+	for _, c := range cases {
+		rec := cookieAPI(t, d, "GET", "/api/v1/me", c.cookie, "", "")
+		if rec.Code != c.code || (c.user != "" && !strings.Contains(rec.Body.String(), `"id":"`+c.user+`"`)) {
+			t.Errorf("%s: %d %s, want %d %s", c.cookie, rec.Code, rec.Body, c.code, c.user)
+		}
+	}
+	d.SecureCookies = false
+	if rec := cookieAPI(t, d, "GET", "/api/v1/me", "burrow_session=sid-new", "", ""); rec.Code != http.StatusOK {
+		t.Errorf("plain http, bare session: %d, want 200", rec.Code)
+	}
+}

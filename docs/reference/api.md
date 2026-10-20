@@ -18,7 +18,8 @@ Log in once and carry the session cookie. Over HTTPS it is
 `__Host-burrow_session` and the CSRF cookie `__Host-burrow_csrf` (a `__Host-`
 cookie cannot carry a Domain, so no other host of the site can set one); over
 plain http they are `burrow_session` and `burrow_csrf`. Sessions of earlier
-versions, under the bare names, still work for one release. Sign-in refuses
+versions, under the bare names, still work over HTTPS until they expire;
+a bare session created after the first start of v0.12.1 is refused. Sign-in refuses
 a cross-origin browser request (403) and a `text/plain` body (415):
 
 ```sh
@@ -31,7 +32,7 @@ State-changing requests (POST, PUT, DELETE, PATCH) with a session cookie must al
 
 ```sh
 curl -b cookies.txt \
-  -H "X-CSRF-Token: $(grep burrow_csrf cookies.txt | awk '{print $NF}')" \
+  -H "X-CSRF-Token: $(grep -E '\s(__Host-)?burrow_csrf\s' cookies.txt | head -1 | awk '{print $NF}')" \
   -X DELETE https://burrow.insingo.com/api/v1/tokens/tok_abc123
 ```
 

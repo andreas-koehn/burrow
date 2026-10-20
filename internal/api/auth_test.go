@@ -37,6 +37,9 @@ func (a *authUsers) ValidateSession(_ context.Context, id string) (string, error
 	}
 	return "", store.ErrUnauthorized
 }
+func (a *authUsers) ValidateBareSession(ctx context.Context, id string) (string, error) {
+	return a.ValidateSession(ctx, id)
+}
 
 func newTestServer(d Deps) *httptest.Server { return httptest.NewServer(NewRouter(d)) }
 

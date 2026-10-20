@@ -134,19 +134,33 @@ func privatePage(w http.ResponseWriter) {
 	h.Set("Content-Security-Policy", "frame-ancestors 'none'")
 }
 
+// handoffPage is privatePage for the handoff on the dashboard's host, whose
+// sign-in form posts back to that host: Referrer-Policy same-origin instead
+// of no-referrer. Under no-referrer a browser sends "Origin: null" with the
+// form's POST, and one that sends no Sec-Fetch-Site then fails the form's
+// same-origin check (sameOriginForm). same-origin passes the address to this
+// host only, never to another origin (the services host's callback, where
+// the code goes, included).
+func handoffPage(w http.ResponseWriter) {
+	privatePage(w)
+	w.Header().Set("Referrer-Policy", "same-origin")
+}
+
 // sessionUser returns the active user of the session in the named cookie:
 // a services session in burrow_svc_session, a dashboard session in
 // burrow_session. A session of the other kind counts for nothing.
 func (g *Gate) sessionUser(r *http.Request, cookie string) (db.User, bool) {
-	sid, _ := auth.ReadCookie(r, cookie)
+	sid, name := auth.ReadCookie(r, cookie)
 	if sid == "" {
 		return db.User{}, false
 	}
-	validate := g.st.ValidateSession
+	var uid string
+	var err error
 	if cookie == ServicesSessionCookie {
-		validate = g.st.ValidateServicesSession
+		uid, err = g.st.ValidateServicesSession(r.Context(), sid)
+	} else {
+		uid, err = g.validateDashboardSession(r.Context(), sid, name)
 	}
-	uid, err := validate(r.Context(), sid)
 	if err != nil {
 		return db.User{}, false
 	}
@@ -275,7 +289,7 @@ func (g *Gate) handleHandoff(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	privatePage(w)
+	handoffPage(w)
 	ret, ok := svcURLOn(r.URL.Query().Get("return"), g.servicesDomain)
 	if !ok {
 		http.Error(w, "invalid return address", http.StatusBadRequest)
@@ -303,7 +317,7 @@ func (g *Gate) handlePostHandoff(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	privatePage(w)
+	handoffPage(w)
 	r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)

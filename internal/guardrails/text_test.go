@@ -1,6 +1,7 @@
 package guardrails
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -165,5 +166,55 @@ func TestRequestText_MediaEndpoints(t *testing.T) {
 		if got != c.want || ok != c.ok {
 			t.Errorf("%s: RequestText = %q, %v; want %q, %v", c.name, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+// Streamed tool-call arguments are raw JSON: their simple escapes are
+// decoded before the scan, so a key right after "\n" follows a line break,
+// not the letter n. An escape split across two pieces is decoded too (the
+// reader carries the backslash); text deltas are decoded by encoding/json
+// already and are left alone.
+func TestDeltaReader_DecodesArgumentEscapes(t *testing.T) {
+	chat := func(piece string) []byte {
+		b, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{
+			"tool_calls": []any{map[string]any{"index": 0, "function": map[string]any{"arguments": piece}}}}}}})
+		return b
+	}
+	responses := func(piece string) []byte {
+		b, _ := json.Marshal(map[string]any{"type": "response.function_call_arguments.delta", "delta": piece})
+		return b
+	}
+	messages := func(piece string) []byte {
+		b, _ := json.Marshal(map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "input_json_delta", "partial_json": piece}})
+		return b
+	}
+	for name, frame := range map[string]func(string) []byte{FormatChat: chat, FormatResponses: responses, FormatMessages: messages} {
+		cases := []struct {
+			pieces, want []string
+		}{
+			{[]string{`{"c":"a\nb\tc\rd\"e\\f\/g"}`}, []string{"{\"c\":\"a\nb\tc\rd\"e\\f/g\"}"}},
+			{[]string{`{"c":"x\`, `nAKIA`}, []string{`{"c":"x`, "\nAKIA"}},
+			{[]string{`{"c":"x\\`, `nAKIA`}, []string{`{"c":"x\`, "nAKIA"}},
+			{[]string{`{"c":"x\\\`, `t`}, []string{`{"c":"x\`, "\t"}},
+			{[]string{`\`, `"q`}, []string{"", `"q`}},
+			{[]string{`{"c":"A"}`}, []string{`{"c":"A"}`}},
+		}
+		for _, c := range cases {
+			r := NewDeltaReader(name)
+			for i, p := range c.pieces {
+				got, _ := r.Text(frame(p))
+				if got != c.want[i] {
+					t.Errorf("%s %q piece %d: %q, want %q", name, c.pieces, i, got, c.want[i])
+				}
+			}
+		}
+	}
+	// A text delta is not decoded a second time.
+	r := NewDeltaReader(FormatChat)
+	if got, _ := r.Text([]byte(`{"choices":[{"delta":{"content":"a\\nb"}}]}`)); got != `a\nb` {
+		t.Errorf("text delta: %q", got)
+	}
+	if got, _ := DeltaText(FormatMessages, messages(`{"k":"a\nb`)); got != "{\"k\":\"a\nb" {
+		t.Errorf("DeltaText: %q", got)
 	}
 }

@@ -56,7 +56,7 @@ curl -c cookies.txt -X POST https://burrow.insingo.com/api/v1/auth/login \
   -d '{"email":"admin@example.com","password":"changeme"}'
 
 curl -b cookies.txt -X POST https://burrow.insingo.com/api/v1/automation/tokens \
-  -H "X-CSRF-Token: $(grep burrow_csrf cookies.txt | awk '{print $NF}')" \
+  -H "X-CSRF-Token: $(grep -E '\s(__Host-)?burrow_csrf\s' cookies.txt | head -1 | awk '{print $NF}')" \
   -H 'Content-Type: application/json' \
   -d '{
         "name": "claude-code",

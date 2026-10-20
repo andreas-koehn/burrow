@@ -600,3 +600,32 @@ func TestGateServices_EachHostTakesItsOwnSessionKind(t *testing.T) {
 		t.Fatalf("callback after the dashboard session ended: %d, want no services session", rec.Code)
 	}
 }
+
+// The handoff's sign-in form is sent with Referrer-Policy same-origin, not
+// no-referrer: under no-referrer a browser sends "Origin: null" with the
+// form's POST, and one without Sec-Fetch-Site then fails the same-origin
+// check of the form. same-origin still sends nothing to another origin (the
+// redirect to the services host's callback included). The callback, which
+// carries the code, keeps no-referrer.
+func TestGateServices_HandoffFormReferrerPolicy(t *testing.T) {
+	_, _, g := servicesGate(t)
+	nonce, start := startLogin(t, g, svcReturn)
+	form := gateDo(g, "GET", gateAuthDomain, start.RequestURI())
+	if form.Code != http.StatusOK || form.Header().Get("Referrer-Policy") != "same-origin" {
+		t.Errorf("handoff form: %d Referrer-Policy %q, want same-origin", form.Code, form.Header().Get("Referrer-Policy"))
+	}
+	fields := url.Values{"email": {"alice@example.com"}, "password": {"wrong"}, "return": {svcReturn}, "nonce": {start.Query().Get("nonce")}}
+	bad := gatePostForm(g, gateAuthDomain, "/__burrow/handoff", fields)
+	if bad.Code != http.StatusOK || bad.Header().Get("Referrer-Policy") != "same-origin" {
+		t.Errorf("handoff form again: %d Referrer-Policy %q, want same-origin", bad.Code, bad.Header().Get("Referrer-Policy"))
+	}
+	fields.Set("password", "correct-password")
+	ok := gatePostForm(g, gateAuthDomain, "/__burrow/handoff", fields)
+	if ok.Code != http.StatusFound || ok.Header().Get("Referrer-Policy") != "same-origin" {
+		t.Errorf("handoff redirect: %d Referrer-Policy %q, want same-origin", ok.Code, ok.Header().Get("Referrer-Policy"))
+	}
+	loc, _ := url.Parse(ok.Header().Get("Location"))
+	if rec := callback(g, loc, nonce); rec.Header().Get("Referrer-Policy") != "no-referrer" {
+		t.Errorf("callback Referrer-Policy %q, want no-referrer", rec.Header().Get("Referrer-Policy"))
+	}
+}

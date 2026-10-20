@@ -31,6 +31,9 @@ func (s *ipCaptureStore) CreateSession(_ context.Context, _, _, ip string) (stri
 func (s *ipCaptureStore) ValidateSession(_ context.Context, _ string) (string, error) {
 	return "u1", nil
 }
+func (s *ipCaptureStore) ValidateBareSession(ctx context.Context, id string) (string, error) {
+	return s.ValidateSession(ctx, id)
+}
 
 // TestTrustedProxyMiddlewareEmpty_XFFIgnored asserts that when TrustedProxies
 // is empty (the safe default), a request with X-Forwarded-For from an

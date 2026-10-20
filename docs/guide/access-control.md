@@ -487,8 +487,10 @@ and `__Host-burrow_csrf`. Browsers accept a `__Host-` cookie only with
 (the services host, a tunnelled app on a sibling name) cannot set or shadow
 the dashboard's session with a `Domain=` cookie. Over plain http the names are
 `burrow_session` and `burrow_csrf`. A session signed in before v0.12.1 keeps
-working under its bare name for one release; the next sign-in writes the new
-names and clears the old ones. The sign-in forms (the dashboard's, the
+working under its bare name until it expires; a bare session created after
+the first start of v0.12.1 is refused (see
+[Upgrading to v0.12.1](/guide/operations#upgrade-v0-12-1)). The next sign-in
+writes the new names and clears the old ones. The sign-in forms (the dashboard's, the
 gate's and the handoff's) and the password confirmation refuse a request
 another origin sent (login CSRF).
 

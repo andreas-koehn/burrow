@@ -197,3 +197,77 @@ func TestGate_PasswordFormsRefuseCrossSite(t *testing.T) {
 		}
 	}
 }
+
+// With Secure cookies a bare burrow_session counts on the dashboard's host
+// only for a session created before the bare-cookie cutoff: the access
+// checker and the gate (its login page and the services handoff) refuse a
+// newer one, which only another host of the site can have planted. The
+// __Host- session always wins; without Secure cookies the bare name is read
+// as before.
+func TestGateAndChecker_BareSessionOnlyBeforeTheCutoff(t *testing.T) {
+	newStore := func() *fakeGateStore {
+		st := newFakeGateStore()
+		st.user = db.User{ID: "user-1", Email: "alice@example.com", Role: "user", Status: "active"}
+		st.policyMap["svc-g"] = []string{"user"}
+		st.serviceMap["grafana"] = db.Service{ID: "svc-g", Name: "Grafana", Subdomain: "grafana"}
+		st.sessionMap["sess-old"] = "user-1"
+		st.sessionMap["sess-new"] = "user-1"
+		st.afterCutoff = map[string]bool{"sess-new": true}
+		return st
+	}
+	res := &proxy.Resolved{ServiceID: "svc-g", AccessMode: "burrow_login"}
+	allow := func(ac proxy.AccessChecker, cookie string) bool {
+		req := svcRequest("/", "")
+		req.Header.Set("Cookie", cookie)
+		ok, _, _, _ := ac.Allow(context.Background(), res, req)
+		return ok
+	}
+	st := newStore()
+	secure := proxy.NewAccessCheckerWithSessionsAndLogger(&fakeValidator{}, st, gateAuthDomain, testLog(), proxy.WithAccessSecureCookies(true))
+	for cookie, want := range map[string]bool{
+		"burrow_session=sess-old":                                 true,
+		"burrow_session=sess-new":                                 false,
+		"burrow_session=sess-old; __Host-burrow_session=sess-new": true,
+		"__Host-burrow_session=sess-new":                          true,
+	} {
+		if got := allow(secure, cookie); got != want {
+			t.Errorf("checker, Secure, %s: allowed=%v, want %v", cookie, got, want)
+		}
+	}
+	plain := proxy.NewAccessCheckerWithSessionsAndLogger(&fakeValidator{}, st, gateAuthDomain, testLog())
+	if !allow(plain, "burrow_session=sess-new") {
+		t.Error("checker, plain http: the bare session was refused")
+	}
+
+	g := proxy.NewGate(st, gateAuthDomain, true, testLog())
+	next := "https://" + gateAuthDomain + "/svc/grafana/"
+	login := func(cookie string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/__burrow/login?next="+url.QueryEscape(next), nil)
+		req.Host = gateAuthDomain
+		req.Header.Set("Cookie", cookie)
+		rec := httptest.NewRecorder()
+		g.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := login("burrow_session=sess-old"); rec.Code != http.StatusFound || rec.Header().Get("Location") != next {
+		t.Errorf("gate login, old bare session: %d %q, want the redirect to next", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := login("burrow_session=sess-new"); rec.Code != http.StatusOK || rec.Header().Get("Location") != "" {
+		t.Errorf("gate login, new bare session: %d %q, want the sign-in form", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := login("burrow_session=sess-old; __Host-burrow_session=sess-new"); rec.Code != http.StatusFound {
+		t.Errorf("gate login, __Host- session: %d, want the redirect", rec.Code)
+	}
+
+	// The handoff to the services host gives no code for a new bare session.
+	g = proxy.NewGate(st, gateAuthDomain, true, testLog(), proxy.WithServicesDomain(servicesHost))
+	_, start := startLogin(t, g, svcReturn)
+	rec := gateDo(g, "GET", gateAuthDomain, start.RequestURI(), &http.Cookie{Name: "burrow_session", Value: "sess-new"})
+	if rec.Code != http.StatusOK || rec.Header().Get("Location") != "" {
+		t.Errorf("handoff, new bare session: %d %q, want the sign-in form", rec.Code, rec.Header().Get("Location"))
+	}
+	rec = gateDo(g, "GET", gateAuthDomain, start.RequestURI(), &http.Cookie{Name: "burrow_session", Value: "sess-old"})
+	if rec.Code != http.StatusFound {
+		t.Errorf("handoff, old bare session: %d, want the redirect with a code", rec.Code)
+	}
+}

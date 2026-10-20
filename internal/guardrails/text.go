@@ -47,8 +47,8 @@ const (
 // "sk-…". A tool call's arguments are what the model wrote as much as its
 // text: an answer may hand a secret to a tool. Whole, the arguments are JSON
 // and their strings (keys and values, in order) are the text; streamed they
-// come in pieces of raw JSON, which are read as they are. Reasoning is not
-// text in this sense. Several pieces of text are joined with "\n", so that
+// come in pieces of raw JSON, whose simple escapes are decoded (see
+// DeltaReader). Reasoning is not text in this sense. Several pieces of text are joined with "\n", so that
 // the end of one and the start of the next cannot form a match together.
 
 // AnswerText returns the text of an answer that came in one piece. ok is
@@ -139,9 +139,33 @@ func AnswerText(format string, body []byte) (string, bool) {
 // DeltaText returns the text one event of a streamed answer adds: frame is
 // the data of one server-sent event. ok is false for an event that adds no
 // text (a role, usage, the end, "[DONE]"). A piece of a tool call's
-// arguments is text (raw JSON, as it streams).
+// arguments is text (raw JSON, as it streams, with its simple escapes
+// decoded). DeltaText reads one event on its own: an escape split across two
+// events needs a DeltaReader.
 func DeltaText(format string, frame []byte) (string, bool) {
-	switch format {
+	return NewDeltaReader(format).Text(frame)
+}
+
+// DeltaReader reads the text of the events of one streamed answer, in order
+// (see DeltaText). The pieces of a tool call's arguments are raw JSON, so a
+// key right after an escape ("…\nsk-ant-…") would follow the letter n, which
+// the anchored answer patterns refuse. The reader decodes the simple JSON
+// escapes in them (\n, \r, \t, \b, \f, \", \\ and \/) and carries a
+// backslash that ends one piece over to the next, so an escape split across
+// two events is decoded too. A \u escape is left as it is. Not safe for use
+// by several goroutines.
+type DeltaReader struct {
+	format string
+	carry  bool // the last piece of arguments ended in the backslash of an escape
+}
+
+// NewDeltaReader returns a reader for the events of one streamed answer in
+// format.
+func NewDeltaReader(format string) *DeltaReader { return &DeltaReader{format: format} }
+
+// Text returns the text one event adds (see DeltaText).
+func (d *DeltaReader) Text(frame []byte) (string, bool) {
+	switch d.format {
 	case FormatChat:
 		var c struct {
 			Choices []struct {
@@ -162,8 +186,8 @@ func DeltaText(format string, frame []byte) (string, bool) {
 		for _, ch := range c.Choices {
 			parts = appendContent(parts, ch.Delta.Content)
 			for _, tc := range ch.Delta.ToolCalls {
-				if tc.Function.Arguments != "" {
-					parts = append(parts, tc.Function.Arguments)
+				if a := d.arguments(tc.Function.Arguments); a != "" {
+					parts = append(parts, a)
 				}
 			}
 		}
@@ -176,10 +200,14 @@ func DeltaText(format string, frame []byte) (string, bool) {
 		if json.Unmarshal(frame, &ev) != nil || ev.Delta == "" {
 			return "", false
 		}
-		if ev.Type != "response.output_text.delta" && ev.Type != "response.function_call_arguments.delta" {
-			return "", false
+		switch ev.Type {
+		case "response.output_text.delta":
+			return ev.Delta, true
+		case "response.function_call_arguments.delta":
+			a := d.arguments(ev.Delta)
+			return a, a != ""
 		}
-		return ev.Delta, true
+		return "", false
 	case FormatMessages:
 		var ev struct {
 			Type  string `json:"type"`
@@ -196,7 +224,8 @@ func DeltaText(format string, frame []byte) (string, bool) {
 		case ev.Delta.Type == "text_delta" && ev.Delta.Text != "":
 			return ev.Delta.Text, true
 		case ev.Delta.Type == "input_json_delta" && ev.Delta.PartialJSON != "":
-			return ev.Delta.PartialJSON, true
+			a := d.arguments(ev.Delta.PartialJSON)
+			return a, a != ""
 		}
 		return "", false
 	case FormatCompletions:
@@ -217,6 +246,41 @@ func DeltaText(format string, frame []byte) (string, bool) {
 		return joined(parts)
 	}
 	return "", false
+}
+
+// jsonEscapes maps the letter of a simple JSON escape to what it stands for.
+var jsonEscapes = [256]byte{'n': '\n', 'r': '\r', 't': '\t', 'b': '\b', 'f': '\f', '"': '"', '\\': '\\', '/': '/'}
+
+// arguments decodes the simple escapes of one piece of a tool call's
+// arguments (see DeltaReader).
+func (d *DeltaReader) arguments(piece string) string {
+	if piece == "" || (!d.carry && strings.IndexByte(piece, '\\') < 0) {
+		return piece
+	}
+	if d.carry {
+		piece, d.carry = `\`+piece, false
+	}
+	var b strings.Builder
+	b.Grow(len(piece))
+	for i := 0; i < len(piece); i++ {
+		c := piece[i]
+		if c != '\\' {
+			b.WriteByte(c)
+			continue
+		}
+		if i+1 == len(piece) {
+			d.carry = true // the escaped letter comes with the next piece
+			break
+		}
+		if r := jsonEscapes[piece[i+1]]; r != 0 {
+			b.WriteByte(r)
+		} else {
+			b.WriteByte(c) // \u and anything unknown: as it is
+			b.WriteByte(piece[i+1])
+		}
+		i++
+	}
+	return b.String()
 }
 
 // appendArguments appends the text of a tool call's arguments: the strings

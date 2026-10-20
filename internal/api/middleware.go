@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -30,7 +31,8 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 
 // RequireSession authenticates via the session cookie (__Host-burrow_session,
 // or the bare burrow_session of plain http and earlier versions) and injects
-// the user id.
+// the user id. With Secure cookies a bare cookie counts only for a session
+// created before the bare-cookie cutoff (ValidateBareSession).
 //
 // When RequireBearerOrSession ran earlier in the chain and successfully
 // authenticated a bearer token, the request context already carries a
@@ -44,12 +46,18 @@ func (d Deps) RequireSession(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		sid := sessionID(r)
+		sid, name := auth.ReadCookie(r, sessionCookieName)
 		if sid == "" {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		uid, err := d.Users.ValidateSession(r.Context(), sid)
+		validate := d.Users.ValidateSession
+		if d.SecureCookies && !auth.IsHostCookie(name) {
+			// The bare name of an earlier version: only a session from
+			// before the upgrade counts (auth.BareCookieCutoffKey).
+			validate = d.Users.ValidateBareSession
+		}
+		uid, err := validate(r.Context(), sid)
 		if err != nil {
 			if errors.Is(err, store.ErrUnauthorized) {
 				writeErr(w, http.StatusUnauthorized, "unauthorized")

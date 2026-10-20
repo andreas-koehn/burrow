@@ -65,6 +65,29 @@ func TestLogin_RefusesTextPlain(t *testing.T) {
 	}
 }
 
+// Sign-in takes application/json only: a form, multipart, any other media
+// type and a body without a Content-Type are refused with 415 (no repo
+// client signs in without one; the dashboard, the scripts and the e2e
+// helpers all send application/json).
+func TestLogin_RefusesOtherMediaTypes(t *testing.T) {
+	for _, ct := range []string{"", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x", "text/html", "application/xml", "application/jsonp", "application/json-seq", "not a media type"} {
+		au := &authUsers{verify: func(_, _ string) (bool, error) { return true, nil }}
+		rec := httptest.NewRecorder()
+		NewRouter(Deps{Users: au, Log: discardLog()}).ServeHTTP(rec, loginReqWith(ct, nil))
+		if rec.Code != http.StatusUnsupportedMediaType || len(rec.Result().Cookies()) > 0 {
+			t.Errorf("%q: status %d cookies %v, want 415 and none", ct, rec.Code, rec.Result().Cookies())
+		}
+	}
+	for _, ct := range []string{"application/json", "application/json; charset=utf-8", "Application/JSON"} {
+		au := &authUsers{verify: func(_, _ string) (bool, error) { return true, nil }}
+		rec := httptest.NewRecorder()
+		NewRouter(Deps{Users: au, Log: discardLog()}).ServeHTTP(rec, loginReqWith(ct, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%q: status %d %s, want 200", ct, rec.Code, rec.Body)
+		}
+	}
+}
+
 // POST /auth/reauth refuses a cross-site request as well, even one that
 // carries the session and the CSRF token.
 func TestReauth_RefusesCrossSiteRequests(t *testing.T) {

@@ -113,6 +113,33 @@ go build ./cmd/client
 
 Then restart `burrowd` with the new binary.
 
+### Upgrading to v0.12.1 {#upgrade-v0-12-1}
+
+- **Dashboard cookies.** With Secure cookies the dashboard writes
+  `__Host-burrow_session` and `__Host-burrow_csrf`. A browser that still holds
+  the bare `burrow_session` of an earlier version stays signed in, but only
+  for a session created before the first start of v0.12.1: that start stores
+  its time as the setting `auth.bare_cookie_cutoff`. A bare session created
+  after it is refused, since only another host of the site can have set it.
+  The bare cookies had a lifetime of 7 days, so a week after the upgrade no
+  browser needs the fallback any more. A dashboard tab left open across the
+  upgrade still runs the earlier dashboard, which knows only the bare CSRF
+  cookie: if it has to sign in again, its changes answer `403` until the
+  page is reloaded.
+- **Response cache.** For services whose answers are inspected or judged,
+  the exact response cache warms up again: entries stored under the earlier
+  answer patterns, or by a version before v0.12.1, are misses, fetched again
+  from the provider and checked. Every later change to the bundled answer
+  patterns does the same once.
+
+::: details Backlog (2026-10-20): remove the bare-cookie fallback
+The code that reads the bare `burrow_session` and `burrow_csrf` next to the
+`__Host-` names (`auth.ReadCookie`, `ValidateBareSession` and the
+`auth.bare_cookie_cutoff` setting) can be deleted once every deployment has
+passed its cutoff plus 7 days, at the earliest on 2026-10-27. Plain-http
+relays keep the bare names as their only names.
+:::
+
 ---
 
 ## Certificates

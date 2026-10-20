@@ -141,6 +141,14 @@ proxy_set_header Host $host;
 ```
 
 Caddy and Traefik keep the original `Host` by default.
+
+Such a browser also needs a real `Origin`. A page sent with
+`Referrer-Policy: no-referrer` makes the browser send `Origin: null` with a
+form it posts, so a proxy that adds that header to the relay's answers
+breaks the gate's password forms the same way. Burrow sends the handoff's
+sign-in page with `same-origin`, which passes the address to the relay's own
+host only, and its other sign-in forms with the browser's default policy; do
+not override either with `no-referrer`.
 :::
 
 Example for a proxy running on localhost:

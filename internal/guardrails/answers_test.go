@@ -84,30 +84,31 @@ func TestAnswerPatterns_HitsAndNearMisses(t *testing.T) {
 	}
 }
 
-// A key glued to the word before it ("tokenghp_…", "id_AKIA…") is still
+// A key glued to the word before it ("Slackxoxb-…", "id_AKIA…") is still
 // found where the prefix is distinctive enough that no word ends in it. The
 // OpenAI shapes keep their word boundary: "sk-" ends English words and CSS or
 // resource names ("task-…", "kiosk-admin-…"), and gluing would turn those
 // into keys. The Anthropic shape may follow a digit or punctuation but no
-// letter ("task-ant-design-…" is a CSS name); the Google shape may follow
-// no base64 character, so it is not found inside base64 text.
+// letter ("task-ant-design-…" is a CSS name); the Google, GitHub and Burrow
+// shapes may follow no base64 character, so they are not found inside base64
+// text, only glued to punctuation.
 func TestAnswerPatterns_GluedToAWord(t *testing.T) {
 	e := NewEngine()
 	glued := map[string]string{
 		"anthropic_key":           "key2" + fakeAnthropic,
 		"aws_access_key":          "id_" + fakeAWS,
-		"github_token":            "token" + fakeGitHub,
+		"github_token":            "token=" + fakeGitHub,
 		"slack_token":             "Slack" + fakeSlack,
 		"google_api_key":          "?key=" + fakeGoogle,
-		"burrow_automation_token": "Bearer_" + fakeAutomation,
-		"burrow_gateway_key":      "keyis" + fakeGatewayKey,
+		"burrow_automation_token": "Bearer:" + fakeAutomation,
+		"burrow_gateway_key":      "key=" + fakeGatewayKey,
 	}
 	for id, text := range glued {
 		if hit, got := e.InspectAnswerText(text, nil); !hit || got != id {
 			t.Errorf("%s: glued %q = %v %q, want a hit", id, text, hit, got)
 		}
 	}
-	github := "x" + "github_pat_" + strings.Repeat("A1b2C3d4E5", 3)
+	github := "x=" + "github_pat_" + strings.Repeat("A1b2C3d4E5", 3)
 	if hit, got := e.InspectAnswerText(github, nil); !hit || got != "github_token" {
 		t.Errorf("glued fine-grained GitHub token: %v %q", hit, got)
 	}
@@ -423,6 +424,47 @@ func TestAnswerPatterns_PaddedKeyStreamedIsBlocked(t *testing.T) {
 		text := "ghp" + "_" + strings.Repeat("x", n)
 		if ok, _ := e.InspectAnswerBundled(text); ok {
 			t.Errorf("placeholder of %d characters blocked", n)
+		}
+	}
+}
+
+// "ghp_", "github_pat_", "bua_" and "bgw_" inside base64 or base64url text
+// (a JWT, a data URI) are no tokens: like the Google shape, the prefix needs
+// the start of the text or a character outside the base64 alphabets and the
+// JWT separator before it. A token glued to punctuation is still found.
+func TestAnswerPatterns_TokensNotInsideBase64(t *testing.T) {
+	e := NewEngine()
+	jwt := func(inner string) string {
+		return "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4" + inner + "In0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+	}
+	for _, text := range []string{
+		jwt("ghp" + "_" + strings.Repeat("Zq8vR2mXk4", 3)),
+		jwt("gho" + "_" + strings.Repeat("Zq8vR2mXk4", 3)),
+		jwt("github_pat" + "_" + strings.Repeat("Zq8vR2mXk4", 3)),
+		jwt("bgw" + "_" + strings.Repeat("Zq8vR2mXk4", 3)),
+		"eyJ0eXAiOiJKV1QifQ." + "bua" + "_" + strings.Repeat("ABCDEFGHIJ", 3) + ".sig",
+		`<img src="data:image/png;base64,iVBORw0KGgo` + "ghp" + "_" + strings.Repeat("A1b2C3d4E5", 3) + `">`,
+		"token" + fakeGitHub,
+		"key" + fakeGatewayKey,
+		"x/" + fakeAutomation,
+	} {
+		if hit, id := e.InspectAnswerText(text, nil); hit {
+			t.Errorf("%q matched %q", text, id)
+		}
+	}
+	for id, texts := range map[string][]string{
+		"github_token": {
+			fakeGitHub, "token " + fakeGitHub, `"` + fakeGitHub + `"`, "GITHUB_TOKEN=" + fakeGitHub,
+			"(" + fakeGitHub + ")", "auth:" + fakeGitHub, "'" + fakeGitHub + "'", "<" + fakeGitHub + ">",
+			"=github_pat_" + strings.Repeat("A1b2C3d4E5", 3),
+		},
+		"burrow_gateway_key":      {fakeGatewayKey, "Bearer " + fakeGatewayKey, `{"key":"` + fakeGatewayKey + `"}`, "KEY=" + fakeGatewayKey},
+		"burrow_automation_token": {fakeAutomation, "Bearer " + fakeAutomation, "TOKEN=" + fakeAutomation, "[" + fakeAutomation + "]"},
+	} {
+		for _, text := range texts {
+			if hit, got := e.InspectAnswerText(text, nil); !hit || got != id {
+				t.Errorf("%q = %v %q, want %s", text, hit, got, id)
+			}
 		}
 	}
 }

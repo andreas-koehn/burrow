@@ -108,6 +108,7 @@ type answerGuard struct {
 	over    bool         // the whole answer was larger than max
 	parser  *sse.Parser
 	scanner *guardrails.StreamScanner
+	deltas  *guardrails.DeltaReader // the text of each event, escapes of arguments decoded
 
 	hit       bool
 	pattern   string
@@ -168,6 +169,7 @@ func (g *answerGuard) WriteHeader(code int) {
 		g.mode = modeStream
 		g.parser = sse.NewParser(maxPendingFrame + 1024)
 		g.scanner = guardrails.NewStreamScanner(g.quick, g.full)
+		g.deltas = guardrails.NewDeltaReader(g.format)
 	case ct == "" || isJSONType(ct):
 		if g.action == guardrails.AnswerActionBlock || g.judge != nil {
 			g.mode = modeHeld
@@ -323,7 +325,7 @@ func (g *answerGuard) checkFrames(frames []sse.Frame) bool {
 	for _, f := range frames {
 		var hit bool
 		var id string
-		if text, ok := guardrails.DeltaText(g.format, f.Data); ok {
+		if text, ok := g.deltas.Text(f.Data); ok {
 			hit, id = g.scanner.Add(text)
 		} else {
 			// No text: the event itself passes unchecked, but the answer

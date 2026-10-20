@@ -824,7 +824,8 @@ func newRootCmd() *cobra.Command {
 			// WithTLSBase / proxySrv.TLSConfig wiring below.
 			proxyTLSEnabled := (cfg.HTTPProxyTLSCert != "" && cfg.HTTPProxyTLSKey != "") || acmeMgr != nil
 
-			accessChecker := proxy.NewAccessCheckerWithSessionsAndLogger(st, st, proxyAuthDomain, log)
+			accessChecker := proxy.NewAccessCheckerWithSessionsAndLogger(st, st, proxyAuthDomain, log,
+				proxy.WithAccessSecureCookies(effectiveSecureCookies))
 			gate := proxy.NewGate(st, proxyAuthDomain, effectiveSecureCookies, log,
 				proxy.WithServicesDomain(cfg.ServicesDomain), proxy.WithGateAuditLogger(v04.AuditLogger))
 			// v0.5.0 F-13: wire the connection-log sink so the proxy

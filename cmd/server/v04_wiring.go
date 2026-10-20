@@ -21,6 +21,7 @@ import (
 	"github.com/ankoehn/burrow/internal/aimeter"
 	"github.com/ankoehn/burrow/internal/api"
 	"github.com/ankoehn/burrow/internal/audit"
+	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/cache/exact"
 	"github.com/ankoehn/burrow/internal/config"
 	"github.com/ankoehn/burrow/internal/cost"
@@ -118,6 +119,14 @@ func buildV04Stack(
 		return nil, err
 	}
 	auditLogger.SetSessionRefCutoff(sessionRefCutoff)
+	// The first start of this version also marks the end of the bare
+	// burrow_session cookie: with Secure cookies, a bare one counts only for
+	// a session created before then (auth.BareCookieCutoffKey).
+	bareCookieCutoff, err := auth.EnsureBareCookieCutoff(ctx, st)
+	if err != nil {
+		return nil, err
+	}
+	st.SetBareCookieCutoff(bareCookieCutoff)
 	// Back-fill the audit logger into the store so future store-side
 	// mutations can chain (no current callers; the setter is the seam).
 	st.SetAuditLogger(storeAuditAdapter{auditLogger})
