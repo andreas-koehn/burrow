@@ -683,9 +683,9 @@ describe("Requests page", () => {
     it.each([
       ["a flagged request", { guardrail: { pattern: "ignore-previous", direction: "request" as const, action: "log_only" } }, "Flagged · ignore-previous"],
       ["a refused request", { guardrail: { pattern: "ignore-previous", direction: "request" as const, action: "refuse_403" } }, "Blocked · ignore-previous"],
-      ["a flagged answer", { guardrail: { pattern: "aws-key", direction: "answer" as const, action: "flag" } }, "Flagged · aws-key"],
-      ["a blocked answer", { guardrail: { pattern: "aws-key", direction: "answer" as const, action: "block" } }, "Blocked · aws-key"],
-      ["a streamed answer stopped part way", { guardrail: { pattern: "aws-key", direction: "answer" as const, action: "block", mid_stream: true } }, "Blocked mid-answer · aws-key"],
+      ["a flagged answer", { guardrail: { pattern: "aws-key", direction: "answer" as const, action: "flag" } }, "Flagged · aws-key · answer"],
+      ["a blocked answer", { guardrail: { pattern: "aws-key", direction: "answer" as const, action: "block" } }, "Blocked · aws-key · answer"],
+      ["a streamed answer stopped part way", { guardrail: { pattern: "aws-key", direction: "answer" as const, action: "block", mid_stream: true } }, "Blocked mid-answer · aws-key · answer"],
       ["a refusal on the key's system text", { guardrail: { pattern: "ignore-previous", direction: "request" as const, action: "refuse_403", in: "key_system_text" as const } }, "Blocked · ignore-previous (key system text)"],
       ["a call to the judge model", { purpose: "guardrail-judge" as const }, "Judge call"],
     ])("%s", async (_name, over, text) => {
@@ -704,7 +704,7 @@ describe("Requests page", () => {
     it.each([
       [{ direction: "request" as const, verdict: "allow" as const }, "Judged · allowed"],
       [{ direction: "request" as const, verdict: "failed" as const, failure: "timeout" as const }, "Judge failed · timeout"],
-      [{ direction: "answer" as const, verdict: "failed" as const, failure: "too_large" as const }, "Judge failed · too large"],
+      [{ direction: "answer" as const, verdict: "failed" as const, failure: "too_large" as const }, "Judge failed · too large · answer"],
       [{ direction: "request" as const, verdict: "failed" as const, failure: "timeout" as const, refused: true }, "Judge failed · refused"],
       [{ direction: "request" as const, verdict: "not_judged" as const, reason: "no text" }, "Not judged · no text"],
     ])("a judge outcome %#", async (judge, text) => {
@@ -713,10 +713,19 @@ describe("Requests page", () => {
       expect(await cell()).toBe(text);
     });
 
-    it("a request without a mark shows a dash, and redactions are still counted", async () => {
+    it("a request without a mark shows a dash", async () => {
       one({});
       mount();
       expect(await cell()).toBe("—");
+    });
+
+    it("a request and its answer are marked apart in one row", async () => {
+      one({
+        guardrail: { pattern: "ignore-previous", direction: "request", action: "refuse_403" },
+        judge: { direction: "answer", verdict: "allow" },
+      });
+      mount();
+      expect(await cell()).toBe("Blocked · ignore-previous" + "Judged · allowed · answer");
     });
 
     it("the path of a media request is shown", async () => {

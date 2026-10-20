@@ -1353,7 +1353,7 @@ export const handlers = [
   http.get("/api/v1/redaction/rules", ({ request }) =>
     gate(request, { admin: true, needs: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"] }) ?? json(db.redactionRules)),
   http.post("/api/v1/redaction/rules", async ({ request }) => {
-    const g = gate(request, { admin: true }); if (g) return g;
+    const g = gate(request, { admin: true, needs: ["ai:configure:any"] }); if (g) return g;
     const b = await body<{ name?: string; pattern?: string; action?: RedactionRule["action"]; scope?: RedactionRule["scope"] }>(request);
     if (!b?.name?.trim()) return err(400, "name is required");
     if (!b.pattern) return err(400, "pattern is required");
@@ -1368,7 +1368,7 @@ export const handlers = [
     return json(rule, 201);
   }),
   http.delete("/api/v1/redaction/rules/:id", ({ request, params }) => {
-    const g = gate(request, { admin: true }); if (g) return g;
+    const g = gate(request, { admin: true, needs: ["ai:configure:any"] }); if (g) return g;
     if (db.redactionRules.built_in.some((r) => r.id === params.id))
       return err(409, "built-in rules cannot be deleted");
     const i = db.redactionRules.custom.findIndex((r) => r.id === params.id);
@@ -1379,21 +1379,21 @@ export const handlers = [
   http.get("/api/v1/redaction/settings", ({ request }) =>
     gate(request, { admin: true, needs: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"] }) ?? json(db.redactionSettings)),
   http.put("/api/v1/redaction/settings", async ({ request }) => {
-    const g = gate(request, { admin: true }); if (g) return g;
+    const g = gate(request, { admin: true, needs: ["ai:configure:any"] }); if (g) return g;
     const b = await body<MockDb["redactionSettings"]>(request);
     if (!b) return err(400, "invalid redaction settings");
     db.redactionSettings = b;
     return noContent();
   }),
   http.post("/api/v1/redaction/preview", async ({ request }) => {
-    const g = gate(request, { admin: true }); if (g) return g;
+    const g = gate(request, { admin: true, needs: ["ai:configure:any"] }); if (g) return g;
     const b = await body<{ sample?: string }>(request);
     return json({ matches: [{ rule: "email", count: b?.sample?.includes("@") ? 1 : 0 }] });
   }),
   http.get("/api/v1/guardrails/settings", ({ request }) =>
     gate(request, { admin: true, needs: ["ai:read:own", "ai:read:any", "ai:configure:own", "ai:configure:any"] }) ?? json(db.guardrailSettings)),
   http.put("/api/v1/guardrails/settings", async ({ request }) => {
-    const g = gate(request, { admin: true }); if (g) return g;
+    const g = gate(request, { admin: true, needs: ["ai:configure:any"] }); if (g) return g;
     // PUT accepts the FLAT global settings; GET returns them nested under `global`.
     const b = await body<Partial<GuardrailSettings>>(request);
     if (!b) return err(400, "invalid guardrail settings");
@@ -1402,7 +1402,7 @@ export const handlers = [
     return noContent();
   }),
   http.post("/api/v1/guardrails/preview", async ({ request }) => {
-    const g = gate(request, { admin: true }); if (g) return g;
+    const g = gate(request, { admin: true, needs: ["ai:configure:any"] }); if (g) return g;
     const b = await body<{ pattern?: string; text?: string }>(request);
     if (!b?.pattern) return err(400, 'custom pattern "preview": the pattern is empty');
     let re: RegExp;

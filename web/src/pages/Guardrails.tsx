@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight, Pencil, Trash2 } from "lucide-react";
@@ -160,9 +160,12 @@ function Controls({ canWrite, children }: { canWrite: boolean; children: ReactNo
   return <fieldset className="plain-fieldset" disabled={!canWrite}>{children}</fieldset>;
 }
 
-function JudgeSection({ draft, onChange, models, canWrite, saving, onSave }: {
+function JudgeSection({ draft, onChange, models, canWrite, saving, onSave, modelError, onModelErrorClear }: {
   draft: GuardrailJudgeSettings;
   onChange: (next: GuardrailJudgeSettings) => void;
+  /** The relay's refusal of the chosen model, shown under the field. */
+  modelError?: string | null;
+  onModelErrorClear?: () => void;
   models: AiModel[] | undefined;
   canWrite: boolean;
   saving: boolean;
@@ -171,6 +174,10 @@ function JudgeSection({ draft, onChange, models, canWrite, saving, onSave }: {
   // The time limit is typed as text, so a half-typed number is not forced back.
   const [timeoutText, setTimeoutText] = useState(String(draft.timeout_ms));
   const [timeoutLeft, setTimeoutLeft] = useState(false);
+  // A new stored value (the draft replaced after a refetch) replaces the text; typing keeps both in step.
+  useEffect(() => {
+    setTimeoutText((t) => (Number(t) === draft.timeout_ms ? t : String(draft.timeout_ms)));
+  }, [draft.timeout_ms]);
   const limit = Number(timeoutText);
   const timeoutValid = timeoutText.trim() !== "" && Number.isInteger(limit) && limit >= MIN_TIMEOUT_MS && limit <= MAX_TIMEOUT_MS;
   const policyLength = [...draft.policy].length;
@@ -203,13 +210,14 @@ function JudgeSection({ draft, onChange, models, canWrite, saving, onSave }: {
             <Link className="link-inline" to="/gateway/models?new=1">Create a model</Link>
           </p>
         ) : (
-          <FormField label="Model" htmlFor="judge-model" w="md">
+          <FormField label="Model" htmlFor="judge-model" descId="judge-model-desc" error={modelError ?? undefined} w="md">
             <Select
               id="judge-model"
+              aria-describedby={modelError ? "judge-model-desc" : undefined}
               placeholder="Choose a model"
               options={options}
               value={draft.model}
-              onChange={(v) => onChange({ ...draft, model: v })}
+              onChange={(v) => { onModelErrorClear?.(); onChange({ ...draft, model: v }); }}
             />
           </FormField>
         )}
@@ -340,13 +348,31 @@ export default function Guardrails() {
       setPresidioUrl(redactSettings.data.presidio_url ?? "");
     }
   }, [redactSettings.data, redactDraft]);
+  // The stored blob the drafts were last synced to. A draft nobody touched (equal to that) follows a changed
+  // blob, e.g. another admin's save; one being edited is kept.
+  const synced = useRef<GuardrailSettings | null>(null);
   useEffect(() => {
     const g = guardSettings.data?.global;
-    if (!g || guardDraft) return;
-    setGuardDraft({ enabled: g.enabled, action: g.action });
-    setAnswersDraft(g.answers);
-    setJudgeDraft(g.judge);
-  }, [guardSettings.data, guardDraft]);
+    if (!g) return;
+    const prev = synced.current;
+    synced.current = g;
+    if (!prev) {
+      setGuardDraft({ enabled: g.enabled, action: g.action });
+      setAnswersDraft(g.answers);
+      setJudgeDraft(g.judge);
+      return;
+    }
+    const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+    if (!same({ enabled: prev.enabled, action: prev.action }, { enabled: g.enabled, action: g.action })) {
+      setGuardDraft((d) => (d && same(d, { enabled: prev.enabled, action: prev.action }) ? { enabled: g.enabled, action: g.action } : d));
+    }
+    if (!same(prev.answers, g.answers)) {
+      setAnswersDraft((d) => (d && same(d, prev.answers) ? g.answers : d));
+    }
+    if (!same(prev.judge, g.judge)) {
+      setJudgeDraft((d) => (d && same(d, prev.judge) ? g.judge : d));
+    }
+  }, [guardSettings.data]);
 
   const saveRedact = useMutation({
     mutationFn: (next: RedactionSettings) =>
@@ -373,6 +399,18 @@ export default function Guardrails() {
       qc.invalidateQueries({ queryKey: ["guardrails", "settings"] });
     },
   });
+  // A 400 about the judge's model belongs under the Model field.
+  const [judgeModelError, setJudgeModelError] = useState<string | null>(null);
+  const saveJudge = () => {
+    if (!judgeDraft) return;
+    setJudgeModelError(null);
+    saveGuard.mutate({ patch: { judge: judgeDraft }, done: "Judge settings saved." }, {
+      onError: (e) => {
+        if (e instanceof ApiError && e.status === 400 && /^judge model\b/.test(e.message)) setJudgeModelError(e.message);
+        else failToast(e);
+      },
+    });
+  };
   const failToast = (e: unknown) => toast.error(e instanceof ApiError ? e.message : "Couldn't save guardrails.");
   const testPresidio = useMutation({
     mutationFn: (url: string) =>
@@ -633,11 +671,13 @@ export default function Guardrails() {
       >
         <JudgeSection
           draft={judgeDraft}
+          modelError={judgeModelError}
+          onModelErrorClear={() => setJudgeModelError(null)}
           onChange={setJudgeDraft}
           models={models.data}
           canWrite={canWrite}
           saving={saveGuard.isPending}
-          onSave={() => saveGuard.mutate({ patch: { judge: judgeDraft }, done: "Judge settings saved." }, { onError: failToast })}
+          onSave={saveJudge}
         />
       </Accordion>
 

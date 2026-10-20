@@ -644,3 +644,29 @@ describe("MSW gateway handlers mirror the API", () => {
     expect(await refusal(await send("DELETE", "/ai/keys/nope"))).toEqual([404, "key not found"]);
   });
 });
+
+describe("MSW handlers: redaction and guardrails writes", () => {
+  beforeEach(() => { resetDb(); document.cookie = `burrow_csrf=${CSRF}; path=/`; });
+  const writes: [string, string, unknown][] = [
+    ["PUT", "/api/v1/redaction/settings", { enabled: true }],
+    ["POST", "/api/v1/redaction/rules", { name: "n", pattern: "x", action: "mask", scope: "both" }],
+    ["POST", "/api/v1/redaction/preview", { sample: "a@b.c" }],
+    ["PUT", "/api/v1/guardrails/settings", { enabled: true }],
+    ["POST", "/api/v1/guardrails/preview", { pattern: "x", text: "x" }],
+  ];
+
+  it.each(writes)("%s %s is open to ai:configure:any, not to ai:configure:own", async (method, path, payload) => {
+    const call = () => fetch(path, { ...authed(method), body: JSON.stringify(payload) });
+    db.me = { ...db.me, role: "operator", permissions: ["ai:configure:any"] };
+    expect((await call()).status).toBeLessThan(300);
+    db.me = { ...db.me, role: "operator", permissions: ["ai:configure:own"] };
+    expect((await call()).status).toBe(403);
+  });
+
+  it("DELETE /api/v1/redaction/rules/:id is open to ai:configure:any", async () => {
+    const rule = db.redactionRules.custom[0] ?? { id: "r1" };
+    if (db.redactionRules.custom.length === 0) db.redactionRules.custom.push({ id: "r1", name: "n", pattern: "x", action: "mask", scope: "both" });
+    db.me = { ...db.me, role: "operator", permissions: ["ai:configure:any"] };
+    expect((await fetch(`/api/v1/redaction/rules/${rule.id}`, authed("DELETE"))).status).toBe(204);
+  });
+});

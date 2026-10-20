@@ -806,7 +806,15 @@ describe("ModelDialog", () => {
       await userEvent.click(screen.getByRole("radio", { name: "Fastest" }));
       await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
       await waitFor(() => expect(put).not.toBeNull());
-      expect(put).toMatchObject({ system_text: "Answer in German.", routing: "fastest" });
+      expect(put).toEqual({
+        name: "burrow-simple", description: "Small and local.", enabled: true, translate: false,
+        fallback_on_rate_limit: false, attempt_timeout_s: 60, total_timeout_s: 120,
+        system_text: "Answer in German.", routing: "fastest",
+        targets: [
+          { provider: "ollama", model: "mistral", dialect: "openai" },
+          { provider: "openrouter", model: "google/gemini-x", dialect: "openai" },
+        ],
+      });
     });
 
     it("keeps a stored system text and routing when saved with the disclosure never opened", async () => {

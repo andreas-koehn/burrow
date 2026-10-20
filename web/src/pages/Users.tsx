@@ -6,12 +6,13 @@ import { RelativeTime } from "@/components/RelativeTime";
 import { useAuth } from "@/auth/useAuth";
 import { useCan } from "@/auth/useCan";
 import { P } from "@/auth/permissions";
-import { Button, EmptyState, Input, Select, Badge, Dialog, PageHeader, SkeletonRows } from "@/components/ds";
+import { Button, EmptyState, Input, Select, Badge, PageHeader, SkeletonRows } from "@/components/ds";
 import type { UserAdmin, UsersPage, UserRole } from "@/lib/contract";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { CreateUserDialog } from "@/pages/users/CreateUserDialog";
 import { EditUserDialog } from "@/pages/users/EditUserDialog";
+import { DeleteUserConfirm } from "@/pages/users/DeleteUserConfirm";
 
 const PAGE = 20;
 
@@ -147,20 +148,14 @@ export default function Users() {
       {canManage && <CreateUserDialog open={creating} onClose={() => setCreating(false)} />}
       {canManage && <EditUserDialog user={editing} selfId={me?.id} onClose={() => setEditing(null)} />}
 
-      <Dialog
-        open={confirmTarget !== null}
-        onOpenChange={(o) => { if (!o) setConfirmTarget(null); }}
-        title="Delete user?"
-        description={confirmTarget ? `${confirmTarget.email} will lose access immediately. This cannot be undone.` : ""}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setConfirmTarget(null)}>Cancel</Button>
-            <Button variant="destructive-solid" onClick={() => { if (confirmTarget) deleteUser.mutate(confirmTarget.id); setConfirmTarget(null); }}>Delete user</Button>
-          </>
-        }
-      >
-        <div className="confirm-icon" aria-hidden="true"><AlertTriangle size={16} /></div>
-      </Dialog>
+      {confirmTarget && (
+        <DeleteUserConfirm
+          email={confirmTarget.email}
+          pending={deleteUser.isPending}
+          onCancel={() => setConfirmTarget(null)}
+          onConfirm={() => { deleteUser.mutate(confirmTarget.id); setConfirmTarget(null); }}
+        />
+      )}
       <Toaster />
     </div>
   );

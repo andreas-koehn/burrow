@@ -505,6 +505,64 @@ describe("Guardrails: answers, custom patterns and the judge (G07)", () => {
     expect(screen.queryByRole("combobox", { name: "Model" })).toBeNull();
   });
 
+  describe("drafts and a refetch", () => {
+    const refetch = (qc: { invalidateQueries: (o: { queryKey: string[] }) => Promise<void> }) =>
+      act(async () => { await qc.invalidateQueries({ queryKey: ["guardrails", "settings"] }); });
+
+    it("a judge draft nobody touched follows the stored settings after a refetch", async () => {
+      const { qc } = mount();
+      await userEvent.click(await screen.findByRole("button", { name: /^judge/i }));
+      expect(await screen.findByLabelText("Policy")).toHaveValue("No legal advice.");
+      // Another admin changes the judge.
+      db.guardrailSettings.global.judge = { ...SEEDED.judge, policy: "No medical advice.", timeout_ms: 5000 };
+      await refetch(qc);
+      await waitFor(() => expect(screen.getByLabelText("Policy")).toHaveValue("No medical advice."));
+      expect(screen.getByLabelText("Time limit (ms)")).toHaveValue(5000);
+    });
+
+    it("a judge draft being edited is kept when the stored settings change", async () => {
+      const { qc } = mount();
+      await userEvent.click(await screen.findByRole("button", { name: /^judge/i }));
+      const policy = await screen.findByLabelText("Policy");
+      await userEvent.type(policy, " Also no tax advice.");
+      db.guardrailSettings.global.judge = { ...SEEDED.judge, policy: "No medical advice." };
+      await refetch(qc);
+      expect(screen.getByLabelText("Policy")).toHaveValue("No legal advice. Also no tax advice.");
+    });
+
+    it("an untouched answers draft follows the stored settings, a touched one does not", async () => {
+      const { qc } = mount();
+      await userEvent.click(await screen.findByRole("button", { name: /^answers/i }));
+      await userEvent.click(await screen.findByRole("radio", { name: /^Block/ }));
+      db.guardrailSettings.global.answers = { enabled: false, action: "flag" };
+      db.guardrailSettings.global.enabled = false;
+      await refetch(qc);
+      // Answers were edited: kept. The request switch was not: follows.
+      expect(screen.getByRole("radio", { name: /^Block/ })).toBeChecked();
+      await userEvent.click(screen.getByRole("button", { name: /^requests/i }));
+      await waitFor(() => expect(screen.getByRole("switch", { name: "Enable injection guardrails" })).not.toBeChecked());
+    });
+
+    it("a 400 about the judge model shows under the Model field, not as a toast", async () => {
+      const msg = 'judge model "burrow-simple" does not exist';
+      server.use(http.put("/api/v1/guardrails/settings", () => HttpResponse.json({ error: msg }, { status: 400 })));
+      await open(/^judge/i);
+      await userEvent.click(await screen.findByRole("switch", { name: "Ask a model" }));
+      await userEvent.click(screen.getByRole("combobox", { name: "Model" }));
+      await userEvent.click(screen.getByRole("option", { name: "burrow-simple" }));
+      await userEvent.click(screen.getByRole("button", { name: "Save judge settings" }));
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(msg);
+      expect(alert.closest(".form-field")).toContainElement(screen.getByRole("combobox", { name: "Model" }));
+      // Only the field shows it.
+      expect(screen.getAllByText(msg)).toHaveLength(1);
+      // Choosing another model clears it.
+      await userEvent.click(screen.getByRole("combobox", { name: "Model" }));
+      await userEvent.click(screen.getByRole("option", { name: "burrow-intelligence" }));
+      expect(screen.queryByText(msg)).toBeNull();
+    });
+  });
+
   it("saving one section keeps what another section changed since: the blob is read from the stored settings", async () => {
     await open(/^answers/i);
     await userEvent.click(await screen.findByRole("radio", { name: /^Block/ }));

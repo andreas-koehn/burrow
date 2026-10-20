@@ -6,6 +6,7 @@ import { Button, Select, Switch, Badge, Dialog, FormField } from "@/components/d
 import type { UserAdmin, UserRole, UserStatus } from "@/lib/contract";
 import { toast } from "sonner";
 import { useRoleChoices } from "./useRoleChoices";
+import { DeleteUserConfirm } from "./DeleteUserConfirm";
 
 export function EditUserDialog({ user, selfId, onClose }: { user: UserAdmin | null; selfId?: string; onClose: () => void }) {
   const qc = useQueryClient();
@@ -79,21 +80,27 @@ export function EditUserDialog({ user, selfId, onClose }: { user: UserAdmin | nu
         </div>
       </div>
     </Dialog>
+      {confirming === "delete" && (
+        <DeleteUserConfirm
+          email={user?.email}
+          pending={save.isPending || del.isPending}
+          onCancel={() => setConfirming(null)}
+          onConfirm={() => { setConfirming(null); del.mutate(); }}
+        />
+      )}
       <Dialog
-        open={confirming !== null}
+        open={confirming === "suspend"}
         onOpenChange={(o) => { if (!o) setConfirming(null); }}
-        title={confirming === "delete" ? "Delete user?" : "Suspend user?"}
-        description={confirming === "delete"
-          ? `${user?.email} will lose access immediately, and their tokens and services are removed. This cannot be undone.`
-          : `${user?.email} will be signed out and cannot sign in until the account is active again.`}
+        title="Suspend user?"
+        description={`${user?.email} will be signed out and cannot sign in until the account is active again.`}
         footer={
           <>
             <Button variant="secondary" onClick={() => setConfirming(null)}>Cancel</Button>
             <Button
               variant="destructive-solid"
               disabled={save.isPending || del.isPending}
-              onClick={() => { const c = confirming; setConfirming(null); if (c === "delete") del.mutate(); else save.mutate(); }}
-            >{confirming === "delete" ? "Delete user" : "Suspend user"}</Button>
+              onClick={() => { setConfirming(null); save.mutate(); }}
+            >Suspend user</Button>
           </>
         }
       >

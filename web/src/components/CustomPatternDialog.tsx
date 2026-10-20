@@ -62,8 +62,8 @@ export function CustomPatternDialog({ pattern, takenIds, onSave, onClose }: Cust
   // The number of the latest test; an answer to an older one, or to a sample or pattern since changed, is dropped.
   const testRun = useRef(0);
   const invalidateTest = () => { testRun.current++; setTested(null); setTesting(false); };
-  // A late answer to a dialog that was closed is dropped.
-  const [closed, setClosed] = useState(false);
+  // A late answer to a dialog that was closed is dropped. A ref, so an async handler started before the close sees it.
+  const closed = useRef(false);
 
   const leave = (f: Field) => setLeft((s) => new Set(s).add(f));
 
@@ -89,7 +89,7 @@ export function CustomPatternDialog({ pattern, takenIds, onSave, onClose }: Cust
   const blocked = idErr !== null || patternErr !== null || descErr !== null || pending;
 
   function close() {
-    setClosed(true);
+    closed.current = true;
     onClose();
   }
 
@@ -103,13 +103,13 @@ export function CustomPatternDialog({ pattern, takenIds, onSave, onClose }: Cust
         method: "POST",
         body: JSON.stringify({ pattern: regex, text: sample }),
       });
-      if (!closed && run === testRun.current) setTested(res);
+      if (!closed.current && run === testRun.current) setTested(res);
     } catch (e) {
-      if (closed || run !== testRun.current) return;
+      if (closed.current || run !== testRun.current) return;
       const message = e instanceof ApiError ? e.message : "Couldn't test the pattern.";
       setServerErr({ field: fieldOfMessage(message), message: reason(message) });
     } finally {
-      if (!closed && run === testRun.current) setTesting(false);
+      if (!closed.current && run === testRun.current) setTesting(false);
     }
   }
 
@@ -120,7 +120,7 @@ export function CustomPatternDialog({ pattern, takenIds, onSave, onClose }: Cust
     try {
       await onSave({ id, pattern: regex, direction, description });
     } catch (e) {
-      if (closed) return;
+      if (closed.current) return;
       const message = e instanceof ApiError ? e.message : "Couldn't save the pattern.";
       setServerErr({ field: fieldOfMessage(message), message: reason(message) });
       setPending(false);

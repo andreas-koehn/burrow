@@ -235,7 +235,7 @@ export default function Requests() {
         // Words carry the meaning; the judge's reason rides along as the title.
         return (
           <span className="format-mode">
-            {marks.map((m) => <span key={m.kind} title={m.reason}>{m.text}</span>)}
+            {marks.map((m) => <span key={m.kind} title={m.reason}>{m.direction === "answer" ? `${m.text} · answer` : m.text}</span>)}
             {n > 0 && <span>{`${n} redacted`}</span>}
           </span>
         );
