@@ -466,9 +466,9 @@ func TestHTTP_SecretsStayOutOfLogsAndAudit(t *testing.T) {
 	env := newTestEnv(t, []string{"services:configure:own", "services:configure:any"}, "admin")
 	cs := connectMCP(t, env.url, testBearer, "2025-11-25")
 
-	env.api.status, env.api.reply = http.StatusCreated, `{"id":"svc1","key":"`+handedOut+`"}`
-	if res, err := callTool(t, cs, "service_create", map[string]any{"body": map[string]any{"service_id": "svc1"}}); err != nil || res.IsError {
-		t.Fatalf("service_create: %v %+v", err, res)
+	env.api.status, env.api.reply = http.StatusOK, `{"id":"svc1","key":"`+handedOut+`"}`
+	if res, err := callTool(t, cs, "service_get", map[string]any{"serviceID": "svc1"}); err != nil || res.IsError {
+		t.Fatalf("service_get: %v %+v", err, res)
 	}
 	env.api.status, env.api.reply = http.StatusNotFound, `{"error":"service not found"}`
 	if res, err := callTool(t, cs, "service_get", map[string]any{"serviceID": "nope"}); err != nil || !res.IsError {
@@ -504,7 +504,7 @@ func TestHTTP_SecretsStayOutOfLogsAndAudit(t *testing.T) {
 		}
 		results = append(results, r.SubjectLabel+"="+r.Result)
 	}
-	if got, want := strings.Join(results, ","), "service_create=ok,service_get=error,service_get=error,audit_events_list=denied"; got != want {
+	if got, want := strings.Join(results, ","), "service_get=ok,service_get=error,service_get=error,audit_events_list=denied"; got != want {
 		t.Errorf("audit rows %s, want %s", got, want)
 	}
 }

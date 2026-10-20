@@ -3334,6 +3334,7 @@ paths:
       tags: [services]
       operationId: serviceCreate
       x-burrow-permission: {kind: needs, any_of: ["services:configure:any"]}
+      x-burrow-mcp: false
       summary: Admin pre-provisions a service row (v0.5.2)
       description: |
         Inserts a services row exactly as supplied so dashboard / e2e flows
@@ -3341,6 +3342,8 @@ paths:
         admin. Audit: `service.create` with payload `{by_admin: true}`.
         Client-side `RegisterService` continues to upsert against the same
         row when the client subsequently connects with the same `service_id`.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): it sets the new service's access mode, and an agent steered by untrusted text must not widen access.
       requestBody:
         required: true
         content:

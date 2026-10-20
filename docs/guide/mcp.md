@@ -233,7 +233,6 @@ every token.
 | `budgets_list` | List budgets | read |
 | `audit_events_list` | Query audit events | read |
 | `connection_logs_list` | List per-tunnel connection log entries, newest first | read |
-| `service_create` | Pre-provision a service | write |
 | `service_access_policy_update` | Replace a service's role allowlist | write |
 | `provider_models_sync` | Read the model list from a direct provider's upstream | delete (needs `confirm`) |
 | `budget_create` | Create a budget | write |
@@ -316,8 +315,8 @@ creating and changing a provider and its upstream, binding a service's
 upstream credential, the SMTP settings, custom domains, webhooks, the
 guardrail and redaction settings and rules, a service's AI config, the
 retention settings, a service's gateway-only switch, creating or changing a
-tool source or approving its tools, registering an OAuth client, a service's
-or tunnel's access mode, changing a gateway key, minting a client token or a
+tool source or approving its tools, registering an OAuth client, creating a
+service (it sets the access mode), a service's or tunnel's access mode, changing a gateway key, minting a client token or a
 service API key, creating, changing and deleting users and roles, and
 creating or changing a synthetic model (its `system_text` reaches other
 users' requests). Their reads stay tools. Make these changes in the dashboard

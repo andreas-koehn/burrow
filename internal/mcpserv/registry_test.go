@@ -263,6 +263,8 @@ func TestRegistry_CredentialRoutingAndInspectionWritesAreNotTools(t *testing.T) 
 		"clientTokenCreate", "serviceApiKeyCreate",
 		"userCreate", "userUpdate", "userDelete", "roleCreate", "roleUpdate", "roleDelete",
 		"aiModelCreate", "aiModelUpdate",
+		// It sets a new service's access mode as it creates it.
+		"serviceCreate",
 	} {
 		if _, ok := r.Lookup(id); ok {
 			t.Errorf("%s is a management tool", id)
@@ -321,7 +323,6 @@ var mcpExposedWrites = map[string]bool{
 	"serviceAccessPolicyUpdate":     true,
 	"serviceApiKeyDelete":           true,
 	"serviceCacheEntriesDelete":     true,
-	"serviceCreate":                 true,
 	"serviceDelete":                 true,
 	"serviceDomainDelete":           true,
 	"serviceIpGeoUpdate":            true,

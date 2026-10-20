@@ -28,7 +28,6 @@ var curatedTools = []curatedTool{
 	{ID: "auditEventsList"},
 	{ID: "connectionLogsList"},
 	// Write
-	{ID: "serviceCreate"},
 	{ID: "serviceAccessPolicyUpdate"},
 	{ID: "providerModelsSync"},
 	{ID: "budgetCreate"},

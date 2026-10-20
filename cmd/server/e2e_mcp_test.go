@@ -13,8 +13,8 @@ package main
 //   1. tools/list follows the token's permissions (presets read-only,
 //      operator, full).
 //   2. services_list answers what GET /api/v1/services answers.
-//   3. service_create creates the service; a delete without confirm and a
-//      dry run change nothing; a path value stays one segment.
+//   3. budget_create creates a budget; a delete without confirm and a dry
+//      run change nothing; a path value stays one segment.
 //   4. A call leaves the API's own audit rows next to the mcp.tool.call row,
 //      both naming the token's user, the client address, the user agent and
 //      the request id; no row holds a secret.
@@ -316,27 +316,23 @@ func TestE2EMCP_CuratedToolsThroughTheAPI(t *testing.T) {
 
 			// --- 3. writes ------------------------------------------------------
 			fu := mcpConnect(t, mcpURL, full, revision)
-			id := "mcp-made-" + strings.ReplaceAll(revision, "-", "")
-			listed := func() bool {
-				var svcs []struct {
+			budgets := func() int {
+				var bs []struct {
 					ID string `json:"id"`
 				}
-				rest(t, http.MethodGet, base+"/api/v1/services", full, &svcs)
-				for _, s := range svcs {
-					if s.ID == id {
-						return true
-					}
-				}
-				return false
+				rest(t, http.MethodGet, base+"/api/v1/budgets", full, &bs)
+				return len(bs)
 			}
+			body := map[string]any{"scope": "global", "daily_usd": 9, "action_on_exceed": "throttle_zero"}
+			n0 := budgets()
 			before := map[string]bool{}
 			for _, r := range e.rows(t) {
 				before[r.ID] = true
 			}
-			// A dry run sends nothing: no service, no audit row of the API.
-			dry := mcpCall(t, fu, false, "service_create", map[string]any{"dry_run": true, "body": map[string]any{"service_id": id, "slug": id, "title": id}})
-			if !strings.Contains(dry, `"dry_run":true`) || listed() {
-				t.Fatalf("dry run: %s, service exists: %v", dry, listed())
+			// A dry run sends nothing: no budget, no audit row of the API.
+			dry := mcpCall(t, fu, false, "budget_create", map[string]any{"dry_run": true, "body": body})
+			if !strings.Contains(dry, `"dry_run":true`) || budgets() != n0 {
+				t.Fatalf("dry run: %s, budgets %d -> %d", dry, n0, budgets())
 			}
 			// A delete without confirm is refused before anything is sent.
 			if got := mcpCall(t, fu, true, "provider_delete", map[string]any{"slug": "zai"}); !strings.Contains(got, `confirm must be "zai"`) {
@@ -349,22 +345,17 @@ func TestE2EMCP_CuratedToolsThroughTheAPI(t *testing.T) {
 				}
 			}
 			sort.Strings(added)
-			if strings.Join(added, ",") != "mcp.tool.call/provider_delete=error,mcp.tool.call/service_create=dry_run" {
+			if strings.Join(added, ",") != "mcp.tool.call/budget_create=dry_run,mcp.tool.call/provider_delete=error" {
 				t.Errorf("rows of the dry run and the refused delete: %v", added)
 			}
 			// The real call creates it.
-			var created struct {
-				ID string `json:"id"`
+			mcpCall(t, fu, false, "budget_create", map[string]any{"body": body})
+			if budgets() != n0+1 {
+				t.Fatalf("budgets after the real call: %d, want %d", budgets(), n0+1)
 			}
-			if err := json.Unmarshal([]byte(mcpCall(t, fu, false, "service_create", map[string]any{"body": map[string]any{"service_id": id, "slug": id, "title": id}})), &created); err != nil || created.ID != id {
-				t.Fatalf("service_create: %+v %v", created, err)
-			}
-			if !listed() {
-				t.Fatalf("GET /api/v1/services does not list %s", id)
-			}
-			// The handler refuses what REST refuses: a taken id.
-			if got := mcpCall(t, fu, true, "service_create", map[string]any{"body": map[string]any{"service_id": id, "slug": id, "title": id}}); !strings.HasPrefix(got, "409 ") {
-				t.Errorf("service_create of a taken id: %s", got)
+			// The handler refuses what REST refuses: a user budget without a subject.
+			if got := mcpCall(t, fu, true, "budget_create", map[string]any{"body": map[string]any{"scope": "user", "daily_usd": 1, "action_on_exceed": "throttle_zero"}}); !strings.HasPrefix(got, "400 ") {
+				t.Errorf("budget_create without a subject: %s", got)
 			}
 			// A path value stays one segment: ../users reaches the service
 			// route, not the users route.

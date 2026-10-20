@@ -280,6 +280,8 @@ var openAPIMCPDisabled = map[string]string{
 	"roleDelete":              "DELETE /api/v1/roles/{name}",
 	"aiModelCreate":           "POST /api/v1/ai/models",
 	"aiModelUpdate":           "PUT /api/v1/ai/models/{name}",
+	// Nor create a service, whose access mode it would set.
+	"serviceCreate": "POST /api/v1/services",
 	// Nor register where authorization codes are sent.
 	"oauthClientCreate":         "POST /api/v1/oauth/clients",
 	"clientDiscoveryGet":        "GET /api/v1/client/discovery",
