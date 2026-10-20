@@ -174,7 +174,10 @@ wait_for() {
 stop_clients() { docker exec "$MACHINE" sh -c 'for p in /proc/[0-9]*; do case "$(tr "\0" " " <$p/cmdline 2>/dev/null)" in *burrow\ http*|*burrow\ connect*) kill "${p#/proc/}" 2>/dev/null;; esac; done; true'; sleep 1; }
 admin_login() {
   api -o /dev/null -X POST "$B/api/v1/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASS\"}"
-  CSRF=$(docker exec "$RELAY" sh -c "grep burrow_csrf /tmp/jar | awk '{print \$NF}'")
+  # An https relay writes the __Host- cookie names, an http one the bare ones.
+  local name=burrow_csrf
+  case "$B" in https://*) name="__Host-burrow_csrf" ;; esac
+  CSRF=$(docker exec "$RELAY" cat /tmp/jar | awk -v n="$name" '$6 == n {print $7}')
 }
 amut() { api -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -X "$1" "$B$2" ${3:+-d "$3"}; }
 

@@ -566,8 +566,13 @@ The bundled answer patterns:
 A key glued to the word before it (`tokenghp_…`, `KEY_AKIA…`) is found too
 where the prefix is distinctive enough that no word ends in it. The OpenAI
 shapes are found only where they start a word: `sk-` ends English words and
-CSS or resource names (`task-…`, `kiosk-admin-…`), which are no keys; an
-AWS key id may follow an underscore but no letter or digit.
+CSS or resource names (`task-…`, `kiosk-admin-…`), which are no keys. For
+the same reason an Anthropic key may follow a digit or punctuation but no
+letter (`task-ant-design-…` is a CSS name). An AWS key id may follow an
+underscore but no letter or digit. A Google key must start the text or follow
+a character that base64 text does not use (not a letter, digit, `+`, `/`,
+`-`, `_` or `.`), so `AIza` inside a data URI or a JWT is no key, while
+`?key=AIza…` and a quoted key are.
 
 A pattern matches as soon as the prefix and 20 key characters are there (an
 AWS key id: its 16), not only the whole token. In a streamed answer with

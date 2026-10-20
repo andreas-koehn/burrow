@@ -18,8 +18,12 @@ package guardrails
 // enough that no ordinary word ends in it, the pattern does not ask for a
 // word boundary before it. The OpenAI shapes keep theirs: "sk-" ends English
 // words and CSS or resource names ("task-…", "kiosk-admin-…"), which would
-// turn into keys. The AWS shape accepts an underscore before "AKIA"
-// ("KEY_AKIA…") but no letter or digit: a longer upper-case token is no key.
+// turn into keys. For the same reason the Anthropic shape accepts a digit or
+// punctuation before "sk-ant-" but no letter ("task-ant-design-…" is a CSS
+// name). The AWS shape accepts an underscore before "AKIA" ("KEY_AKIA…") but
+// no letter or digit: a longer upper-case token is no key. The Google shape
+// accepts no base64 character before "AIza": base64 text (data URIs, JWTs)
+// holds "AIza" by chance.
 //
 // The order matters where two shapes overlap: an Anthropic key also has the
 // OpenAI shape and is listed first, so it is named for what it is.
@@ -32,7 +36,7 @@ package guardrails
 // characters within its first 20, is still found at the same early bound.
 var AnswerPatterns = []Pattern{
 	// Anthropic API keys: "sk-ant-api03-…", "sk-ant-admin01-…".
-	{ID: "anthropic_key", Description: "Anthropic API key", Regex: `sk-ant-[A-Za-z0-9_-]{20,}`, Requires: []string{"sk-ant-"}, SecretPrefix: `^sk-ant-(?:[a-z]+[0-9]+-)?`},
+	{ID: "anthropic_key", Description: "Anthropic API key", Regex: `(?:^|[^A-Za-z])sk-ant-[A-Za-z0-9_-]{20,}`, Requires: []string{"sk-ant-"}, SecretPrefix: `^[^A-Za-z]?sk-ant-(?:[a-z]+[0-9]+-)?`},
 	// OpenAI API keys: the project, service-account and admin keys
 	// ("sk-proj-…", "sk-svcacct-…", "sk-admin-…", 20 or more key characters
 	// after the kind) and legacy keys ("sk-" and 20 or more letters and
@@ -47,8 +51,12 @@ var AnswerPatterns = []Pattern{
 	// Slack tokens: bot, app, user, refresh and legacy (xoxb-, xoxa-, xoxp-,
 	// xoxr-, xoxs-).
 	{ID: "slack_token", Description: "Slack token", Regex: `xox[baprs]-[A-Za-z0-9-]{10,}`, Requires: []string{"xoxb-", "xoxa-", "xoxp-", "xoxr-", "xoxs-"}, SecretPrefix: `^xox[baprs]-`},
-	// Google API keys: "AIza" and 35 characters; 20 are matched.
-	{ID: "google_api_key", Description: "Google API key", Regex: `AIza[0-9A-Za-z_-]{20,}`, Requires: []string{"AIza"}, SecretPrefix: `^AIza`},
+	// Google API keys: "AIza" and 35 characters; 20 are matched. The prefix
+	// must start the text or follow a character outside the base64 and
+	// base64url alphabets and the JWT separator (not A-Z, a-z, 0-9, +, /,
+	// -, _ or .), so "AIza" inside a data URI or a JWT is no key; "?key=AIza…"
+	// and a quoted key are.
+	{ID: "google_api_key", Description: "Google API key", Regex: `(?:^|[^0-9A-Za-z+/_.-])AIza[0-9A-Za-z_-]{20,}`, Requires: []string{"AIza"}, SecretPrefix: `^[^0-9A-Za-z+/_.-]?AIza`},
 	// The header line of a PEM private key of any kind (RSA, EC, OPENSSH,
 	// ENCRYPTED, PKCS#8).
 	{ID: "private_key_pem", Description: "private key (PEM)", Regex: `-----BEGIN [A-Z ]*PRIVATE KEY-----`, Requires: []string{"PRIVATE KEY-----"}},

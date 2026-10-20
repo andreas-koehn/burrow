@@ -127,6 +127,22 @@ Without it, every client appears to come from the proxy's address and shares
 that limit of 5.
 :::
 
+::: warning Keep the Host header
+The dashboard sign-in (`POST /api/v1/auth/login`), re-authentication and the
+gate's password forms refuse cross-site requests. A browser that sends
+`Sec-Fetch-Site` passes with `same-origin`. A browser that does not send it
+(older browsers) passes only when its `Origin` equals the `Host` the relay
+sees. A reverse proxy that rewrites `Host` (to `localhost:8080`, say) makes
+that comparison fail, and sign-in in those browsers answers 403. Pass the
+original host through, for example in nginx:
+
+```nginx
+proxy_set_header Host $host;
+```
+
+Caddy and Traefik keep the original `Host` by default.
+:::
+
 Example for a proxy running on localhost:
 
 ```env

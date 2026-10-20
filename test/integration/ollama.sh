@@ -31,6 +31,13 @@ ADMIN_PASS="lab-pass-12345"
 B="http://localhost:${DASH_PORT}"
 PX="http://localhost:${PROXY_PORT}"
 JAR="$(mktemp)"
+# Cookie names: a relay reached over https writes the __Host- names (Secure
+# cookies); over http it keeps the bare ones. jar_cookie reads one cookie's
+# value from a curl jar by its exact name.
+cookie_name() { case "$1" in https://*) echo "__Host-$2" ;; *) echo "$2" ;; esac; }
+jar_cookie() { awk -v n="$2" '$6 == n {print $7}' "$1"; }
+CSRF_COOKIE="$(cookie_name "$B" burrow_csrf)"
+GATE_SESSION_COOKIE="$(cookie_name "$PX" burrow_session)"
 
 PASS=0; FAIL=0; XFAIL=0
 check()  { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "PASS  $1"; else FAIL=$((FAIL+1)); echo "FAIL  $1 (want '$3', got '$2')"; fi; }
@@ -67,7 +74,7 @@ docker run -d --name "$NET-relay" --network "$NET" --network-alias "relay.$DOMAI
   -v "$NET-data:/data" -w /data "$IMG" serve --dev-certs >/dev/null
 for i in $(seq 1 60); do curl -fsS -o /dev/null "$B/healthz" 2>/dev/null && break; [ "$i" = "60" ] && { echo "relay not healthy"; exit 1; }; sleep 1; done
 
-login() { curl -s -o /dev/null -c "$JAR" -X POST "$B/api/v1/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASS\"}"; CSRF=$(grep burrow_csrf "$JAR" | awk '{print $NF}'); }
+login() { curl -s -o /dev/null -c "$JAR" -X POST "$B/api/v1/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASS\"}"; CSRF=$(jar_cookie "$JAR" "$CSRF_COOKIE"); }
 aget()  { curl -s -b "$JAR" "$B$1"; }
 amut()  { curl -s -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -X "$1" "$B$2" ${3:+-d "$3"}; }
 acode() { curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -X "$1" "$B$2" ${3:+-d "$3"}; }
@@ -151,10 +158,10 @@ check "burrow_login: anonymous visitor is redirected to the gate" \
 GJ="$(mktemp)"
 curl -s -o /dev/null -c "$GJ" -H "Host: $DOMAIN" --data-urlencode "email=$ADMIN_EMAIL" --data-urlencode "password=$ADMIN_PASS" \
   --data-urlencode "next=https://$SUB.$DOMAIN/v1/models" "$PX/__burrow/login"
-SESS=$(grep burrow_session "$GJ" | awk '{print $NF}'); rm -f "$GJ"
-check "burrow_login: session cookie grants access" "$(px -o /dev/null -w '%{http_code}' -H "Cookie: burrow_session=$SESS" "$PX/v1/models")" "200"
+SESS=$(jar_cookie "$GJ" "$GATE_SESSION_COOKIE"); rm -f "$GJ"
+check "burrow_login: session cookie grants access" "$(px -o /dev/null -w '%{http_code}' -H "Cookie: $GATE_SESSION_COOKIE=$SESS" "$PX/v1/models")" "200"
 check "burrow_login: gate refuses an off-domain next URL" \
-  "$(curl -s -o /dev/null -w '%{redirect_url}' -H "Host: $DOMAIN" -H "Cookie: burrow_session=$SESS" "$PX/__burrow/login?next=https%3A%2F%2Fevil.example.com%2F" | grep -c evil || true)" "0"
+  "$(curl -s -o /dev/null -w '%{redirect_url}' -H "Host: $DOMAIN" -H "Cookie: $GATE_SESSION_COOKIE=$SESS" "$PX/__burrow/login?next=https%3A%2F%2Fevil.example.com%2F" | grep -c evil || true)" "0"
 acode PUT "/api/v1/services/$SID/access-mode" '{"access_mode":"api_key"}' >/dev/null
 
 # --- operations --------------------------------------------------------------

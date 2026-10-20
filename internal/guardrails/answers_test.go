@@ -88,15 +88,17 @@ func TestAnswerPatterns_HitsAndNearMisses(t *testing.T) {
 // found where the prefix is distinctive enough that no word ends in it. The
 // OpenAI shapes keep their word boundary: "sk-" ends English words and CSS or
 // resource names ("task-…", "kiosk-admin-…"), and gluing would turn those
-// into keys.
+// into keys. The Anthropic shape may follow a digit or punctuation but no
+// letter ("task-ant-design-…" is a CSS name); the Google shape may follow
+// no base64 character, so it is not found inside base64 text.
 func TestAnswerPatterns_GluedToAWord(t *testing.T) {
 	e := NewEngine()
 	glued := map[string]string{
-		"anthropic_key":           "mykey" + fakeAnthropic,
+		"anthropic_key":           "key2" + fakeAnthropic,
 		"aws_access_key":          "id_" + fakeAWS,
 		"github_token":            "token" + fakeGitHub,
 		"slack_token":             "Slack" + fakeSlack,
-		"google_api_key":          "key2" + fakeGoogle,
+		"google_api_key":          "?key=" + fakeGoogle,
 		"burrow_automation_token": "Bearer_" + fakeAutomation,
 		"burrow_gateway_key":      "keyis" + fakeGatewayKey,
 	}
@@ -116,6 +118,63 @@ func TestAnswerPatterns_GluedToAWord(t *testing.T) {
 	} {
 		if hit, got := e.InspectAnswerText(prose, nil); hit {
 			t.Errorf("%q matched %q", prose, got)
+		}
+	}
+}
+
+// "sk-ant-" glued to a letter is the end of a word ("task-ant-…", a CSS or
+// resource name), not a key; glued to a digit or punctuation it is a key.
+func TestAnswerPatterns_AnthropicNeedsNoLetterBefore(t *testing.T) {
+	e := NewEngine()
+	for _, text := range []string{
+		fakeAnthropic,
+		"use " + fakeAnthropic,
+		"key2" + fakeAnthropic,
+		"KEY=" + fakeAnthropic,
+		`{"k":"` + fakeAnthropic + `"}`,
+		"_" + fakeAnthropic,
+		"(" + fakeAnthropic + ")",
+	} {
+		if hit, id := e.InspectAnswerText(text, nil); !hit || id != "anthropic_key" {
+			t.Errorf("%q = %v %q, want anthropic_key", text, hit, id)
+		}
+	}
+	for _, text := range []string{
+		`<div class="task-ant-design-table-wrapper">`,
+		"the desk-ant-" + strings.Repeat("Qw3rTy_-12", 3) + " module",
+		"mykey" + fakeAnthropic,
+	} {
+		if hit, id := e.InspectAnswerText(text, nil); hit {
+			t.Errorf("%q matched %q", text, id)
+		}
+	}
+}
+
+// "AIza" inside base64 text (a data URI, a JWT) is no Google key: the
+// pattern needs the start of the text or a character outside the base64
+// alphabets (and not the JWT separator ".") before the prefix.
+func TestAnswerPatterns_GoogleKeyNotInsideBase64(t *testing.T) {
+	e := NewEngine()
+	payload := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB" + "AIza" + "Q2x1Y2tlcl9ub3RfYV9rZXlfYXRfYWxs" + "+/" + "AIza" + "x9_-Zz8Yy7Xx6Ww5Vv4Uu3"
+	for _, text := range []string{
+		`<img src="data:image/png;base64,` + payload + `">`,
+		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIx" + "AIza" + "MjM0NTY3ODkwIiwibmFtZSI6Ikpv.SflKxwRJSMeKKF2QT4fw" + "AIza" + "pMeJf36POk6yJV_adQssw5c",
+		"key" + fakeGoogle,
+		"key2" + fakeGoogle,
+	} {
+		if hit, id := e.InspectAnswerText(text, nil); hit {
+			t.Errorf("%q matched %q", text, id)
+		}
+	}
+	for _, text := range []string{
+		fakeGoogle,
+		"key: " + fakeGoogle,
+		"https://maps.googleapis.com/maps/api/js?key=" + fakeGoogle,
+		`"apiKey": "` + fakeGoogle + `"`,
+		"GOOGLE_API_KEY=" + fakeGoogle,
+	} {
+		if hit, id := e.InspectAnswerText(text, nil); !hit || id != "google_api_key" {
+			t.Errorf("%q = %v %q, want google_api_key", text, hit, id)
 		}
 	}
 }

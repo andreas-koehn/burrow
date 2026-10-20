@@ -53,11 +53,14 @@ export function aiSubdomain(): string {
     const storage = JSON.parse(readFileSync(storagePath, "utf8")) as {
       cookies: { name: string; value: string }[];
     };
-    const sessionCookie = storage.cookies?.find((c) => c.name === "burrow_session" || c.name === "__Host-burrow_session")?.value ?? "";
-    if (sessionCookie) {
+    // Send the session cookie under the name it was stored with: __Host- on
+    // an https relay, the bare name over http.
+    const session = storage.cookies?.find((c) => c.name === "__Host-burrow_session")
+      ?? storage.cookies?.find((c) => c.name === "burrow_session");
+    if (session?.value) {
       const result = spawnSync(
         "curl",
-        ["-sk", `${DASHBOARD_URL}/api/v1/services`, "-H", `Cookie: burrow_session=${sessionCookie}`],
+        ["-sk", `${DASHBOARD_URL}/api/v1/services`, "-H", `Cookie: ${session.name}=${session.value}`],
         { encoding: "utf8" },
       );
       if (result.status === 0 && result.stdout) {

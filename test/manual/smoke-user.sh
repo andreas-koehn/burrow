@@ -72,6 +72,14 @@ COOKIE_JAR=""
 CSRF=""
 LOGIN_OUTPUT=""
 
+# The dashboard of the compose stack. A relay reached over https writes the
+# __Host- cookie names (Secure cookies); over http it keeps the bare ones.
+DASH="http://localhost:8080"
+case "$DASH" in
+  https://*) CSRF_COOKIE="__Host-burrow_csrf" ;;
+  *)         CSRF_COOKIE="burrow_csrf" ;;
+esac
+
 cleanup() {
   echo ""
   echo "[smoke-user] cleanup..."
@@ -85,7 +93,7 @@ cleanup() {
   # Remove any leftover rate-limit rule
   if [ -n "$RATE_LIMIT_ID" ] && [ -n "$CSRF" ] && [ -n "$COOKIE_JAR" ]; then
     curl -s -b "$COOKIE_JAR" -H "X-CSRF-Token: $CSRF" \
-      -X DELETE "http://localhost:8080/api/v1/rate-limits/${RATE_LIMIT_ID}" \
+      -X DELETE "${DASH}/api/v1/rate-limits/${RATE_LIMIT_ID}" \
       >/dev/null 2>&1 || true
     RATE_LIMIT_ID=""
   fi
@@ -94,12 +102,12 @@ cleanup() {
   if [ -n "$AI_ID" ] && [ -n "$CSRF" ] && [ -n "$COOKIE_JAR" ]; then
     curl -s -b "$COOKIE_JAR" -H "X-CSRF-Token: $CSRF" \
       -H "Content-Type: application/json" \
-      -X PUT "http://localhost:8080/api/v1/services/${AI_ID}/access-mode" \
+      -X PUT "${DASH}/api/v1/services/${AI_ID}/access-mode" \
       -d '{"access_mode":"open"}' >/dev/null 2>&1 || true
 
     curl -s -b "$COOKIE_JAR" -H "X-CSRF-Token: $CSRF" \
       -H "Content-Type: application/json" \
-      -X PUT "http://localhost:8080/api/v1/services/${AI_ID}/ip-geo" \
+      -X PUT "${DASH}/api/v1/services/${AI_ID}/ip-geo" \
       -d '{"enabled":false,"block_cidrs":[],"allow_cidrs":[],"allow_countries":[],"block_countries":[]}' \
       >/dev/null 2>&1 || true
     echo "  reset ai service to open + ip-geo disabled"
@@ -137,23 +145,23 @@ fi
 do_login() {
   COOKIE_JAR="$(mktemp /tmp/burrow-smoke-user.XXXXXX)"
   LOGIN_OUTPUT=$(curl -s -c "$COOKIE_JAR" \
-    -X POST http://localhost:8080/api/v1/auth/login \
+    -X POST "${DASH}/api/v1/auth/login" \
     -H "Content-Type: application/json" \
     -d '{"email":"admin@e2e.local","password":"e2e-pass"}' 2>&1)
   # Extract CSRF from the cookie jar (tab-delimited Netscape format; value is last field)
-  CSRF=$(grep "burrow_csrf" "$COOKIE_JAR" 2>/dev/null | awk '{print $NF}' || true)
+  CSRF=$(awk -v n="$CSRF_COOKIE" '$6 == n {print $7}' "$COOKIE_JAR" 2>/dev/null || true)
 }
 
 # api_get <path> — authenticated GET
 api_get() {
-  curl -s -b "$COOKIE_JAR" "http://localhost:8080${1}"
+  curl -s -b "$COOKIE_JAR" "${DASH}${1}"
 }
 
 # api_csrf_body <METHOD> <path> <json-body> — CSRF mutation, returns body
 api_csrf_body() {
   curl -s -b "$COOKIE_JAR" -H "X-CSRF-Token: $CSRF" \
     -H "Content-Type: application/json" \
-    -X "$1" "http://localhost:8080${2}" -d "$3"
+    -X "$1" "${DASH}${2}" -d "$3"
 }
 
 # api_csrf_status <METHOD> <path> [json-body] — returns HTTP status code only
@@ -165,11 +173,11 @@ api_csrf_status() {
     curl -s -o /dev/null -w "%{http_code}" \
       -b "$COOKIE_JAR" -H "X-CSRF-Token: $CSRF" \
       -H "Content-Type: application/json" \
-      -X "$method" "http://localhost:8080${path}" -d "$body"
+      -X "$method" "${DASH}${path}" -d "$body"
   else
     curl -s -o /dev/null -w "%{http_code}" \
       -b "$COOKIE_JAR" -H "X-CSRF-Token: $CSRF" \
-      -X "$method" "http://localhost:8080${path}"
+      -X "$method" "${DASH}${path}"
   fi
 }
 
@@ -283,7 +291,7 @@ if echo "$LOGIN_OUTPUT" | grep -q '"email":"admin@e2e.local"'; then
   if [ -n "$CSRF" ]; then
     pass
   else
-    fail "login response OK but no burrow_csrf cookie found in jar"
+    fail "login response OK but no $CSRF_COOKIE cookie found in jar"
   fi
 else
   fail "login failed: $LOGIN_OUTPUT"
@@ -520,7 +528,7 @@ step "9-observe"
 AUDIT_RESP=$(api_get /api/v1/audit/events)
 AUDIT_COUNT=$(echo "$AUDIT_RESP" | json_count)
 CONNLOG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -b "$COOKIE_JAR" \
-  "http://localhost:8080/api/v1/connection-logs")
+  "${DASH}/api/v1/connection-logs")
 
 AUDIT_OK=0
 CONNLOG_OK=0
@@ -555,7 +563,7 @@ else
   # Wait for relay healthcheck to respond (up to 60s)
   RELAY_HEALTHY=0
   for attempt in $(seq 1 60); do
-    if curl -fsS -o /dev/null http://localhost:8080/healthz 2>/dev/null; then
+    if curl -fsS -o /dev/null "${DASH}/healthz" 2>/dev/null; then
       RELAY_HEALTHY=1
       echo "  relay healthy after ${attempt}s"
       break
