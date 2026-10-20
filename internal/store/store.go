@@ -1088,6 +1088,8 @@ func (s *Store) CreateUser(ctx context.Context, email, password, role string) (d
 //
 // A user who owns the service behind a provider that a synthetic model
 // targets is not deleted: the error wraps ErrProviderInUse and names the models.
+// Neither is a user who owns the service behind a tool source: the error wraps
+// ErrUserHasMCPSource and names the sources.
 func (s *Store) DeleteUser(ctx context.Context, id string) error {
 	// Capture the email BEFORE the cascade so the audit row is still useful.
 	var email string

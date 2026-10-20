@@ -15,14 +15,15 @@ import (
 // and /mcp) from the engines model traffic uses: the key validation with its
 // owner checks, the authorization server's access tokens (nil: keys only),
 // the quota engine's rate limits, the redaction and guardrail engines, the
-// usage sink, the inspector, the audit log and the observer.
-func newMCPToolGateway(st *store.Store, v04 *v04Stack, pool *mcpgw.Pool, oauthServer *oauth.Server, log *slog.Logger) *mcpgw.Gateway {
+// usage sink, the inspector, the audit log and the observer. grantRPM is
+// each OAuth grant's rate limit (BURROW_OAUTH_GRANT_RPM; 0 = none).
+func newMCPToolGateway(st *store.Store, v04 *v04Stack, pool *mcpgw.Pool, oauthServer *oauth.Server, grantRPM int, log *slog.Logger) *mcpgw.Gateway {
 	var tokens mcpgw.OAuthTokens
 	if oauthServer != nil { // a nil *oauth.Server must not become a non-nil interface
 		tokens = oauthServer
 	}
 	return mcpgw.NewGateway(mcpgw.GatewayOptions{
-		OAuth: tokens,
+		OAuth: tokens, GrantRPM: grantRPM,
 		Store: st, Keys: st, Upstream: pool, Limits: v04.QuotaEngine,
 		Redact: v04.RedactEngine, Guardrails: v04.GuardrailsEngine,
 		Policy:    mcpToolPolicy(v04.AIChain.Loader, v04.GlobalGuardrails, log),

@@ -310,7 +310,7 @@ type MCPSourceStore interface {
 	ListMCPSources(ctx context.Context) ([]db.MCPSource, error)
 	MCPSourceBySlug(ctx context.Context, slug string) (db.MCPSource, error)
 	CreateMCPSource(ctx context.Context, ownerID string, in store.MCPSourceInput) (db.MCPSource, error)
-	UpdateMCPSource(ctx context.Context, slug string, u store.MCPSourceUpdate) (db.MCPSource, error)
+	UpdateMCPSource(ctx context.Context, slug string, u store.MCPSourceUpdate) (src db.MCPSource, repending int, err error)
 	DeleteMCPSource(ctx context.Context, slug string) error
 
 	ListMCPTools(ctx context.Context, slug string) ([]db.MCPTool, error)

@@ -179,7 +179,7 @@ func TestUpdateMCPSource(t *testing.T) {
 	n := func(v int) *int { return &v }
 	off := false
 
-	got, err := s.UpdateMCPSource(ctx, "github", MCPSourceUpdate{RPM: n(30), Enabled: &off, AuthHeader: str("X-Api-Key"), AuthFormat: str("{key}"), ProtocolVersion: str("2025-06-18")})
+	got, _, err := s.UpdateMCPSource(ctx, "github", MCPSourceUpdate{RPM: n(30), Enabled: &off, AuthHeader: str("X-Api-Key"), AuthFormat: str("{key}"), ProtocolVersion: str("2025-06-18")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestUpdateMCPSource(t *testing.T) {
 		t.Fatalf("after update: %+v", got)
 	}
 	// "" clears the slot and the pinned revision.
-	got, err = s.UpdateMCPSource(ctx, "github", MCPSourceUpdate{CredentialSlot: str(""), ProtocolVersion: str(""), URL: str("https://other.example.com/x")})
+	got, _, err = s.UpdateMCPSource(ctx, "github", MCPSourceUpdate{CredentialSlot: str(""), ProtocolVersion: str(""), URL: str("https://other.example.com/x")})
 	if err != nil || got.CredentialSlot != "" || got.ProtocolVersion != "" || got.URL != "https://other.example.com/x" {
 		t.Fatalf("clear: %v %+v", err, got)
 	}
@@ -202,14 +202,14 @@ func TestUpdateMCPSource(t *testing.T) {
 		"empty url":  {URL: str("")},
 		"bad format": {AuthFormat: str("nokey")},
 	} {
-		if _, err := s.UpdateMCPSource(ctx, "github", u); !errors.Is(err, ErrInvalidMCPSource) {
+		if _, _, err := s.UpdateMCPSource(ctx, "github", u); !errors.Is(err, ErrInvalidMCPSource) {
 			t.Errorf("%s: err = %v, want ErrInvalidMCPSource", name, err)
 		}
 	}
 	if after, _ := s.MCPSourceBySlug(ctx, "github"); after.URL != "https://other.example.com/x" || after.TimeoutS != 60 {
 		t.Fatalf("a refused update changed the row: %+v", after)
 	}
-	if _, err := s.UpdateMCPSource(ctx, "ghost", MCPSourceUpdate{RPM: n(1)}); !errors.Is(err, ErrMCPSourceNotFound) {
+	if _, _, err := s.UpdateMCPSource(ctx, "ghost", MCPSourceUpdate{RPM: n(1)}); !errors.Is(err, ErrMCPSourceNotFound) {
 		t.Fatalf("unknown slug err = %v", err)
 	}
 	// A tunnel source has no URL or credential.
@@ -217,11 +217,11 @@ func TestUpdateMCPSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, u := range map[string]MCPSourceUpdate{"url": {URL: str("https://a.example.com/")}, "slot": {CredentialSlot: str("A")}} {
-		if _, err := s.UpdateMCPSource(ctx, "files", u); !errors.Is(err, ErrInvalidMCPSource) {
+		if _, _, err := s.UpdateMCPSource(ctx, "files", u); !errors.Is(err, ErrInvalidMCPSource) {
 			t.Errorf("tunnel %s: err = %v, want ErrInvalidMCPSource", name, err)
 		}
 	}
-	if got, err := s.UpdateMCPSource(ctx, "files", MCPSourceUpdate{Name: str("Files!"), MaxConcurrent: n(2)}); err != nil || got.Name != "Files!" || got.MaxConcurrent != 2 {
+	if got, _, err := s.UpdateMCPSource(ctx, "files", MCPSourceUpdate{Name: str("Files!"), MaxConcurrent: n(2)}); err != nil || got.Name != "Files!" || got.MaxConcurrent != 2 {
 		t.Fatalf("tunnel update: %v %+v", err, got)
 	}
 }
@@ -299,5 +299,43 @@ func TestDeleteService_RefusedWhileASourceUsesIt(t *testing.T) {
 	}
 	if _, err := s.DeleteService(ctx, uid, "admin", svcID); err != nil {
 		t.Fatalf("delete service after the source is gone: %v", err)
+	}
+}
+
+// Final review: a user who owns the service behind a tool source (the hidden
+// row of a remote source, or the service a tunnel source is bound to) is not
+// deleted: the cascade would take the source, its tools and its approvals
+// with it unnoticed. The error names the sources; once they are gone the user
+// can be deleted.
+func TestDeleteUser_RefusedWhileOwningAToolSource(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	uid, svcID, _ := mcpSourceFixture(t, s)
+	if _, err := s.CreateMCPSource(ctx, uid, remoteInput("github")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateMCPSource(ctx, uid, MCPSourceInput{Slug: "files", Name: "Files", Kind: "tunnel", ServiceID: svcID}); err != nil {
+		t.Fatal(err)
+	}
+	err := s.DeleteUser(ctx, uid)
+	if !errors.Is(err, ErrUserHasMCPSource) || !strings.Contains(err.Error(), "files, github") || strings.Contains(err.Error(), "FOREIGN KEY") {
+		t.Fatalf("delete user err = %v, want ErrUserHasMCPSource naming files, github", err)
+	}
+	if len(mustList(t, s)) != 2 {
+		t.Fatal("a source went with the refused delete")
+	}
+	if _, err := s.q.GetUserByID(ctx, uid); err != nil {
+		t.Fatalf("user after the refused delete: %v", err)
+	}
+	for _, slug := range []string{"files", "github"} {
+		if err := s.DeleteMCPSource(ctx, slug); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.DeleteUser(ctx, uid); err != nil {
+		t.Fatalf("delete user once the sources are gone: %v", err)
+	}
+	if err := s.DeleteUser(ctx, uid); !errors.Is(err, db.ErrNotFound) {
+		t.Fatalf("second delete err = %v, want ErrNotFound", err)
 	}
 }

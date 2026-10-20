@@ -376,6 +376,11 @@ func (d Deps) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "the user owns a provider that is used by model(s): "+providerInUseModels(err))
 		return
 	}
+	if errors.Is(err, store.ErrUserHasMCPSource) {
+		// The cascade would take the sources, their tools and approvals.
+		writeErr(w, http.StatusConflict, "the user owns the service of tool source(s): "+errDetail(err, store.ErrUserHasMCPSource)+"; delete the tool sources first")
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "delete user failed")
 		return

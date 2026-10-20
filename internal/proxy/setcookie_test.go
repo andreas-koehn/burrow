@@ -124,3 +124,35 @@ func TestProxyDropsBurrowSetCookies_OnlyBurrowCookies(t *testing.T) {
 		t.Fatalf("Set-Cookie present: %q", got)
 	}
 }
+
+// Final review: the services host's handoff nonce (burrow_svc_nonce) is
+// Burrow's own like the sessions: an upstream neither receives it nor sets it.
+func TestProxyKeepsTheServicesNonceFromTheUpstream(t *testing.T) {
+	var gotCookie string
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCookie = r.Header.Get("Cookie")
+		w.Header().Add("Set-Cookie", "burrow_svc_nonce=fixed; Path=/")
+		w.Header().Add("Set-Cookie", "app=2")
+		w.WriteHeader(http.StatusOK)
+	})
+	d := newFakeDialer(upstream)
+	d.register("sc3", &proxy.Resolved{ServiceID: "svc-sc3", AccessMode: "open", LocalHost: "127.0.0.1:3000"})
+	p := proxy.New(d, openChecker{}, authDomain, testLog())
+	ts := httptest.NewServer(p)
+	defer ts.Close()
+
+	req, _ := http.NewRequest("GET", ts.URL+"/", nil)
+	req.Host = "sc3." + authDomain
+	req.Header.Set("Cookie", "burrow_svc_nonce=n1; app=1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+	if gotCookie != "app=1" {
+		t.Fatalf("upstream Cookie = %q, want app=1", gotCookie)
+	}
+	if got := resp.Header.Values("Set-Cookie"); len(got) != 1 || got[0] != "app=2" {
+		t.Fatalf("Set-Cookie = %q, want only app=2", got)
+	}
+}

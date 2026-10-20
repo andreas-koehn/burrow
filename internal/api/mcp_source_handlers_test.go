@@ -333,3 +333,23 @@ func TestMCPSources_Permissions(t *testing.T) {
 		}
 	}
 }
+
+// Final review: a new source takes at most 16 calls at a time when the body
+// leaves max_concurrent out; 0 (no limit) must be asked for.
+func TestMCPSources_DefaultMaxConcurrent(t *testing.T) {
+	f := newMCPSourceFixture(t)
+	admin := f.session(t, "admin")
+	rec := f.do(t, http.MethodPost, "/api/v1/mcp/sources", map[string]any{"slug": "a", "kind": "remote", "url": "https://mcp.example.com/mcp"}, admin)
+	if src := mcpDecode[mcpSourceResp](t, rec); rec.Code != http.StatusCreated || src.MaxConcurrent != 16 {
+		t.Fatalf("without max_concurrent: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = f.do(t, http.MethodPost, "/api/v1/mcp/sources", map[string]any{"slug": "b", "kind": "remote", "url": "https://mcp.example.com/mcp", "max_concurrent": 0}, admin)
+	if src := mcpDecode[mcpSourceResp](t, rec); rec.Code != http.StatusCreated || src.MaxConcurrent != 0 {
+		t.Fatalf("max_concurrent 0: %d %s", rec.Code, rec.Body.String())
+	}
+	// An update that leaves it out keeps what is stored.
+	rec = f.do(t, http.MethodPut, "/api/v1/mcp/sources/b", map[string]any{"rpm": 5}, admin)
+	if src := mcpDecode[mcpSourceResp](t, rec); rec.Code != http.StatusOK || src.MaxConcurrent != 0 {
+		t.Fatalf("update: %d %s", rec.Code, rec.Body.String())
+	}
+}

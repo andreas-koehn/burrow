@@ -384,7 +384,7 @@ func TestServe_Perimeter(t *testing.T) {
 		t.Fatalf("batch: status %d", resp.StatusCode)
 	}
 	off := false
-	if _, err := g.st.UpdateMCPSource(ctx, "gh", store.MCPSourceUpdate{Enabled: &off}); err != nil {
+	if _, _, err := g.st.UpdateMCPSource(ctx, "gh", store.MCPSourceUpdate{Enabled: &off}); err != nil {
 		t.Fatal(err)
 	}
 	if resp := post("/mcp/gh", auth, list); resp.StatusCode != http.StatusNotFound {
@@ -770,7 +770,7 @@ func TestServe_ConcurrencyLimitChangeCountsRunningCalls(t *testing.T) {
 	go slow()
 	waitCalls(t, up, "slow", 1)
 	two := 2
-	if _, err := g.st.UpdateMCPSource(context.Background(), "gh", store.MCPSourceUpdate{MaxConcurrent: &two}); err != nil {
+	if _, _, err := g.st.UpdateMCPSource(context.Background(), "gh", store.MCPSourceUpdate{MaxConcurrent: &two}); err != nil {
 		t.Fatal(err)
 	}
 	go slow()

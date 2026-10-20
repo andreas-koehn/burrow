@@ -943,3 +943,52 @@ func TestClientLoginApprove_NoPasswordWithServicesDomain(t *testing.T) {
 		t.Fatalf("approve without password: %d %v, want 200", resp.StatusCode, body)
 	}
 }
+
+// Final review: a password sent inline with an approval (a client sign-in,
+// an OAuth consent) is a password confirmation like /auth/reauth: a wrong one
+// counts against the session's allowance (shared with /auth/reauth and the
+// password change) and both outcomes are audited as auth.reauth.
+func TestClientLoginApprove_InlinePasswordIsCountedAndAudited(t *testing.T) {
+	aud := &reauthAudit{}
+	logins := &fakeClientLogins{}
+	h := newLoginHarness(t, func(d *Deps) {
+		d.ClientLogins, d.AuditAppender = logins, aud
+		d.LoginRateLimitPerIPOverride, d.LoginRateLimitGlobalOverride = 1000, 1000
+	})
+	c := unconfirmedClient(t, h.srv)
+	approve := func(password string) int {
+		resp := c.post(t, "/api/v1/client/login/requests/ABCD-EFGH/approve", map[string]string{"password": password, "token_name": "laptop"})
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := approve("password1"); code != http.StatusOK {
+		t.Fatalf("right password: %d", code)
+	}
+	for i := 0; i < ReauthGuessLimit; i++ {
+		if code := approve("nope"); code != http.StatusForbidden {
+			t.Fatalf("wrong %d: %d, want 403", i, code)
+		}
+	}
+	// The session is shut out, the right password included, here and at
+	// /auth/reauth.
+	if code := approve("password1"); code != http.StatusTooManyRequests {
+		t.Fatalf("inline after %d wrong: %d, want 429", ReauthGuessLimit, code)
+	}
+	if resp := c.post(t, "/api/v1/auth/reauth", map[string]string{"password": "password1"}); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("reauth after %d wrong inline passwords: %d, want 429", ReauthGuessLimit, resp.StatusCode)
+	}
+	if logins.approved != 1 {
+		t.Fatalf("approved %d times, want 1", logins.approved)
+	}
+	aud.mu.Lock()
+	defer aud.mu.Unlock()
+	var results []string
+	for _, e := range aud.rows {
+		if e.Action == audit.ActionAuthReauth {
+			results = append(results, e.Result)
+		}
+	}
+	if got, want := strings.Join(results, ","), "ok"+strings.Repeat(",denied", ReauthGuessLimit); got != want {
+		t.Fatalf("auth.reauth rows %s, want %s", got, want)
+	}
+}

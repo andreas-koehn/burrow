@@ -77,7 +77,9 @@ Recommended: a second name for the tunnelled apps, so they do not share the
 dashboard's origin. Add its A record and set `BURROW_SERVICES_DOMAIN`; ACME
 obtains its certificate too, and services move to
 `https://apps.insingo.com/svc/<slug>/`. See
-[Services domain](/guide/configuration#services-domain).
+[Services domain](/guide/configuration#services-domain). Set it before you
+rely on OAuth for MCP clients: until then a tunnelled app shares the origin of
+the consent page, and only your password protects an approval.
 
 ```
 apps.insingo.com.    300  IN  A  SERVER_IP

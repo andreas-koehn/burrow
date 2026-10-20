@@ -1020,3 +1020,25 @@ func TestLoadServer_ServicesDomain(t *testing.T) {
 		}
 	}
 }
+
+// BURROW_OAUTH_GRANT_RPM: each OAuth grant's calls per minute at the tool
+// gateway; 120 by default, 0 turns it off, a negative value is refused.
+func TestLoadServer_OAuthGrantRPM(t *testing.T) {
+	c, err := LoadServer(nil)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if c.OAuthGrantRPM != 120 {
+		t.Fatalf("default oauth_grant_rpm = %d, want 120", c.OAuthGrantRPM)
+	}
+	for in, want := range map[string]int{"0": 0, "30": 30} {
+		t.Setenv("BURROW_OAUTH_GRANT_RPM", in)
+		if c, err = LoadServer(nil); err != nil || c.OAuthGrantRPM != want {
+			t.Fatalf("%q: %d %v, want %d", in, c.OAuthGrantRPM, err, want)
+		}
+	}
+	t.Setenv("BURROW_OAUTH_GRANT_RPM", "-1")
+	if _, err := LoadServer(nil); err == nil {
+		t.Fatal("a negative oauth_grant_rpm is accepted")
+	}
+}

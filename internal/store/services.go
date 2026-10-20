@@ -48,6 +48,9 @@ var (
 	// source's slug, while a tool source points at the service: the source
 	// would otherwise be deleted with it without a word.
 	ErrServiceHasMCPSource = db.ErrServiceHasMCPSource
+	// ErrUserHasMCPSource is returned by DeleteUser, wrapped with the
+	// sources' slugs, while the user owns the service behind a tool source.
+	ErrUserHasMCPSource = db.ErrUserHasMCPSource
 )
 
 // ServiceView is the durable-fields representation of a service returned by

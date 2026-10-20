@@ -206,6 +206,9 @@ func (d Deps) PostOAuthRequestApprove(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, oauth.ErrInvalidScope):
 		writeErr(w, http.StatusBadRequest, "a scope is not offered by this resource")
 		return
+	case errors.Is(err, oauth.ErrScopeWidened):
+		writeErr(w, http.StatusBadRequest, "the scopes may narrow what the client asked for, not widen it")
+		return
 	case errors.Is(err, oauth.ErrScopeNotInRole):
 		writeErr(w, http.StatusForbidden, "a scope names a permission your role does not grant")
 		return

@@ -95,6 +95,10 @@ func TestOAuth_AccessTokenAtTheManagementServer(t *testing.T) {
 	if len(rows) != 1 || rows[0].ActorID != "u2" || rows[0].ActorEmail != "agent-user@x" || rows[0].Result != "ok" {
 		t.Fatalf("audit rows = %+v", rows)
 	}
+	// Final review: the row names the grant whose token made the call.
+	if p := string(rows[0].Payload); p != `{"oauth_grant_id":"grant1"}` {
+		t.Fatalf("audit payload = %s", p)
+	}
 }
 
 // The token's permissions are intersected with the user's role (mayUse), as
@@ -120,6 +124,11 @@ func TestOAuth_AutomationTokenCarriesNoMarker(t *testing.T) {
 	}
 	if _, ok := ReplayIdentityFrom(context.Background()); ok {
 		t.Fatal("a plain context carries a replay identity")
+	}
+	// Final review: the audit row names the automation token.
+	rows := env.audit.all()
+	if len(rows) != 1 || string(rows[0].Payload) != `{"token_id":"tok1"}` {
+		t.Fatalf("audit rows = %+v", rows)
 	}
 }
 

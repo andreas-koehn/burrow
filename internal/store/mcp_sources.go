@@ -224,16 +224,20 @@ func mapMCPDBErr(err error) error {
 // source; naming one on a tunnel source is refused. Kind, slug and service
 // never change. The merge with the stored values runs inside the database's
 // read-and-write step, so a concurrent update of other fields is kept.
-func (s *Store) UpdateMCPSource(ctx context.Context, slug string, u MCPSourceUpdate) (db.MCPSource, error) {
+//
+// A change of URL or credential slot voids the approvals of the source's
+// tools: repending is how many approved tools went back to pending (see
+// db.ModifyMCPSource).
+func (s *Store) UpdateMCPSource(ctx context.Context, slug string, u MCPSourceUpdate) (src db.MCPSource, repending int, err error) {
 	if err := validMCPLimits(u.RPM, u.MaxConcurrent, u.TimeoutS); err != nil {
-		return db.MCPSource{}, err
+		return db.MCPSource{}, 0, err
 	}
 	if u.ProtocolVersion != nil {
 		if err := validProtocolVersion(*u.ProtocolVersion); err != nil {
-			return db.MCPSource{}, err
+			return db.MCPSource{}, 0, err
 		}
 	}
-	err := s.q.ModifyMCPSource(ctx, slug, func(p db.MCPSource) (db.MCPSource, error) {
+	repending, err = s.q.ModifyMCPSource(ctx, slug, func(p db.MCPSource) (db.MCPSource, error) {
 		if u.Name != nil {
 			name, err := validMCPName(*u.Name)
 			if err != nil {
@@ -268,13 +272,14 @@ func (s *Store) UpdateMCPSource(ctx context.Context, slug string, u MCPSourceUpd
 	})
 	switch {
 	case errors.Is(err, db.ErrNotFound):
-		return db.MCPSource{}, ErrMCPSourceNotFound
+		return db.MCPSource{}, 0, ErrMCPSourceNotFound
 	case errors.Is(err, db.ErrMCPSourceBusy):
-		return db.MCPSource{}, ErrMCPSourceBusy
+		return db.MCPSource{}, 0, ErrMCPSourceBusy
 	case err != nil:
-		return db.MCPSource{}, err
+		return db.MCPSource{}, 0, err
 	}
-	return s.q.GetMCPSource(ctx, slug)
+	src, err = s.q.GetMCPSource(ctx, slug)
+	return src, repending, err
 }
 
 func orDefaultStr(v, d string) string {

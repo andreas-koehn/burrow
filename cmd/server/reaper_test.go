@@ -9,9 +9,15 @@ import (
 	"time"
 )
 
-// fakeReaper counts DeleteExpiredSessions calls for testing.
+// fakeReaper counts DeleteExpiredSessions and PruneOAuth calls for testing.
 type fakeReaper struct {
-	calls atomic.Int64
+	calls  atomic.Int64
+	prunes atomic.Int64
+}
+
+func (f *fakeReaper) PruneOAuth(context.Context, time.Time) error {
+	f.prunes.Add(1)
+	return nil
 }
 
 func (f *fakeReaper) DeleteExpiredSessions(_ context.Context) (int64, error) {
@@ -73,4 +79,24 @@ func TestRunSessionReaper_TickerFires(t *testing.T) {
 	if n := r.calls.Load(); n < 3 {
 		t.Fatalf("want >= 3 DeleteExpiredSessions calls, got %d", n)
 	}
+}
+
+// Final review: the OAuth tables are pruned on the same tick (expired codes
+// and tokens, grants revoked more than 30 days ago), at startup and on every
+// tick after, and not only when someone approves a consent.
+func TestRunSessionReaper_PrunesOAuth(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	r := &fakeReaper{}
+	runSessionReaper(ctx, &wg, r, slog.Default(), 50*time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for r.prunes.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := r.prunes.Load(); n < 2 {
+		t.Fatalf("want >= 2 PruneOAuth calls (startup and a tick), got %d", n)
+	}
+	cancel()
+	wg.Wait()
 }

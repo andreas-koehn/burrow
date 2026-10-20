@@ -424,6 +424,17 @@ func TestOAuth_ApproveErrors(t *testing.T) {
 	if r := c.post(t, "/api/v1/oauth/requests/"+id+"/approve", map[string]any{}); r.StatusCode != http.StatusOK {
 		t.Fatalf("after refused bodies: %d", r.StatusCode)
 	}
+	// Final review: a request for burrow:read (the default) is not approved
+	// as burrow:write; narrowing a burrow:write request is.
+	id = pendingID(t, h.authURL(cid, h.srv.URL+"/mcp/burrow"))
+	r := c.post(t, "/api/v1/oauth/requests/"+id+"/approve", map[string]any{"scopes": []string{"burrow:write"}})
+	if b := readBody(t, r); r.StatusCode != http.StatusBadRequest || !strings.Contains(b, "narrow") {
+		t.Fatalf("widened to burrow:write: %d %s", r.StatusCode, b)
+	}
+	id = pendingID(t, h.authURL(cid, h.srv.URL+"/mcp/burrow")+"&scope=burrow%3Awrite")
+	if r := c.post(t, "/api/v1/oauth/requests/"+id+"/approve", map[string]any{"scopes": []string{"burrow:read"}}); r.StatusCode != http.StatusOK {
+		t.Fatalf("narrowed to burrow:read: %d %s", r.StatusCode, readBody(t, r))
+	}
 }
 
 // Connected apps: the user's own; every user's with oauth:clients:manage;
@@ -629,7 +640,8 @@ func TestOAuth_SDKClientReachesTheManagementServer(t *testing.T) {
 		PreregisteredClient: &oauthex.ClientCredentials{ClientID: cl.ClientID, Issuer: h.srv.URL},
 		RedirectURL:         "http://127.0.0.1:43210/callback",
 		AuthorizationCodeFetcher: func(_ context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
-			back := h.consent(t, c, args.URL, map[string]any{"scopes": []string{"burrow:write"}})
+			// As asked: the consent may narrow the scopes, not widen them.
+			back := h.consent(t, c, args.URL, map[string]any{})
 			q := back.Query()
 			return &auth.AuthorizationResult{Code: q.Get("code"), State: q.Get("state"), Iss: q.Get("iss")}, nil
 		},

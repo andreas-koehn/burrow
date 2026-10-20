@@ -364,7 +364,7 @@ components:
         auth_format: { type: string, description: 'Kind remote: must contain {key} once; default "Bearer {key}".' }
         protocol_version: { type: string, description: 'A revision date such as 2025-06-18; empty negotiates.' }
         rpm: { type: integer, minimum: 0, maximum: 100000 }
-        max_concurrent: { type: integer, minimum: 0, maximum: 1000 }
+        max_concurrent: { type: integer, minimum: 0, maximum: 1000, description: 'Default 16; 0 = no limit.' }
         timeout_s: { type: integer, minimum: 1, maximum: 300 }
         enabled: { type: boolean, description: 'Default true.' }
     MCPSourceUpdate:
@@ -5267,7 +5267,9 @@ paths:
         '409':
           description: >
             The user owns the service behind a provider that a synthetic
-            model targets; the message names the models. Nothing was
+            model targets, or the service behind a tool source (the hidden
+            row of a remote source, or the service a tunnel source is bound
+            to); the message names the models or the sources. Nothing was
             deleted.
           content:
             application/json:
@@ -5697,8 +5699,12 @@ paths:
         (BURROW_SERVICES_DOMAIN) the session must have confirmed its password
         in the last ten minutes (`POST /api/v1/auth/reauth`; 403
         `reauth_required` otherwise). A body `password` is still accepted
-        instead: 403 for a wrong one. The route is limited per address like
-        the sign-in; `password_required` on the request says which applies.
+        instead: 403 for a wrong one. It counts as a confirmation like
+        `POST /auth/reauth`: audited as `auth.reauth`, and ten wrong
+        passwords in a minute from one session (here, at `/auth/reauth` and
+        at the password change together) lock that session for that minute
+        (429). The route is limited per address like the sign-in;
+        `password_required` on the request says which applies.
       parameters:
         - { name: user_code, in: path, required: true, schema: { type: string }, example: "ABCD-EFGH" }
       requestBody:
@@ -5737,7 +5743,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '429':
-          description: Too many wrong codes, or too many approvals from this address (while the password is required).
+          description: Too many wrong codes, too many approvals from this address, or too many wrong passwords from this session (while the password is required).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -5818,8 +5824,13 @@ paths:
         (absent: true). Audited as `oauth.grant.approve`. While the relay
         has no services domain the session must have confirmed its password
         in the last ten minutes (403 `reauth_required`), or send `password`
-        (403 for a wrong one); the route is then limited per address like
-        the sign-in.
+        (403 for a wrong one; counted and audited like `POST /auth/reauth`,
+        so ten wrong ones in a minute lock the session for that minute); the
+        route is then limited per address like the sign-in. `scopes` may
+        narrow the requested scopes but not widen them: each chosen scope
+        must stand for permissions the requested ones already stand for
+        (burrow:read lies within burrow:write); anything else is refused
+        with 400 and the request keeps waiting.
       parameters:
         - $ref: '#/components/parameters/PathID'
       requestBody:
@@ -5832,7 +5843,7 @@ paths:
                 scopes:
                   type: array
                   items: { type: string }
-                  description: Replaces the requested scopes. Absent keeps them.
+                  description: Replaces the requested scopes with a subset of them (burrow:read counts as a subset of burrow:write). Absent keeps them.
                 allowed_tools:
                   type: array
                   items: { type: string }
@@ -5855,7 +5866,7 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429':
-          description: Too many approvals from this address (while the password is required).
+          description: Too many approvals from this address, or too many wrong passwords from this session (while the password is required).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -6523,6 +6534,7 @@ paths:
       tags: [mcp]
       operationId: mcpSourceCreate
       x-burrow-permission: {kind: needs, any_of: ["mcp:sources:manage"]}
+      x-burrow-mcp: false
       summary: Create a tool source (admin)
       description: |
         Kind `remote` adds an MCP server the relay calls itself: `url` must
@@ -6544,10 +6556,14 @@ paths:
         The slug is 1-24 characters of a-z, 0-9 and hyphens, starting and
         ending with a letter or digit; `burrow` and `v1` are reserved. It
         names the source at `/mcp/<slug>` and prefixes its tools on `/mcp`.
-        `timeout_s` is 60 when left out (at most 300), `rpm` and
-        `max_concurrent` 0 (no limit). While the relay has no services
+        `timeout_s` is 60 when left out (at most 300), `rpm` 0 (no limit)
+        and `max_concurrent` 16 (0 means no limit and must be asked for). While the relay has no services
         domain, a dashboard session must have confirmed its password
         recently (see `POST /api/v1/auth/reauth`).
+
+        Not offered as a management MCP tool: tool text an upstream wrote
+        could otherwise steer an agent into pointing a source, and with it
+        a credential, at a host of the upstream's choosing.
       requestBody:
         required: true
         content:
@@ -6596,6 +6612,7 @@ paths:
       tags: [mcp]
       operationId: mcpSourceUpdate
       x-burrow-permission: {kind: needs, any_of: ["mcp:sources:manage"]}
+      x-burrow-mcp: false
       summary: Change a tool source (admin)
       description: |
         A field that is left out keeps its stored value; `""` clears
@@ -6604,6 +6621,14 @@ paths:
         `auth_format` belong to a remote source and are refused with 400 on
         a tunnel source. Concurrent updates of different fields are both
         kept. The same recent-confirmation rule as for creating applies.
+
+        An approval was given for one upstream and one credential: when
+        `url` or `credential_slot` changes, every approved tool of the
+        source goes back to pending (and is not served until approved
+        again), and the audit entry `mcp.source.update` says how many in
+        `tools_back_to_pending`. Other fields leave the approvals as they
+        are. Not offered as a management MCP tool, for the reason given at
+        creating a source.
       requestBody:
         required: true
         content:
@@ -6702,11 +6727,14 @@ paths:
       tags: [mcp]
       operationId: mcpSourceToolsList
       x-burrow-permission: {kind: needs, any_of: ["mcp:sources:read", "mcp:sources:manage"]}
+      x-burrow-mcp: false
       summary: List the tools of a tool source
       description: |
         Every tool the syncs have seen, removed ones included, ordered by
         name, with the approved definition next to a changed one and the
-        operator's overrides.
+        operator's overrides. Not offered as a management MCP tool: the
+        definitions are text the upstream wrote, which could steer an agent
+        (the source list and a single source stay available).
       security:
         - CookieAuth: []
         - BearerAuth: []
@@ -7709,7 +7737,8 @@ paths:
         They are captured on the ring of the source's backing service while
         its inspector is enabled, and follow the same rule on that service;
         in addition the source must be one the caller may read: with
-        mcp:sources:read, or when the backing service is the caller's own.
+        mcp:sources:read or mcp:sources:manage, or when the backing service
+        is the caller's own.
 
         Headers and bodies are left out. The entry's service_id and id name
         the request on /api/v1/services/{service_id}/inspector/requests/{id},

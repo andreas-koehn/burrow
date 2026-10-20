@@ -95,3 +95,27 @@ func ScopePermissions(scopes []string) []authz.Permission {
 	}
 	return out
 }
+
+// withinScopes reports whether every chosen scope is one of the requested
+// ones, or stands for permissions the requested ones all stand for already
+// (ScopePermissions): burrow:read lies within burrow:write, a read permission
+// within burrow:read, any permission within burrow:write. A consent decision
+// may narrow what the client asked for, never widen it.
+func withinScopes(chosen, requested []string) bool {
+	granted := ScopePermissions(requested)
+	for _, s := range chosen {
+		if slices.Contains(requested, s) {
+			continue
+		}
+		perms := ScopePermissions([]string{s})
+		if len(perms) == 0 {
+			return false
+		}
+		for _, p := range perms {
+			if !slices.Contains(granted, p) {
+				return false
+			}
+		}
+	}
+	return true
+}

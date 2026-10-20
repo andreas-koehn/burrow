@@ -465,7 +465,8 @@ func (d Deps) toolCallEntries(w http.ResponseWriter, r *http.Request, role strin
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return nil, false
 	}
-	readSources := effectivePerms(r.Context(), role, authz.PermMcpSourcesRead)
+	// Managing the sources implies reading them, as on the source routes.
+	readSources := effectivePerms(r.Context(), role, authz.PermMcpSourcesRead) || effectivePerms(r.Context(), role, authz.PermMcpSourcesManage)
 	var out []inspector.Entry
 	for _, src := range sources {
 		if read[src.ServiceID] {
@@ -473,7 +474,8 @@ func (d Deps) toolCallEntries(w http.ResponseWriter, r *http.Request, role strin
 		}
 		read[src.ServiceID] = true
 		// The owner of the backing service reads it either way; anyone
-		// else needs both inspector:read:any and mcp:sources:read.
+		// else needs both inspector:read:any and mcp:sources:read (or
+		// :manage).
 		if !readAny || !readSources {
 			owns, ok := d.ownsInspectedService(w, r, src.ServiceID)
 			if !ok {

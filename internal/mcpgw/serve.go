@@ -146,6 +146,12 @@ type GatewayOptions struct {
 	// OAuth checks OAuth access tokens (*oauth.Server); nil = gateway keys
 	// only.
 	OAuth OAuthTokens
+	// GrantRPM is the rate limit of each OAuth grant: calls per minute, a
+	// bucket of that size refilled continuously (BURROW_OAUTH_GRANT_RPM,
+	// 120 by default in the relay). 0 = none. No api_key limit can name a
+	// grant, so without it a grant's calls would only meet the backing
+	// service's and the global limits.
+	GrantRPM int
 }
 
 // OAuthTokens checks OAuth access tokens and words the 401 challenge
@@ -165,6 +171,7 @@ type Gateway struct {
 
 	mu       sync.Mutex
 	limits   map[string]*sourceLimits // by slug
+	grants   map[string]*grantBucket  // GrantRPM buckets, by grant id
 	sampled  map[string]time.Time     // ok-call audit sample: key|source -> minute
 	reported map[string]string        // name conflicts already logged, by slug
 }
@@ -180,7 +187,7 @@ func NewGateway(opts GatewayOptions) *Gateway {
 	}
 	g := &Gateway{
 		opts: opts, log: log, origin: http.NewCrossOriginProtection(), now: time.Now,
-		limits: map[string]*sourceLimits{}, sampled: map[string]time.Time{}, reported: map[string]string{},
+		limits: map[string]*sourceLimits{}, grants: map[string]*grantBucket{}, sampled: map[string]time.Time{}, reported: map[string]string{},
 	}
 	// The same handler options as /mcp/burrow (D4). The server of a request
 	// is built before the SDK runs and handed over through the context.
@@ -998,10 +1005,10 @@ func (l *sourceLimits) release() {
 	l.mu.Unlock()
 }
 
-// admit applies the limits of a call (D13). The key's rate limits come
-// first, so a key over its own limit does not use up the source's rpm for
-// the other keys; then a place of the source (not waited for) and the
-// source's rpm. It returns the function that gives the place back, or the
+// admit applies the limits of a call (D13). A grant's own rate limit
+// (GrantRPM) and the key's rate limits come first, so a caller over its own
+// limit does not use up the source's rpm for the others; then a place of the
+// source (not waited for) and the source's rpm. It returns the function that gives the place back, or the
 // limit error.
 func (g *Gateway) admit(ctx context.Context, req CallRequest) (func(), error) {
 	// A key's call is charged to the key's limits; a grant's to none of a
@@ -1013,13 +1020,18 @@ func (g *Gateway) admit(ctx context.Context, req CallRequest) (func(), error) {
 	case req.Caller.GrantID != "":
 		who.APIKeyID = oauthGrantSubject + req.Caller.GrantID
 	}
+	now := g.now()
+	if req.Caller.GrantID != "" && req.Caller.GatewayKeyID == "" {
+		if wait, ok := g.takeGrantCall(req.Caller.GrantID, now); !ok {
+			return nil, limitError(fmt.Sprintf("this connection allows %d calls per minute", g.opts.GrantRPM), "grant_rpm", wait)
+		}
+	}
 	if g.opts.Limits != nil && who.APIKeyID != "" {
 		d := g.opts.Limits.ChargeRate(ctx, who, quota.DimensionRPM, 1)
 		if !d.Allow {
 			return nil, limitError("rate limit reached", "rate_limit", time.Duration(max(d.RetryAfter, 1))*time.Second)
 		}
 	}
-	now := g.now()
 	l, limit, wait, ok := g.takePlace(req.Source, now)
 	switch {
 	case ok:
@@ -1029,6 +1041,46 @@ func (g *Gateway) admit(ctx context.Context, req CallRequest) (func(), error) {
 	default:
 		return nil, limitError(fmt.Sprintf("the tool source allows %d calls per minute", req.Source.RPM), limit, wait)
 	}
+}
+
+// grantBucket is the GrantRPM bucket of one OAuth grant.
+type grantBucket struct {
+	tokens float64
+	at     time.Time // last refill
+}
+
+// takeGrantCall takes one call from the grant's bucket (capacity GrantRPM,
+// refilled at GrantRPM per minute; a new grant starts full). It returns how
+// long to wait when the bucket is empty. GrantRPM 0 admits every call.
+func (g *Gateway) takeGrantCall(grantID string, now time.Time) (time.Duration, bool) {
+	rpm := g.opts.GrantRPM
+	if rpm <= 0 {
+		return 0, true
+	}
+	perSec := float64(rpm) / 60
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	b := g.grants[grantID]
+	if b == nil {
+		if len(g.grants) >= 1024 {
+			// A bucket idle for a minute is full again: dropping it changes
+			// nothing.
+			for id, o := range g.grants {
+				if now.Sub(o.at) >= time.Minute {
+					delete(g.grants, id)
+				}
+			}
+		}
+		b = &grantBucket{tokens: float64(rpm), at: now}
+		g.grants[grantID] = b
+	}
+	b.tokens = min(float64(rpm), b.tokens+now.Sub(b.at).Seconds()*perSec)
+	b.at = now
+	if b.tokens < 1 {
+		return time.Duration((1 - b.tokens) / perSec * float64(time.Second)), false
+	}
+	b.tokens--
+	return 0, true
 }
 
 // gatewayKeySubject prefixes a gateway key id in quota.Subjects.APIKeyID, as

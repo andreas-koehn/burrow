@@ -1304,9 +1304,9 @@ func (c *countingConn) Write(p []byte) (int, error) {
 // burrowCookies are Burrow's own cookies. Path-routed services share the
 // dashboard's origin, so browsers attach the dashboard's two to every request;
 // on a services host (BURROW_SERVICES_DOMAIN) they attach the services
-// session instead. None of them is the upstream's business, and an upstream
-// must not be able to set one.
-var burrowCookies = map[string]bool{"burrow_session": true, "burrow_csrf": true, ServicesSessionCookie: true}
+// session, and during the sign-in handoff its nonce, instead. None of them is
+// the upstream's business, and an upstream must not be able to set one.
+var burrowCookies = map[string]bool{"burrow_session": true, "burrow_csrf": true, ServicesSessionCookie: true, servicesNonceCookie: true}
 
 // stripBurrowCookies removes the dashboard's cookies from an outbound request
 // and leaves every other cookie untouched. It filters the raw header text

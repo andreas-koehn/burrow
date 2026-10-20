@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // CountUsers returns the total number of users in the database.
@@ -132,9 +133,14 @@ func (x *DB) execAffectOne(ctx context.Context, what, query string, args ...any)
 // ON DELETE CASCADE removes all associated sessions, tokens, and tunnels.
 // Returns ErrNotFound if no row matched. A user who owns the service behind a
 // provider that a synthetic model targets stays: the error wraps
-// ErrProviderInUse and names the models.
+// ErrProviderInUse and names the models. So does a user who owns the service
+// behind a tool source (the source, its tools and their approvals would go
+// with the cascade): the error wraps ErrUserHasMCPSource and names the
+// sources. The check is part of the DELETE, so a source created at the same
+// time cannot slip past it.
 func (x *DB) DeleteUser(ctx context.Context, id string) error {
-	res, err := x.sqlDB.ExecContext(ctx, `DELETE FROM users WHERE id=?`, id)
+	res, err := x.sqlDB.ExecContext(ctx,
+		`DELETE FROM users WHERE id=? AND NOT EXISTS (SELECT 1 FROM mcp_sources m JOIN services s ON s.id=m.service_id WHERE s.user_id=?)`, id, id)
 	if err != nil {
 		return x.providerInUseOr(ctx, fmt.Errorf("delete user: %w", err), `WHERE s.user_id=?`, id)
 	}
@@ -143,9 +149,36 @@ func (x *DB) DeleteUser(ctx context.Context, id string) error {
 		return fmt.Errorf("delete user rows affected: %w", err)
 	}
 	if n == 0 {
+		slugs, err := x.mcpSourcesOwnedBy(ctx, id)
+		if err != nil {
+			return err
+		}
+		if len(slugs) > 0 {
+			return fmt.Errorf("delete user: %w: %s", ErrUserHasMCPSource, strings.Join(slugs, ", "))
+		}
 		return fmt.Errorf("delete user: %w", ErrNotFound)
 	}
 	return nil
+}
+
+// mcpSourcesOwnedBy returns the slugs of the tool sources whose service the
+// user owns, sorted.
+func (x *DB) mcpSourcesOwnedBy(ctx context.Context, userID string) ([]string, error) {
+	rows, err := x.sqlDB.QueryContext(ctx,
+		`SELECT m.slug FROM mcp_sources m JOIN services s ON s.id=m.service_id WHERE s.user_id=? ORDER BY m.slug`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("delete user: tool sources: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var slug string
+		if err := rows.Scan(&slug); err != nil {
+			return nil, fmt.Errorf("delete user: tool sources: %w", err)
+		}
+		out = append(out, slug)
+	}
+	return out, rows.Err()
 }
 
 // CreateUser inserts a new user row. Returns an error if the email already exists.

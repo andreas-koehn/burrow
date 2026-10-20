@@ -163,6 +163,12 @@ type ServerConfig struct {
 	// Env: BURROW_LOGIN_RATE_LIMIT_PER_IP.
 	LoginRateLimitPerIP int `koanf:"login_rate_limit_per_ip"`
 
+	// OAuthGrantRPM is the rate limit of each OAuth grant at the tool
+	// gateway (/mcp and /mcp/<slug>): calls per minute. 120 by default; 0
+	// turns it off. A gateway key's calls are limited by the key's own rate
+	// limits instead. Env: BURROW_OAUTH_GRANT_RPM.
+	OAuthGrantRPM int `koanf:"oauth_grant_rpm" validate:"gte=0"`
+
 	// MinClientVersion is the oldest client version this relay accepts, in the
 	// form 0.6.0 or v0.6.0. The relay reports it at
 	// GET /api/v1/client/discovery; a client older than it stops with
@@ -417,6 +423,8 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 		"database_url": "", "experimental_postgres_backend": false,
 		// login_rate_limit_per_ip: 0 means use api.LoginRateLimitPerIP constant.
 		"login_rate_limit_per_ip": 0,
+		// oauth_grant_rpm: each OAuth grant's tool calls per minute (0 = no limit).
+		"oauth_grant_rpm": 120,
 		// min_client_version: empty = clients of any version are accepted.
 		"min_client_version": "",
 		// client_download_base: empty = DefaultClientDownloadBase;

@@ -170,5 +170,15 @@ func TestOAuth_Postgres(t *testing.T) {
 	if _, err := x.RedeemOAuthCode(ctx, "pg-code"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("pruned code: %v", err)
 	}
+	// A grant revoked more than 30 days ago goes too.
+	if _, err := x.GetOAuthGrant(ctx, "g-pg2"); err != nil {
+		t.Fatalf("grant revoked two days ago was pruned: %v", err)
+	}
+	if err := x.PruneOAuth(ctx, now.Add(31*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := x.GetOAuthGrant(ctx, "g-pg2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("grant revoked 31 days ago: %v", err)
+	}
 	_, _ = x.sqlDB.ExecContext(ctx, `DELETE FROM oauth_grants WHERE user_id='u-oauth-pg'`)
 }

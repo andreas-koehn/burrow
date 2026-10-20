@@ -349,7 +349,7 @@ func TestPool_ConfigChangeUsesANewSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := "X-Other"
-	src2, err := f.st.UpdateMCPSource(context.Background(), "gh", store.MCPSourceUpdate{AuthHeader: &h})
+	src2, _, err := f.st.UpdateMCPSource(context.Background(), "gh", store.MCPSourceUpdate{AuthHeader: &h})
 	if err != nil {
 		t.Fatal(err)
 	}

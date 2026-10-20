@@ -150,7 +150,7 @@ func TestAggregated_OnlyWhatIsServed(t *testing.T) {
 		t.Fatalf("renamed: %v %v", res, err)
 	}
 	off := false
-	if _, err := g.st.UpdateMCPSource(ctx, "other", store.MCPSourceUpdate{Enabled: &off}); err != nil {
+	if _, _, err := g.st.UpdateMCPSource(ctx, "other", store.MCPSourceUpdate{Enabled: &off}); err != nil {
 		t.Fatal(err)
 	}
 	cs = g.connect(t, key, "", "")

@@ -486,7 +486,9 @@ func TestDeny(t *testing.T) {
 func TestApprove_ScopesWithinTheRole(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
-	id := h.requestID(t, h.authParams())
+	q := h.authParams()
+	q.Set("scope", "burrow:write")
+	id := h.requestID(t, q)
 	if _, err := h.s.Approve(ctx, id, Decision{UserID: "u-user", Role: "user", Scopes: []string{"users:manage"}}); !errors.Is(err, ErrScopeNotInRole) {
 		t.Fatalf("a user granting users:manage: %v", err)
 	}
@@ -496,14 +498,60 @@ func TestApprove_ScopesWithinTheRole(t *testing.T) {
 	if _, err := h.s.Approve(ctx, id, Decision{UserID: "u-user", Role: "user", Scopes: []string{}}); !errors.Is(err, ErrInvalidScope) {
 		t.Fatalf("no scope: %v", err)
 	}
-	// A refused decision leaves the request waiting; the user may switch
-	// the read-only toggle off (burrow:write is the role's permissions).
+	// A refused decision leaves the request waiting; the user may keep
+	// burrow:write (the role's permissions) and add a permission it holds.
 	got, err := h.s.Approve(ctx, id, Decision{UserID: "u-user", Role: "user", Scopes: []string{"burrow:write", "tunnels:read:own"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Join(got.Scopes, " ") != "burrow:write tunnels:read:own" {
 		t.Fatalf("scopes %v", got.Scopes)
+	}
+}
+
+// Final review: the consent decision may narrow the requested scopes, never
+// widen them. burrow:read lies within burrow:write, a read permission within
+// burrow:read, any permission within burrow:write; nothing lies within a
+// lone permission but itself. A refused decision leaves the request waiting.
+func TestApprove_ScopesNarrowOnly(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	request := func(scope string) string {
+		q := h.authParams()
+		q.Set("scope", scope)
+		return h.requestID(t, q)
+	}
+	for _, c := range []struct {
+		requested string
+		chosen    []string
+	}{
+		{"burrow:read", []string{"burrow:write"}},
+		{"burrow:read", []string{"burrow:read", "users:manage"}},
+		{"tunnels:read:own", []string{"burrow:read"}},
+		{"tunnels:read:own", []string{"tunnels:read:own", "audit:read"}},
+	} {
+		id := request(c.requested)
+		if _, err := h.s.Approve(ctx, id, Decision{UserID: "u-admin", Role: "admin", Scopes: c.chosen}); !errors.Is(err, ErrScopeWidened) {
+			t.Errorf("requested %s, chose %v: %v, want ErrScopeWidened", c.requested, c.chosen, err)
+		}
+		// The request still waits and can be approved as asked.
+		if _, err := h.s.Approve(ctx, id, Decision{UserID: "u-admin", Role: "admin"}); err != nil {
+			t.Errorf("requested %s, approved as asked after a refusal: %v", c.requested, err)
+		}
+	}
+	for _, c := range []struct {
+		requested string
+		chosen    []string
+	}{
+		{"burrow:write", []string{"burrow:read"}},
+		{"burrow:write", []string{"users:manage"}},
+		{"burrow:read", []string{"tunnels:read:own"}},
+		{"burrow:write tunnels:read:own", []string{"tunnels:read:own"}},
+	} {
+		got, err := h.s.Approve(ctx, request(c.requested), Decision{UserID: "u-admin", Role: "admin", Scopes: c.chosen})
+		if err != nil || strings.Join(got.Scopes, " ") != strings.Join(c.chosen, " ") {
+			t.Errorf("requested %s, chose %v: %v %v", c.requested, c.chosen, got.Scopes, err)
+		}
 	}
 }
 

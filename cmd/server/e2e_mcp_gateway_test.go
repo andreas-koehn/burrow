@@ -63,7 +63,7 @@ func bootMCPGatewayE2E(t *testing.T, tunnels tunnelStreamOpener, remote *mcptest
 			t.Fatalf("BuildMCPServer: %v", err)
 		}
 		mgmt.SetOAuth(as)
-		tools := newMCPToolGateway(st, v04, pool, as, discardLog())
+		tools := newMCPToolGateway(st, v04, pool, as, 0, discardLog())
 		deps.MCPSources, deps.MCPGateway, deps.MCPTools = st, mcpGatewayParts{Pool: pool, tools: tools}, tools
 		deps.OAuth, deps.MCP = as, api.MCPInfo{Enabled: true, Server: mgmt, Handler: mgmt}
 		env.st, env.pool, env.oauth, env.mgmt = st, pool, as, mgmt

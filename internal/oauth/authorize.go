@@ -461,7 +461,8 @@ type Approved struct {
 // Approve decides a request in the user's favour: it checks the decision,
 // stores a 60-second authorization code holding the grant to be, and returns
 // the redirect to the client (code, state, iss). An invalid decision leaves
-// the request waiting. Errors: ErrNotFound, ErrInvalidScope,
+// the request waiting. Errors: ErrNotFound, ErrInvalidScope, ErrScopeWidened
+// (the decision may narrow the requested scopes, never widen them),
 // ErrScopeNotInRole, ErrToolsForbidden, ErrInvalidTools.
 func (s *Server) Approve(ctx context.Context, id string, d Decision) (Approved, error) {
 	p := s.getPending(id)
@@ -474,6 +475,9 @@ func (s *Server) Approve(ctx context.Context, id string, d Decision) (Approved, 
 	}
 	if !validScopes(p.ResourceKind, scopes) {
 		return Approved{}, ErrInvalidScope
+	}
+	if d.Scopes != nil && !withinScopes(scopes, p.Scopes) {
+		return Approved{}, ErrScopeWidened
 	}
 	var tools []string
 	readOnly := false

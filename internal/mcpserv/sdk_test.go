@@ -710,8 +710,8 @@ func TestMCP_ToolPanic_IsContained(t *testing.T) {
 
 // ---------- secrets --------------------------------------------------------
 
-// The audit row of a call names the tool and the outcome: not the arguments,
-// not the answer, which can hold a secret the API handed out.
+// The audit row of a call names the tool, the outcome and the token: not the
+// arguments, not the answer, which can hold a secret the API handed out.
 func TestMCP_ArgumentsAndAnswers_StayOutOfTheAuditLog(t *testing.T) {
 	const secret = "bgk_SECRET-handed-out"
 	api := &fakeAPI{status: http.StatusCreated, reply: `{"slug":"ollama","key":"` + secret + `"}`}
@@ -730,7 +730,8 @@ func TestMCP_ArgumentsAndAnswers_StayOutOfTheAuditLog(t *testing.T) {
 		t.Fatalf("%d audit rows, want 1", len(rows))
 	}
 	row, _ := json.Marshal(rows[0])
-	if strings.Contains(string(row), secret) || strings.Contains(string(row), "ARG-VALUE") || len(rows[0].Payload) != 0 {
+	// The payload names the token, and nothing else.
+	if strings.Contains(string(row), secret) || strings.Contains(string(row), "ARG-VALUE") || string(rows[0].Payload) != `{"token_id":"tok1"}` {
 		t.Errorf("audit row carries an argument or the answer: %s", row)
 	}
 }

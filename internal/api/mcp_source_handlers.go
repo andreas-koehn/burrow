@@ -30,6 +30,10 @@ import (
 	"github.com/ankoehn/burrow/internal/store"
 )
 
+// defaultMCPMaxConcurrent is a new source's max_concurrent when the create
+// body leaves it out. Sources created before keep what they have.
+const defaultMCPMaxConcurrent = 16
+
 // mcpSourceResp is the JSON wire shape of one tool source.
 type mcpSourceResp struct {
 	Slug      string `json:"slug"`
@@ -226,6 +230,12 @@ func (d Deps) PostMCPSource(w http.ResponseWriter, r *http.Request) {
 	if in.Name == "" {
 		in.Name = in.Slug
 	}
+	if in.MaxConcurrent == nil {
+		// One source must not take every worker of the relay by default;
+		// 0 (no limit) is there for whoever asks for it.
+		conc := defaultMCPMaxConcurrent
+		in.MaxConcurrent = &conc
+	}
 	wasGatewayOnly := false
 	switch in.Kind {
 	case "remote":
@@ -307,7 +317,7 @@ func (d Deps) PutMCPSource(w http.ResponseWriter, r *http.Request) {
 	if in.URL != nil && cur.Kind == "remote" && !d.upstreamHostAllowedAs(w, r, *in.URL, "url") {
 		return
 	}
-	src, err := st.UpdateMCPSource(r.Context(), slug, store.MCPSourceUpdate{
+	src, repending, err := st.UpdateMCPSource(r.Context(), slug, store.MCPSourceUpdate{
 		Name: in.Name, URL: in.URL, CredentialSlot: in.CredentialSlot, AuthHeader: in.AuthHeader, AuthFormat: in.AuthFormat,
 		ProtocolVersion: in.ProtocolVersion, RPM: in.RPM, MaxConcurrent: in.MaxConcurrent, TimeoutS: in.TimeoutS,
 		Enabled: in.Enabled,
@@ -321,7 +331,11 @@ func (d Deps) PutMCPSource(w http.ResponseWriter, r *http.Request) {
 	if d.MCPGateway != nil {
 		d.MCPGateway.Invalidate(slug)
 	}
-	d.auditMCPSource(r, audit.ActionMCPSourceUpdate, src, mcpSourceAudit(src))
+	// A new url or credential slot voided the tools' approvals (the store
+	// moved them back to pending); the row says how many.
+	payload := mcpSourceAudit(src)
+	payload["tools_back_to_pending"] = repending
+	d.auditMCPSource(r, audit.ActionMCPSourceUpdate, src, payload)
 	writeJSON(w, http.StatusOK, d.mcpSourceView(src))
 }
 

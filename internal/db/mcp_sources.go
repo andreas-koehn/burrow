@@ -20,6 +20,10 @@ var ErrMCPSourceBusy = errors.New("db: tool source is being changed concurrently
 // points at the service; the error names the source.
 var ErrServiceHasMCPSource = errors.New("service backs a tool source")
 
+// ErrUserHasMCPSource is wrapped by DeleteUser when the user owns the service
+// behind a tool source; the error names the sources.
+var ErrUserHasMCPSource = errors.New("user owns the service of a tool source")
+
 const mcpSourceCols = `slug, name, kind, service_id, url, credential_slot, auth_header, auth_format, protocol_version, rpm, max_concurrent, timeout_s, enabled, last_sync_at, last_sync_error, created_at, updated_at,
   (SELECT COUNT(*) FROM mcp_tools t WHERE t.source_slug=mcp_sources.slug AND t.status<>'removed'),
   (SELECT COUNT(*) FROM mcp_tools t WHERE t.source_slug=mcp_sources.slug AND t.status='pending')`
@@ -170,35 +174,77 @@ func (x *DB) ListMCPSources(ctx context.Context) ([]MCPSource, error) {
 // cannot lose one another's fields. modify's error stops the update and is
 // returned as is. ErrNotFound when no source has the slug; ErrMCPSourceBusy
 // when the row changed under every attempt.
-func (x *DB) ModifyMCPSource(ctx context.Context, slug string, modify func(MCPSource) (MCPSource, error)) error {
+//
+// An approval was given for one upstream and one credential: when the update
+// changes url or credential_slot, every approved tool of the source becomes
+// pending again in the same transaction, and every tool loses its approved
+// hash and definition, so that neither a later sync nor a removed tool that
+// comes back is approved by the old hash. repending is how many tools were
+// approved before.
+func (x *DB) ModifyMCPSource(ctx context.Context, slug string, modify func(MCPSource) (MCPSource, error)) (repending int, err error) {
 	for i := 0; i < modifyUpstreamAttempts; i++ {
 		old, err := x.GetMCPSource(ctx, slug)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		s, err := modify(old)
 		if err != nil {
-			return err
+			return 0, err
 		}
-		res, err := x.sqlDB.ExecContext(ctx,
-			`UPDATE mcp_sources SET name=?, url=?, credential_slot=?, auth_header=?, auth_format=?, protocol_version=?, rpm=?, max_concurrent=?, timeout_s=?, enabled=?, updated_at=?
-			  WHERE slug=? AND name=? AND url=? AND credential_slot=? AND auth_header=? AND auth_format=? AND protocol_version=? AND rpm=? AND max_concurrent=? AND timeout_s=? AND enabled=?`,
-			s.Name, s.URL, s.CredentialSlot, orDefault(s.AuthHeader, "Authorization"), orDefault(s.AuthFormat, "Bearer {key}"),
-			s.ProtocolVersion, s.RPM, s.MaxConcurrent, s.TimeoutS, boolToInt(s.Enabled), time.Now().UTC(),
-			slug, old.Name, old.URL, old.CredentialSlot, old.AuthHeader, old.AuthFormat, old.ProtocolVersion,
-			old.RPM, old.MaxConcurrent, old.TimeoutS, boolToInt(old.Enabled))
+		n, done, err := x.modifyMCPSourceOnce(ctx, slug, old, s)
 		if err != nil {
-			return fmt.Errorf("modify tool source: %w", err)
+			return 0, err
 		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("modify tool source rows affected: %w", err)
-		}
-		if n > 0 {
-			return nil
+		if done {
+			return n, nil
 		}
 	}
-	return fmt.Errorf("modify tool source %s: %w", slug, ErrMCPSourceBusy)
+	return 0, fmt.Errorf("modify tool source %s: %w", slug, ErrMCPSourceBusy)
+}
+
+// modifyMCPSourceOnce stores s over old in one transaction; done is false
+// when the row no longer held old.
+func (x *DB) modifyMCPSourceOnce(ctx context.Context, slug string, old, s MCPSource) (repending int, done bool, err error) {
+	tx, err := x.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, fmt.Errorf("begin modify tool source tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().UTC()
+	res, err := tx.ExecContext(ctx,
+		`UPDATE mcp_sources SET name=?, url=?, credential_slot=?, auth_header=?, auth_format=?, protocol_version=?, rpm=?, max_concurrent=?, timeout_s=?, enabled=?, updated_at=?
+		  WHERE slug=? AND name=? AND url=? AND credential_slot=? AND auth_header=? AND auth_format=? AND protocol_version=? AND rpm=? AND max_concurrent=? AND timeout_s=? AND enabled=?`,
+		s.Name, s.URL, s.CredentialSlot, orDefault(s.AuthHeader, "Authorization"), orDefault(s.AuthFormat, "Bearer {key}"),
+		s.ProtocolVersion, s.RPM, s.MaxConcurrent, s.TimeoutS, boolToInt(s.Enabled), now,
+		slug, old.Name, old.URL, old.CredentialSlot, old.AuthHeader, old.AuthFormat, old.ProtocolVersion,
+		old.RPM, old.MaxConcurrent, old.TimeoutS, boolToInt(old.Enabled))
+	if err != nil {
+		return 0, false, fmt.Errorf("modify tool source: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, false, fmt.Errorf("modify tool source rows affected: %w", err)
+	}
+	if n == 0 {
+		return 0, false, nil
+	}
+	if s.URL != old.URL || s.CredentialSlot != old.CredentialSlot {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM mcp_tools WHERE source_slug=? AND status=?`, slug, MCPToolApproved).Scan(&repending); err != nil {
+			return 0, false, fmt.Errorf("modify tool source: count approved tools: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE mcp_tools SET status = CASE WHEN status=? THEN ? ELSE status END,
+			   updated_at = CASE WHEN status=? THEN ? ELSE updated_at END,
+			   approved_hash='', approved_definition=''
+			 WHERE source_slug=? AND (approved_hash<>'' OR status=?)`,
+			MCPToolApproved, MCPToolPending, MCPToolApproved, now, slug, MCPToolApproved); err != nil {
+			return 0, false, fmt.Errorf("modify tool source: tools back to pending: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("commit modify tool source tx: %w", err)
+	}
+	return repending, true, nil
 }
 
 // DeleteMCPSourceAndBacking deletes the source with its tools. A remote

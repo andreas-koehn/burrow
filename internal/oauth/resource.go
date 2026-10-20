@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -199,10 +200,36 @@ func (s *Server) VerifyAccessToken(r *http.Request, plain, path string) (Verifie
 			return Verified{}, ErrInvalidToken
 		}
 	}
-	if err := s.store.TouchOAuthGrant(ctx, g.ID, s.now()); err != nil {
+	s.touchGrant(ctx, g.ID)
+	return v, nil
+}
+
+// touchInterval is how often a grant's last use is written at most.
+const touchInterval = time.Minute
+
+// touchGrant records the grant's use, at most once per touchInterval: a busy
+// client's token is checked at every request, and the check must not cost a
+// database write each time (the store's own guard still skips a row written
+// in the last minute, for the relay's other instances).
+func (s *Server) touchGrant(ctx context.Context, id string) {
+	now := s.now()
+	s.mu.Lock()
+	if last, ok := s.touched[id]; ok && now.Sub(last) < touchInterval {
+		s.mu.Unlock()
+		return
+	}
+	if len(s.touched) >= 4096 {
+		for k, t := range s.touched {
+			if now.Sub(t) >= touchInterval {
+				delete(s.touched, k)
+			}
+		}
+	}
+	s.touched[id] = now
+	s.mu.Unlock()
+	if err := s.store.TouchOAuthGrant(ctx, id, now); err != nil {
 		s.log.Warn("oauth: touch grant", "err", err)
 	}
-	return v, nil
 }
 
 // accessToken looks up a live access token and its grant: ErrInvalidToken

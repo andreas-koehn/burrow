@@ -215,11 +215,19 @@ func (s *Server) observeTool(tok *authedToken, tool, result string, took time.Du
 // emitToolAudit appends one mcp.tool.call row recording the (tool, result)
 // pair under the bearer's user as actor. Nil-safe — best-effort on writes;
 // the answer is never blocked on the audit append. The row names the tool,
-// the outcome, who called and from where (the request's audit context), and
-// nothing else: no arguments, no result.
+// the outcome, who called (the user, and in the payload the automation
+// token's id or the OAuth grant's id) and from where (the request's audit
+// context), and nothing else: no arguments, no result.
 func (s *Server) emitToolAudit(ctx context.Context, tok *authedToken, toolName, result string) {
 	if s == nil || s.audit == nil || tok == nil {
 		return
+	}
+	var payload json.RawMessage
+	switch {
+	case tok.tokenID != "":
+		payload = audit.MustJSON(map[string]string{"token_id": tok.tokenID})
+	case tok.grantID != "":
+		payload = audit.MustJSON(map[string]string{"oauth_grant_id": tok.grantID})
 	}
 	lc := audit.LogContextFrom(ctx)
 	_ = s.audit.Append(ctx, audit.Event{
@@ -231,6 +239,7 @@ func (s *Server) emitToolAudit(ctx context.Context, tok *authedToken, toolName, 
 		SourceIP:     lc.SourceIP,
 		UserAgent:    lc.UserAgent,
 		RequestID:    lc.RequestID,
+		Payload:      payload,
 	})
 }
 

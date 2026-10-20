@@ -171,6 +171,10 @@ API, such as service API keys, webhooks or users, outlives the token and the
 connected app, as with an automation token: review or delete those
 separately. OAuth needs a public name for the relay (`BURROW_AUTH_DOMAIN`
 or `BURROW_ACME_DOMAIN`); without one the relay takes automation tokens only.
+Set a [services domain](/guide/configuration#services-domain)
+(`BURROW_SERVICES_DOMAIN`) before you rely on OAuth: without one, tunnelled
+apps share the consent page's origin and only your password protects an
+approval.
 
 **The approval page.** The browser opens `/oauth/consent` on the dashboard.
 It names the app, shows in large type the host your browser goes back to after
@@ -182,7 +186,8 @@ can receive that answer.
 - At `/mcp/burrow` an app that asks for `burrow:write` gets a **Read-only
   access** switch, so you can give it less. An app that asks for
   `burrow:read` is shown as read-only and gets no switch: the page never gives
-  more than the app asked for.
+  more than the app asked for, and the relay refuses an approval that would
+  (400).
 - At `/mcp` and `/mcp/<source>` you tick the tool sources the app may use, and
   **Read-only tools only** is on by default. Your role must allow configuring
   the AI gateway.
@@ -299,8 +304,9 @@ A call leaves the rows the same change leaves through the dashboard or the REST
 API, under the same user, and next to them one `mcp.tool.call` row. The row
 names the curated tool, or `burrow_call_operation/<operationId>` for a generic
 call, with the outcome (`ok`, `error`, `denied` or `dry_run`), the client's
-address and user agent (each cut to 256 bytes). Arguments and results are not
-recorded. See **Settings → Audit log**.
+address and user agent (each cut to 256 bytes), and the credential that made
+the call: `token_id` for an automation token, `oauth_grant_id` for an OAuth
+connection. Arguments and results are not recorded. See **Settings → Audit log**.
 
 ::: warning Secrets end up in the conversation
 An operation that creates a key or a token returns the secret in its result.

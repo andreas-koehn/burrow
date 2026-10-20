@@ -364,16 +364,19 @@ func runTrafficFlusher(ctx context.Context, wg *sync.WaitGroup, srv liveTunnelSo
 	}()
 }
 
-// sessionReaper is the type used to purge expired sessions.
-// Using an interface makes the reaper testable without a real DB.
+// sessionReaper is the type used to purge expired sessions and the OAuth
+// tables. Using an interface makes the reaper testable without a real DB.
 type sessionReaper interface {
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
+	// PruneOAuth deletes expired OAuth codes and tokens and the grants
+	// revoked more than 30 days ago.
+	PruneOAuth(ctx context.Context, now time.Time) error
 }
 
 // runSessionReaper starts a goroutine that calls reaper.DeleteExpiredSessions
-// immediately and then every interval. It mirrors the byteTicker pattern in
-// internal/server: the goroutine is tracked on wg and exits when ctx is done.
-// Callers must wg.Wait() before closing the database.
+// and reaper.PruneOAuth immediately and then every interval. It mirrors the
+// byteTicker pattern in internal/server: the goroutine is tracked on wg and
+// exits when ctx is done. Callers must wg.Wait() before closing the database.
 func runSessionReaper(ctx context.Context, wg *sync.WaitGroup, reaper sessionReaper, log *slog.Logger, interval time.Duration) {
 	wg.Add(1)
 	go func() {
@@ -388,7 +391,13 @@ func runSessionReaper(ctx context.Context, wg *sync.WaitGroup, reaper sessionRea
 				log.Info("session reaper: purged expired sessions", "count", n)
 			}
 		}
+		prune := func() {
+			if err := reaper.PruneOAuth(ctx, time.Now()); err != nil && ctx.Err() == nil {
+				log.Warn("oauth prune", "err", err)
+			}
+		}
 		purge() // run once at startup
+		prune()
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
@@ -397,6 +406,7 @@ func runSessionReaper(ctx context.Context, wg *sync.WaitGroup, reaper sessionRea
 				return
 			case <-t.C:
 				purge()
+				prune()
 			}
 		}
 	}()
@@ -625,8 +635,8 @@ func newRootCmd() *cobra.Command {
 				return err
 			}
 
-			// Start the session reaper: purges expired sessions once at startup
-			// and then every hour. Mirrors the byteTicker goroutine pattern in
+			// Start the session reaper: purges expired sessions and prunes the
+			// OAuth tables once at startup and then every hour. Mirrors the byteTicker goroutine pattern in
 			// internal/server: WaitGroup-tracked, ctx-cancelled, stops before
 			// database.Close() (enforced by LIFO defers above).
 			runSessionReaper(ctx, &reaperWg, db.Wrap(database), log, time.Hour)
@@ -977,7 +987,7 @@ func newRootCmd() *cobra.Command {
 			// The client side: /mcp/<slug> and /mcp behind gateway keys and
 			// OAuth grants, each call through the pipeline of limits,
 			// redaction and guardrails.
-			mcpTools := newMCPToolGateway(st, v04, mcpPool, oauthServer, log)
+			mcpTools := newMCPToolGateway(st, v04, mcpPool, oauthServer, cfg.OAuthGrantRPM, log)
 			// One breaker for the relay; the status API reads its state.
 			aiBreaker := aigateway.NewBreaker()
 			// One limiter for the relay: every door to a provider shares its

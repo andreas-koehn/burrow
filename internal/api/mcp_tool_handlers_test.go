@@ -563,3 +563,89 @@ func TestMCPTools_RenameListsKeysItWidensTo(t *testing.T) {
 		t.Fatalf("no rename, yet the field is there: %s", rec.Body.String())
 	}
 }
+
+// approveAllTools approves every pending tool of the fixture's source at the
+// hash it is listed with.
+func (f *mcpToolsFixture) approveAllTools(t *testing.T) {
+	t.Helper()
+	hashes := map[string]string{}
+	for n, x := range f.tools(t) {
+		if x.Status == "pending" {
+			hashes[n] = x.CurrentHash
+		}
+	}
+	if rec := f.do(t, http.MethodPost, "/api/v1/mcp/sources/gh/approve-all", map[string]any{"hashes": hashes}, f.admin); rec.Code != http.StatusOK {
+		t.Fatalf("approve-all: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Final review: an approval was given for one upstream host and credential.
+// When the source's url or credential_slot changes, every approved tool goes
+// back to pending (and a later sync does not approve it again by its old
+// hash); other changes leave the approvals alone. The update's audit row says
+// how many tools went back.
+func TestMCPSources_UpstreamChangeRevokesApprovals(t *testing.T) {
+	f := newMCPToolsFixture(t, mcptest.Opts{})
+	f.sync(t)
+	f.approveAllTools(t)
+	statuses := func() string {
+		var out []string
+		for n, x := range f.tools(t) {
+			if x.Status != "approved" {
+				out = append(out, n+"="+x.Status)
+			}
+		}
+		return strings.Join(out, ",")
+	}
+	if s := statuses(); s != "" {
+		t.Fatalf("after approve-all: %s", s)
+	}
+	put := func(body map[string]any) {
+		t.Helper()
+		if rec := f.do(t, http.MethodPut, "/api/v1/mcp/sources/gh", body, f.admin); rec.Code != http.StatusOK {
+			t.Fatalf("put %v: %d %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	lastRepending := func() any {
+		t.Helper()
+		e := f.aud.events[len(f.aud.events)-1]
+		if e.Action != audit.ActionMCPSourceUpdate {
+			t.Fatalf("last audit action %s", e.Action)
+		}
+		var p map[string]any
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		return p["tools_back_to_pending"]
+	}
+
+	// Unrelated fields, and the same url and slot sent again, keep them.
+	put(map[string]any{"rpm": 10, "timeout_s": 30, "name": "GitHub", "enabled": true, "url": f.up.URL, "credential_slot": "GH_MCP"})
+	if s := statuses(); s != "" {
+		t.Fatalf("an unrelated change moved tools: %s", s)
+	}
+	if n := lastRepending(); n != float64(0) {
+		t.Fatalf("tools_back_to_pending = %v, want 0", n)
+	}
+
+	// Another url: every tool is pending again, also after a sync from the
+	// old url (the old approval does not come back by its hash).
+	put(map[string]any{"url": "https://elsewhere.example.com/mcp"})
+	if n := lastRepending(); n != float64(5) {
+		t.Fatalf("tools_back_to_pending = %v, want 5", n)
+	}
+	put(map[string]any{"url": f.up.URL})
+	f.sync(t)
+	for n, x := range f.tools(t) {
+		if x.Status != "pending" || x.Served || x.ApprovedHash != "" {
+			t.Errorf("%s after a url change and a sync: %+v", n, x)
+		}
+	}
+
+	// Another credential slot does the same.
+	f.approveAllTools(t)
+	put(map[string]any{"credential_slot": "OTHER_SLOT"})
+	if s := statuses(); strings.Count(s, "=pending") != 5 {
+		t.Fatalf("after a credential change: %q", s)
+	}
+}

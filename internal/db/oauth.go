@@ -453,14 +453,28 @@ func (x *DB) DeleteOAuthToken(ctx context.Context, hash string) error {
 	return nil
 }
 
-// PruneOAuth deletes codes and tokens past their expiry. Codes are kept ten
-// minutes longer, so that a late second use is still recognised as one.
+// RevokedGrantRetention is how long a revoked grant is kept (the connected
+// apps list and the audit can still name it) before PruneOAuth deletes it.
+const RevokedGrantRetention = 30 * 24 * time.Hour
+
+// PruneOAuth deletes codes and tokens past their expiry, and the grants that
+// were revoked more than RevokedGrantRetention ago, with any token they still
+// hold. Codes are kept ten minutes longer, so that a late second use is still
+// recognised as one.
 func (x *DB) PruneOAuth(ctx context.Context, now time.Time) error {
 	if _, err := x.sqlDB.ExecContext(ctx, `DELETE FROM oauth_codes WHERE expires_at < ?`, now.Add(-10*time.Minute).UTC()); err != nil {
 		return fmt.Errorf("prune oauth codes: %w", err)
 	}
 	if _, err := x.sqlDB.ExecContext(ctx, `DELETE FROM oauth_tokens WHERE expires_at < ?`, now.UTC()); err != nil {
 		return fmt.Errorf("prune oauth tokens: %w", err)
+	}
+	before := now.Add(-RevokedGrantRetention).UTC()
+	if _, err := x.sqlDB.ExecContext(ctx,
+		`DELETE FROM oauth_tokens WHERE grant_id IN (SELECT id FROM oauth_grants WHERE revoked_at IS NOT NULL AND revoked_at < ?)`, before); err != nil {
+		return fmt.Errorf("prune oauth tokens of revoked grants: %w", err)
+	}
+	if _, err := x.sqlDB.ExecContext(ctx, `DELETE FROM oauth_grants WHERE revoked_at IS NOT NULL AND revoked_at < ?`, before); err != nil {
+		return fmt.Errorf("prune revoked oauth grants: %w", err)
 	}
 	return nil
 }

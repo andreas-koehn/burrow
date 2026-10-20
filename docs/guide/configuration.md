@@ -208,6 +208,7 @@ BURROW_LOG_LEVEL=warn
 |----------|---------|---------|
 | `BURROW_LOGIN_RATE_LIMIT_PER_IP` | `0` (= built-in default of 10 req/min) | Per-IP login rate limit. Set a positive integer to override. |
 | `BURROW_CERT_VALIDATION_ROOTS_FILE` | `""` | Path to a PEM CA bundle used when validating custom-domain TLS certificates. |
+| `BURROW_OAUTH_GRANT_RPM` | `120` | Tool calls per minute each OAuth connected app may make at `/mcp` and `/mcp/<source>` (a bucket of that size, refilled continuously). `0` turns the limit off. Gateway keys are limited by their own rate limits instead. See [Tool sources](/guide/tool-sources#limits). |
 
 ---
 
@@ -229,7 +230,10 @@ secret or changes who may do what: client and automation tokens, service API
 keys, gateway keys, users and roles, settings (retention, test e-mail), backups
 and restores, ending sessions, changing your own password, provider and
 upstream-credential writes, access modes and policies, IP/geo rules, redaction
-settings and rules, webhooks, custom domains, and approving a client sign-in. Automation tokens are not asked. Set a
+settings and rules, webhooks, custom domains, tool-source writes (creating,
+changing and deleting a source, a sync, approving tools and changing their
+overrides), registering an OAuth client, approving an OAuth consent, and
+approving a client sign-in. Automation tokens are not asked. Set a
 services domain to give the apps a host of their own, and the dialog goes away:
 
 - Point a second A record (for example `apps.example.com`) at the relay.
@@ -247,6 +251,21 @@ services domain to give the apps a host of their own, and the dialog goes away:
   single use) to a signed-in user and sends the browser back. See
   [Access control](/guide/access-control#burrow-login).
 
+What the services host does not do:
+
+- **The apps share one origin with each other.** Every `/svc/<slug>/` app is
+  on the same host, so a script on one app's page can call any other app as
+  the visitor, with that visitor's `burrow_svc_session` riding along, and can
+  read its answers. The services domain separates the apps from the
+  dashboard, not from each other. Expose on it only apps you trust as much as
+  each other; an app that must be kept apart needs a host of its own (a
+  custom domain, or the host-routed ingress).
+- **The handoff completes without a click.** A visitor who is signed in to
+  the dashboard and opens a `burrow_login` app is signed in on the services
+  host at once: the dashboard's host issues the code and sends the browser
+  back without asking. Any page that can send the browser to an app's
+  address therefore opens a session there for a signed-in visitor.
+
 With the host-routed ingress on (`BURROW_HTTP_PROXY_LISTEN`), the services
 domain must not lie under the auth domain: that ingress serves
 `<slug>.<auth domain>` as the service with that slug, so `apps.<auth domain>`
@@ -263,6 +282,13 @@ start with such a combination; use a sibling name such as `apps.example.com`.
 While no services domain is set, approving a client sign-in (`/link`, the page
 `burrow login` opens) asks for the account password as well, and the relay logs
 a line at start recommending a services domain.
+
+::: tip Set the services domain before you rely on OAuth
+Without one, a tunnelled app on the dashboard's origin can drive the OAuth
+consent page as the signed-in visitor; only the password step stands in the
+way. Set `BURROW_SERVICES_DOMAIN` before you connect MCP clients through
+OAuth (see [MCP](/guide/mcp)).
+:::
 
 ---
 

@@ -45,7 +45,7 @@ func TestMCPSources_Postgres(t *testing.T) {
 		t.Fatalf("duplicate slug err = %v", err)
 	}
 
-	if err := x.ModifyMCPSource(ctx, "pg-remote", func(s MCPSource) (MCPSource, error) {
+	if _, err := x.ModifyMCPSource(ctx, "pg-remote", func(s MCPSource) (MCPSource, error) {
 		s.URL, s.RPM, s.Enabled = "https://y.example/mcp", 12, false
 		return s, nil
 	}); err != nil {
@@ -54,7 +54,7 @@ func TestMCPSources_Postgres(t *testing.T) {
 	if after, _ := x.GetMCPSource(ctx, "pg-remote"); after.URL != "https://y.example/mcp" || after.RPM != 12 || after.Enabled {
 		t.Fatalf("after modify: %+v", after)
 	}
-	if err := x.ModifyMCPSource(ctx, "ghost", func(s MCPSource) (MCPSource, error) { return s, nil }); !errors.Is(err, ErrNotFound) {
+	if _, err := x.ModifyMCPSource(ctx, "ghost", func(s MCPSource) (MCPSource, error) { return s, nil }); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("modify unknown err = %v", err)
 	}
 
@@ -64,6 +64,17 @@ func TestMCPSources_Postgres(t *testing.T) {
 	}
 	if c, _ := x.GetMCPSource(ctx, "pg-remote"); c.ToolCount != 2 || c.PendingCount != 1 {
 		t.Fatalf("tool counts: %+v", c)
+	}
+	// Another credential slot sends the approved tool back to pending, in
+	// the update's own transaction; another rpm does not.
+	if n, err := x.ModifyMCPSource(ctx, "pg-remote", func(s MCPSource) (MCPSource, error) { s.RPM = 13; return s, nil }); err != nil || n != 0 {
+		t.Fatalf("rpm change: %d %v", n, err)
+	}
+	if n, err := x.ModifyMCPSource(ctx, "pg-remote", func(s MCPSource) (MCPSource, error) { s.CredentialSlot = "PG_OTHER"; return s, nil }); err != nil || n != 1 {
+		t.Fatalf("slot change: %d %v", n, err)
+	}
+	if c, _ := x.GetMCPSource(ctx, "pg-remote"); c.PendingCount != 2 {
+		t.Fatalf("tool counts after a slot change: %+v", c)
 	}
 
 	// Tunnel: binds an http service and closes its doors; the service stays

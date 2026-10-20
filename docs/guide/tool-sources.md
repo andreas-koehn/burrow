@@ -55,6 +55,17 @@ caller's own key never reaches it. The relay reads the tools at once, and they
 wait for approval as above. An address on a private network is refused unless
 `BURROW_AI_ALLOW_PRIVATE_UPSTREAMS` is set.
 
+An approval holds for the address and the credential slot it was given for.
+Changing a remote source's address or credential slot sends every approved
+tool back to **pending**, and none is served until it is approved again, even
+if the new server lists the same definitions. The audit entry of the change
+(`mcp.source.update`) says how many tools went back in
+`tools_back_to_pending`. Other changes (name, limits, timeout, enabling and
+disabling) keep the approvals. Creating and changing a source, and reading its
+tool definitions, are not offered as tools of the management MCP server
+(`/mcp/burrow`), so tool text an upstream wrote cannot steer an agent into
+pointing a source and its credential elsewhere.
+
 `burrow mcp` changes nothing in the protocol between the client and the relay.
 It registers an ordinary http tunnel named after the source, and that tunnel
 binds to the service the dashboard created, by name. Without that service,
@@ -186,8 +197,12 @@ announces a change.
   limits with a per-minute window that apply to it: those of the gateway
   key, those of the source's backing service, and global ones, as a model
   request does. Each source adds its own requests per minute and
-  `max_concurrent` (0 = no limit). Day quotas and budgets neither count nor
-  refuse tool calls.
+  `max_concurrent` (0 = no limit; a new source gets 16 unless you set it, and
+  sources created before keep theirs). Each OAuth connected app is limited
+  to `BURROW_OAUTH_GRANT_RPM` calls per minute (120 by default, `0` turns it
+  off), since no key's rate limit applies to it; a call over the limit gets a
+  JSON-RPC error with `"limit":"grant_rpm"` and `retryAfterMs`. Day quotas and
+  budgets neither count nor refuse tool calls.
 - **A rename changes who may call a tool.** A key's allow-list names a tool
   by the name it is served under. When you rename a tool, keys that list the
   old name lose it and keys that already list the new name gain it. The same
@@ -235,6 +250,14 @@ announces a change.
   - If the command writes something to stdout that is not MCP, such as a
     banner line, the session ends. Burrow then ends the command and starts
     it again. Write logs to stderr instead.
+- **Callers share the upstream's state.** The relay keeps one session per
+  source toward the upstream, and a local source has one stdio command behind
+  its bridge. Every gateway key, connected app and user that calls the
+  source's tools goes through that same session and process. A server that
+  keeps state between calls (a working directory, an open browser page, a
+  login, a cache) therefore shows one caller's state to the next. Publish
+  such a server only to callers who may see each other's work, or run one
+  source per caller.
 - **Calls are not repeated.** If a call fails because the local server went
   away, it is not sent again, because the server may already have acted on
   it. The only exception is when a server that keeps sessions says that it no

@@ -1255,6 +1255,7 @@ func TestAIRequests_ToolCallsFollowTheInspectorRule(t *testing.T) {
 	authz.SetRoles(map[string][]authz.Permission{
 		"inspector-all": {authz.PermInspectorReadAny},
 		"tools-reader":  {authz.PermInspectorReadAny, authz.PermMcpSourcesRead},
+		"tools-manager": {authz.PermInspectorReadAny, authz.PermMcpSourcesManage},
 	})
 	t.Cleanup(func() { authz.SetRoles(nil) })
 	d, _ = toolRequestsDeps("inspector-all", map[string]string{})
@@ -1268,5 +1269,12 @@ func TestAIRequests_ToolCallsFollowTheInspectorRule(t *testing.T) {
 	defer srv3.Close()
 	if _, ids := aiRequestMaps(t, authedClient(t, srv3), "kind=tools"); ids != "t2,t1" {
 		t.Fatalf("tools-reader: %s", ids)
+	}
+	// Final review: mcp:sources:manage implies reading the sources.
+	d, _ = toolRequestsDeps("tools-manager", map[string]string{})
+	srv4 := httptest.NewServer(NewRouter(d))
+	defer srv4.Close()
+	if _, ids := aiRequestMaps(t, authedClient(t, srv4), "kind=tools"); ids != "t2,t1" {
+		t.Fatalf("tools-manager: %s", ids)
 	}
 }

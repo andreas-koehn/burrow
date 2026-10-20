@@ -678,6 +678,20 @@ func TestDeleteUser_ProviderInUse(t *testing.T) {
 	}
 }
 
+// Final review: a user who owns a tool source's service is refused with 409
+// naming the sources, as for a provider in use.
+func TestDeleteUser_ToolSourceOwner(t *testing.T) {
+	u := &userMgmtStore{deleteUserErr: fmt.Errorf("delete user: %w: files, github", store.ErrUserHasMCPSource)}
+	ts, cl, csrf := newUserMgmtServer(t, u)
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/users/other-user-id", nil)
+	resp := doWithCSRF(t, cl, req, csrf)
+	if body := wantStatus(t, resp, http.StatusConflict); !strings.Contains(body, "tool source(s): files, github") || strings.Contains(body, "delete user:") {
+		t.Errorf("body = %s", body)
+	}
+}
+
 // The provider view names the first synthetic model that targets the provider.
 func TestListProviders_NamesFirstModel(t *testing.T) {
 	ss, ps := oneProviderFixture()

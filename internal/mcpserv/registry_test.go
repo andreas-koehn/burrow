@@ -213,3 +213,24 @@ func TestToolName(t *testing.T) {
 		}
 	}
 }
+
+// Final review: tool text a source's upstream wrote may steer an agent, so
+// the management server offers neither the writes that point a source at a
+// host and a credential nor the list of tool definitions. The reads of the
+// sources stay.
+func TestRegistry_ToolSourceWritesAreNotTools(t *testing.T) {
+	r, err := NewRegistry(realSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"mcpSourceCreate", "mcpSourceUpdate", "mcpSourceToolsList", "mcpSourceToolApprove", "mcpSourceApproveAll", "mcpSourceToolUpdate"} {
+		if _, ok := r.Lookup(id); ok {
+			t.Errorf("%s is a management tool", id)
+		}
+	}
+	for _, id := range []string{"mcpSourcesList", "mcpSourceGet"} {
+		if _, ok := r.Lookup(id); !ok {
+			t.Errorf("%s is not a management tool", id)
+		}
+	}
+}

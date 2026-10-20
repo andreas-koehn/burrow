@@ -328,7 +328,11 @@ func (d Deps) passwordRequired() bool { return d.ServicesDomain == "" }
 // checkApproverPassword answers false after writing the refusal when the
 // approval needs the password and the caller gave neither the password in the
 // body nor a recent confirmation of it (RequireRecentAuth's window). A
-// password in the body is checked even inside the window.
+// password in the body is checked even inside the window, and counts as a
+// confirmation like POST /auth/reauth: a wrong one counts against the
+// session's allowance (shared with /auth/reauth and the password change),
+// a session past it is answered 429, and both outcomes are audited as
+// auth.reauth.
 func (d Deps) checkApproverPassword(w http.ResponseWriter, r *http.Request, password string) bool {
 	if !d.passwordRequired() {
 		return true
@@ -338,6 +342,15 @@ func (d Deps) checkApproverPassword(w http.ResponseWriter, r *http.Request, pass
 			return true
 		}
 		writeErr(w, http.StatusForbidden, reauthRequired)
+		return false
+	}
+	ref := ""
+	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" && bearerTokenID(r.Context()) == "" {
+		ref = sessionRef(c.Value)
+	}
+	if ref != "" && d.reauthGuesses.blocked(ref) {
+		w.Header().Set("Retry-After", "60")
+		writeErr(w, http.StatusTooManyRequests, "too many wrong passwords; try again in a minute")
 		return false
 	}
 	u, err := d.Users.GetUserByID(r.Context(), userID(r.Context()))
@@ -351,9 +364,12 @@ func (d Deps) checkApproverPassword(w http.ResponseWriter, r *http.Request, pass
 		return false
 	}
 	if !ok {
+		d.noteWrongPassword(ref, u.ID)
+		d.auditAuth(r, audit.ActionAuthReauth, u.ID, u.Email, "denied")
 		writeErr(w, http.StatusForbidden, "password is incorrect")
 		return false
 	}
+	d.auditAuth(r, audit.ActionAuthReauth, u.ID, u.Email, "ok")
 	return true
 }
 

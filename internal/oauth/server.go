@@ -123,6 +123,8 @@ type Server struct {
 	mu             sync.Mutex
 	pending        map[string]*pendingRequest
 	pendingPerAddr map[string]int
+	// touched is when each grant's last use was last written (touchGrant).
+	touched map[string]time.Time
 }
 
 // New builds a server.
@@ -145,6 +147,7 @@ func New(cfg Config) *Server {
 		pending: map[string]*pendingRequest{},
 
 		pendingPerAddr: map[string]int{},
+		touched:        map[string]time.Time{},
 	}
 }
 
@@ -301,6 +304,9 @@ var (
 	ErrInvalidClient  = errors.New("oauth: invalid client")
 	ErrInvalidScope   = errors.New("oauth: invalid scope")
 	ErrScopeNotInRole = errors.New("oauth: scope not granted by the role")
+	// ErrScopeWidened: the decision chose a scope the request did not ask
+	// for, nor one within the requested ones.
+	ErrScopeWidened   = errors.New("oauth: scope outside the requested ones")
 	ErrToolsForbidden = errors.New("oauth: granting tools needs ai:configure:own or ai:configure:any")
 	ErrInvalidTools   = errors.New("oauth: invalid allowed_tools")
 	ErrInvalidToken   = errors.New("oauth: invalid token")

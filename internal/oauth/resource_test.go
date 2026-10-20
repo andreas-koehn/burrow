@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -312,5 +313,58 @@ func TestVerifyAccessToken_Expired(t *testing.T) {
 	h.clk.add(time.Second)
 	if _, err := h.s.VerifyAccessToken(mcpRequest(), tok, "/mcp"); !errors.Is(err, ErrInvalidToken) {
 		t.Fatalf("expired: %v", err)
+	}
+}
+
+// touchCounter counts the grant touches that reach the database.
+type touchCounter struct {
+	Store
+	mu sync.Mutex
+	n  map[string]int
+}
+
+func (c *touchCounter) TouchOAuthGrant(ctx context.Context, id string, now time.Time) error {
+	c.mu.Lock()
+	c.n[id]++
+	c.mu.Unlock()
+	return c.Store.TouchOAuthGrant(ctx, id, now)
+}
+
+func (c *touchCounter) count(id string) int { c.mu.Lock(); defer c.mu.Unlock(); return c.n[id] }
+
+// Final review: a grant's last use is written at most once a minute: the
+// tokens of a busy client are checked at every request, and each check must
+// not cost a write.
+func TestVerifyAccessToken_TouchesTheGrantOncePerMinute(t *testing.T) {
+	var tc *touchCounter
+	h := newHarness(t, func(c *Config) {
+		tc = &touchCounter{Store: c.Store, n: map[string]int{}}
+		c.Store = tc
+	})
+	tok := h.tokenAt(t, "/mcp", "mcp:tools", "u-user", "user")
+	other := h.tokenAt(t, "/mcp/github", "mcp:tools", "u-user", "user")
+	var grantID string
+	for i := 0; i < 5; i++ {
+		v, err := h.s.VerifyAccessToken(mcpRequest(), tok, "/mcp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		grantID = v.GrantID
+		h.clk.add(10 * time.Second)
+	}
+	if n := tc.count(grantID); n != 1 {
+		t.Fatalf("%d touches in 50 s, want 1", n)
+	}
+	// Another grant is touched on its own.
+	v, err := h.s.VerifyAccessToken(mcpRequest(), other, "/mcp/github")
+	if err != nil || tc.count(v.GrantID) != 1 {
+		t.Fatalf("other grant: %d touches, %v", tc.count(v.GrantID), err)
+	}
+	h.clk.add(11 * time.Second) // 61 s after the first touch
+	if _, err := h.s.VerifyAccessToken(mcpRequest(), tok, "/mcp"); err != nil {
+		t.Fatal(err)
+	}
+	if n := tc.count(grantID); n != 2 {
+		t.Fatalf("%d touches after a minute, want 2", n)
 	}
 }
