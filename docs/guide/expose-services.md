@@ -573,11 +573,14 @@ shapes are found only where they start a word: `sk-` ends English words and
 CSS or resource names (`task-…`, `kiosk-admin-…`), which are no keys. For
 the same reason an Anthropic key may follow a digit or punctuation but no
 letter (`task-ant-design-…` is a CSS name). An AWS key id may follow an
-underscore but no letter or digit. A Google key, a GitHub token and a Burrow
-token or key (`AIza…`, `ghp_…`, `github_pat_…`, `bua_…`, `bgw_…`) must start
-the text or follow a character that base64 text does not use (not a letter,
-digit, `+`, `/`, `-`, `_` or `.`): such a prefix inside a data URI or a JWT
-is no key, while `?key=AIza…`, `TOKEN=ghp_…` and a quoted key are.
+underscore but no letter or digit. A Google key must start the text or
+follow a character that base64 text does not use (not a letter, digit, `+`,
+`/`, `-`, `_` or `.`): `AIza` inside a data URI or a JWT is no key, while
+`?key=AIza…` and a quoted key are. A GitHub token and a Burrow token or key
+(`ghp_…`, `github_pat_…`, `bua_…`, `bgw_…`) must start the text or follow a
+character that base64url text does not use (not a letter, digit, `-`, `_` or
+`.`): such a prefix inside a JWT is no key, while `TOKEN=ghp_…`, a quoted
+token and one in a git remote URL (`https://ghp_…@github.com/…`) are.
 
 Since tool-call arguments are inspected, text a model writes into a file or
 a command through a tool is checked like any other answer text. Two bundled

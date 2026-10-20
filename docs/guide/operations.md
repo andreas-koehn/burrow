@@ -122,7 +122,10 @@ Then restart `burrowd` with the new binary.
   its time as the setting `auth.bare_cookie_cutoff`. A bare session created
   after it is refused, since only another host of the site can have set it.
   The bare cookies had a lifetime of 7 days, so a week after the upgrade no
-  browser needs the fallback any more. A dashboard tab left open across the
+  browser needs the fallback any more. A relay that turns Secure cookies on
+  only after its first start of v0.12.1 signs everyone out once: its
+  sessions were created after the cutoff under the bare names, which then
+  no longer count. A dashboard tab left open across the
   upgrade still runs the earlier dashboard, which knows only the bare CSRF
   cookie: if it has to sign in again, its changes answer `403` until the
   page is reloaded.
@@ -133,11 +136,12 @@ Then restart `burrowd` with the new binary.
   patterns does the same once.
 
 ::: details Backlog (2026-10-20): remove the bare-cookie fallback
-The code that reads the bare `burrow_session` and `burrow_csrf` next to the
-`__Host-` names (`auth.ReadCookie`, `ValidateBareSession` and the
-`auth.bare_cookie_cutoff` setting) can be deleted once every deployment has
-passed its cutoff plus 7 days, at the earliest on 2026-10-27. Plain-http
-relays keep the bare names as their only names.
+Once every deployment has passed its cutoff plus 7 days (at the earliest on
+2026-10-27), the fallback to the bare names under Secure cookies can be
+deleted: the bare-name branch of `auth.ReadCookie` for a Secure relay (and
+the matching branch of `auth.ReadCookieLike`), `ValidateBareSession` with its
+callers, and the `auth.bare_cookie_cutoff` setting. `auth.ReadCookie` itself
+stays: plain-http relays keep the bare names as their only names.
 :::
 
 ---

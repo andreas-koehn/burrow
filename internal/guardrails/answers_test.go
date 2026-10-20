@@ -428,10 +428,12 @@ func TestAnswerPatterns_PaddedKeyStreamedIsBlocked(t *testing.T) {
 	}
 }
 
-// "ghp_", "github_pat_", "bua_" and "bgw_" inside base64 or base64url text
-// (a JWT, a data URI) are no tokens: like the Google shape, the prefix needs
-// the start of the text or a character outside the base64 alphabets and the
-// JWT separator before it. A token glued to punctuation is still found.
+// "ghp_", "github_pat_", "bua_" and "bgw_" inside base64url text (a JWT) are
+// no tokens: the prefix needs the start of the text or a character outside
+// the base64url alphabet and the JWT separator before it. Standard base64
+// has no "_", so "/" and "+" count as separators: a token in a git remote
+// URL ("https://ghp_…@github.com/…") is found, as is one glued to other
+// punctuation.
 func TestAnswerPatterns_TokensNotInsideBase64(t *testing.T) {
 	e := NewEngine()
 	jwt := func(inner string) string {
@@ -443,10 +445,10 @@ func TestAnswerPatterns_TokensNotInsideBase64(t *testing.T) {
 		jwt("github_pat" + "_" + strings.Repeat("Zq8vR2mXk4", 3)),
 		jwt("bgw" + "_" + strings.Repeat("Zq8vR2mXk4", 3)),
 		"eyJ0eXAiOiJKV1QifQ." + "bua" + "_" + strings.Repeat("ABCDEFGHIJ", 3) + ".sig",
-		`<img src="data:image/png;base64,iVBORw0KGgo` + "ghp" + "_" + strings.Repeat("A1b2C3d4E5", 3) + `">`,
 		"token" + fakeGitHub,
 		"key" + fakeGatewayKey,
-		"x/" + fakeAutomation,
+		"x-" + fakeAutomation,
+		"a.b" + fakeGatewayKey,
 	} {
 		if hit, id := e.InspectAnswerText(text, nil); hit {
 			t.Errorf("%q matched %q", text, id)
@@ -457,9 +459,13 @@ func TestAnswerPatterns_TokensNotInsideBase64(t *testing.T) {
 			fakeGitHub, "token " + fakeGitHub, `"` + fakeGitHub + `"`, "GITHUB_TOKEN=" + fakeGitHub,
 			"(" + fakeGitHub + ")", "auth:" + fakeGitHub, "'" + fakeGitHub + "'", "<" + fakeGitHub + ">",
 			"=github_pat_" + strings.Repeat("A1b2C3d4E5", 3),
+			// A token in a git remote URL follows "/".
+			"git remote add origin https://" + fakeGitHub + "@github.com/acme/app.git",
+			"https://github_pat_" + strings.Repeat("A1b2C3d4E5", 3) + "@github.com/acme/app.git",
+			"x+" + fakeGitHub,
 		},
-		"burrow_gateway_key":      {fakeGatewayKey, "Bearer " + fakeGatewayKey, `{"key":"` + fakeGatewayKey + `"}`, "KEY=" + fakeGatewayKey},
-		"burrow_automation_token": {fakeAutomation, "Bearer " + fakeAutomation, "TOKEN=" + fakeAutomation, "[" + fakeAutomation + "]"},
+		"burrow_gateway_key":      {fakeGatewayKey, "Bearer " + fakeGatewayKey, `{"key":"` + fakeGatewayKey + `"}`, "KEY=" + fakeGatewayKey, "https://" + fakeGatewayKey + "@relay.example.com/"},
+		"burrow_automation_token": {fakeAutomation, "Bearer " + fakeAutomation, "TOKEN=" + fakeAutomation, "[" + fakeAutomation + "]", "x/" + fakeAutomation},
 	} {
 		for _, text := range texts {
 			if hit, got := e.InspectAnswerText(text, nil); !hit || got != id {

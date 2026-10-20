@@ -32,7 +32,7 @@ State-changing requests (POST, PUT, DELETE, PATCH) with a session cookie must al
 
 ```sh
 curl -b cookies.txt \
-  -H "X-CSRF-Token: $(grep -E '\s(__Host-)?burrow_csrf\s' cookies.txt | head -1 | awk '{print $NF}')" \
+  -H "X-CSRF-Token: $(grep -E '[[:space:]](__Host-)?burrow_csrf[[:space:]]' cookies.txt | head -1 | awk '{print $NF}')" \
   -X DELETE https://burrow.insingo.com/api/v1/tokens/tok_abc123
 ```
 

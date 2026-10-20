@@ -21,11 +21,12 @@ package guardrails
 // turn into keys. For the same reason the Anthropic shape accepts a digit or
 // punctuation before "sk-ant-" but no letter ("task-ant-design-…" is a CSS
 // name). The AWS shape accepts an underscore before "AKIA" ("KEY_AKIA…") but
-// no letter or digit: a longer upper-case token is no key. The Google,
-// GitHub and Burrow shapes accept no base64 character before their prefix
-// (see base64Before): base64 text (data URIs, JWTs) holds "AIza", "ghp_" or
+// no letter or digit: a longer upper-case token is no key. The Google shape
+// accepts no base64 character before "AIza" (see base64Before), and the
+// GitHub and Burrow shapes no base64url character before their prefix (see
+// base64urlBefore): base64 text (data URIs, JWTs) holds "AIza", "ghp_" or
 // "bgw_" by chance, so a key glued to a letter or digit is not found there,
-// only one glued to punctuation.
+// only one glued to punctuation (a "/" in a URL included, but for "AIza").
 //
 // The order matters where two shapes overlap: an Anthropic key also has the
 // OpenAI shape and is listed first, so it is named for what it is.
@@ -36,11 +37,19 @@ package guardrails
 // looks at the match as far as it has arrived, so a placeholder streamed in
 // pieces is never blocked, and a real key, which has that many distinct
 // characters within its first 20, is still found at the same early bound.
-// base64Before is what may come before the prefix of the Google, GitHub and
-// Burrow shapes: the start of the text or one character outside the base64
-// and base64url alphabets and the JWT separator (not A-Z, a-z, 0-9, +, /, -,
-// _ or .). Go's regexp has no lookbehind, so the match includes it.
+// base64Before is what may come before the prefix of the Google shape: the
+// start of the text or one character outside the base64 and base64url
+// alphabets and the JWT separator (not A-Z, a-z, 0-9, +, /, -, _ or .). Go's
+// regexp has no lookbehind, so the match includes it.
 const base64Before = `(?:^|[^0-9A-Za-z+/_.-])`
+
+// base64urlBefore is what may come before the prefix of the GitHub and
+// Burrow shapes: the start of the text or one character outside the
+// base64url alphabet and the JWT separator (not A-Z, a-z, 0-9, -, _ or .).
+// Their prefixes hold "_", which standard base64 never has, so "/" and "+"
+// count as separators: a token in a git remote URL
+// ("https://ghp_…@github.com/…") is found, while "ghp_" inside a JWT is not.
+const base64urlBefore = `(?:^|[^0-9A-Za-z_.-])`
 
 var AnswerPatterns = []Pattern{
 	// Anthropic API keys: "sk-ant-api03-…", "sk-ant-admin01-…".
@@ -54,8 +63,8 @@ var AnswerPatterns = []Pattern{
 	// AWS access key ids: "AKIA" and 16 upper-case letters or digits.
 	{ID: "aws_access_key", Description: "AWS access key id", Regex: `(?:\b|_)AKIA[0-9A-Z]{16}\b`, Requires: []string{"AKIA"}, SecretPrefix: `^_?AKIA`},
 	// GitHub tokens: classic (ghp_, gho_, ghu_, ghs_, ghr_) and fine-grained
-	// (github_pat_), after base64Before.
-	{ID: "github_token", Description: "GitHub token", Regex: base64Before + `(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})`, Requires: []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"}, SecretPrefix: `^` + base64Before + `?(?:gh[pousr]_|github_pat_)`},
+	// (github_pat_), after base64urlBefore.
+	{ID: "github_token", Description: "GitHub token", Regex: base64urlBefore + `(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})`, Requires: []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"}, SecretPrefix: `^` + base64urlBefore + `?(?:gh[pousr]_|github_pat_)`},
 	// Slack tokens: bot, app, user, refresh and legacy (xoxb-, xoxa-, xoxp-,
 	// xoxr-, xoxs-).
 	{ID: "slack_token", Description: "Slack token", Regex: `xox[baprs]-[A-Za-z0-9-]{10,}`, Requires: []string{"xoxb-", "xoxa-", "xoxp-", "xoxr-", "xoxs-"}, SecretPrefix: `^xox[baprs]-`},
@@ -68,10 +77,10 @@ var AnswerPatterns = []Pattern{
 	{ID: "private_key_pem", Description: "private key (PEM)", Regex: `-----BEGIN [A-Z ]*PRIVATE KEY-----`, Requires: []string{"PRIVATE KEY-----"}},
 	// Burrow automation tokens: "bua_" and 32 random bytes in unpadded
 	// standard base32 (52 characters of A-Z and 2-7), see
-	// store.generateBearerToken; 20 are matched. After base64Before.
-	{ID: "burrow_automation_token", Description: "Burrow automation token", Regex: base64Before + `bua_[A-Z2-7]{20,}`, Requires: []string{"bua_"}, SecretPrefix: `^` + base64Before + `?bua_`},
+	// store.generateBearerToken; 20 are matched. After base64urlBefore.
+	{ID: "burrow_automation_token", Description: "Burrow automation token", Regex: base64urlBefore + `bua_[A-Z2-7]{20,}`, Requires: []string{"bua_"}, SecretPrefix: `^` + base64urlBefore + `?bua_`},
 	// Burrow gateway keys: "bgw_" and 32 random bytes in unpadded base64url
 	// (43 characters), see store.newGatewayKey; 20 are matched. After
-	// base64Before.
-	{ID: "burrow_gateway_key", Description: "Burrow gateway key", Regex: base64Before + `bgw_[A-Za-z0-9_-]{20,}`, Requires: []string{"bgw_"}, SecretPrefix: `^` + base64Before + `?bgw_`},
+	// base64urlBefore.
+	{ID: "burrow_gateway_key", Description: "Burrow gateway key", Regex: base64urlBefore + `bgw_[A-Za-z0-9_-]{20,}`, Requires: []string{"bgw_"}, SecretPrefix: `^` + base64urlBefore + `?bgw_`},
 }
