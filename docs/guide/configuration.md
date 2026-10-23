@@ -60,10 +60,10 @@ exercised. Switch back to the production CA (the default) when going live.
 | `BURROW_LISTEN` | `:7000` | Control channel (TLS + yamux). Clients connect here. |
 | `BURROW_HTTP_LISTEN` | `:8080` | Dashboard and REST API. Promoted to `:443` by ACME when still at its default value. |
 | `BURROW_HTTP_PROXY_LISTEN` | `""` | Opt-in host-routed ingress (for example `:8443`). Empty = off. See below. |
-| `BURROW_PUBLIC_BIND` | `0.0.0.0` | Network interface for TCP tunnel data ports. |
+| `BURROW_PUBLIC_BIND` | `0.0.0.0` | Network interface for TCP tunnel data ports. Only `open` and `ip` services open one; `private` services open none. |
 | `BURROW_PORT_MIN` | `9000` | Inclusive lower bound for auto-assigned TCP tunnel ports. |
 | `BURROW_PORT_MAX` | `9100` | Inclusive upper bound for auto-assigned TCP tunnel ports. |
-| `BURROW_TCP_PORTS_PER_USER` | `10` | How many public ports the TCP services of one user may hold (a port stays with its service across reconnects). `0` = no limit. Administrators have no limit. |
+| `BURROW_TCP_PORTS_PER_USER` | `10` | How many public ports the TCP services of one user may hold (a port stays with its service across reconnects, also while it is offline). `0` = no limit. Administrators, and roles with `services:configure:any`, have no limit. Private services hold no port unless they were pinned with `--remote`. See [Remote desktop and other TCP services](/guide/remote-desktop-and-tcp#ports). |
 
 `BURROW_HTTP_PROXY_LISTEN` is empty by default. Set it (for example to `:8443`)
 to start the opt-in host-routed ingress, which serves services at
@@ -495,7 +495,10 @@ services:
 | `services[].type` | No | `tcp` | `http` or `tcp`. HTTP tunnels get a slug and a `/svc/<slug>/` URL; TCP tunnels get a port. |
 | `services[].remote` | No | `0` | TCP only. Requested public port. `0` = auto-assigned from `PORT_MIN`–`PORT_MAX`. |
 | `services[].slug` | No | — | `http` only. Path under `/svc/`. Used only when the service is created (`burrow up`). |
-| `services[].access` | No | `open` | `http` only: `open`, `login` or `api-key`. Used only when the service is created (`burrow up`). |
+| `services[].access` | No | none | `http`: `open`, `login` or `api-key`, used only when the service is created. `tcp`: `open`, `ip` or `private`. **A tcp entry without `access` asks for nothing and keeps the stored mode; a new service created that way is `open`.** |
+| `forwards[].target` | Yes, per forward | — | Slug, own service name or id of a tcp service to reach with `burrow forward`. A file may hold `forwards` and no `services`. |
+| `forwards[].local_port` | No | `13389` | Local port to listen on. |
+| `forwards[].bind` | No | `127.0.0.1` | Local address to listen on. Anything but loopback lets other machines use the forward without signing in. |
 
 ### Single-tunnel flags (no config file)
 

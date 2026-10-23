@@ -28,6 +28,7 @@ export default defineConfig({
             { text: 'Deploy on a server', link: '/guide/deploy' },
             { text: 'Connect a client', link: '/guide/connect-client' },
             { text: 'Expose services', link: '/guide/expose-services' },
+            { text: 'Remote desktop and TCP', link: '/guide/remote-desktop-and-tcp' },
             { text: 'Access control & security', link: '/guide/access-control' },
             { text: 'Manage from an agent (MCP)', link: '/guide/mcp' },
             { text: 'Tool sources (burrow mcp)', link: '/guide/tool-sources' },

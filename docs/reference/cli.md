@@ -177,6 +177,7 @@ burrow <command> [flags]
 | [`logout`](#logout) | Forget the stored sign-in |
 | [`http`](#http-and-tcp) | Expose a local HTTP service |
 | [`tcp`](#http-and-tcp) | Expose a local TCP port |
+| [`forward`](#forward) | Reach a private tcp service on a local port |
 | [`up`](#up) | Run every service in `burrow.yaml` |
 | [`status`](#status) | Show what this machine is signed in to |
 | [`doctor`](#doctor) | Check relay, sign-in, versions and local targets |
@@ -193,7 +194,8 @@ burrow <command> [flags]
 | `--log text\|json` | Print log lines in this format instead of the status view |
 | `--cacert <pem>` | PEM CA to trust (e.g. `certs/dev-ca.pem`) |
 | `--server-name <name>` | TLS SNI/verify name (default: host of the control endpoint) |
-| `--insecure` | Skip TLS verification (**dev only**) |
+| `--insecure` | Skip TLS verification and the pinned certificate (**dev only**); prints a warning on every run |
+| `--insecure-forward` | Let `burrow forward` (and `burrow up` with `forwards:`) run under `--insecure`. Without it they refuse, exit code 2 |
 
 **Exit codes**
 
@@ -210,7 +212,7 @@ burrow <command> [flags]
 A handled Ctrl-C during `login`, `doctor` or `update` exits 1 with one line
 saying what did or did not happen.
 
-The status view is shown only by `http`, `tcp` and `up`, when stdout is a
+The status view is shown only by `http`, `tcp`, `forward` and `up`, when stdout is a
 terminal, `--log` is not given, `BURROW_LOG_FORMAT` and `BURROW_LOG_LEVEL` are
 unset and `TERM` is not `dumb`. `NO_COLOR` is honoured. Otherwise they print log
 lines.
@@ -261,7 +263,7 @@ Tokens**). It does not revoke the token itself.
 
 ```sh
 burrow http <target> [--name <name>] [--slug <slug>] [--access open|login|api-key]
-burrow tcp  <target> [--name <name>] [--remote <port>]
+burrow tcp  <target> [--name <name>] [--access open|ip|private] [--remote <port>]
 ```
 
 `<target>` is `3000` (`127.0.0.1:3000`), `localhost:3000`, `192.168.1.20:8080`
@@ -273,13 +275,39 @@ code 2).
 | `--name <name>` | both | Service name (default: `<hostname>-<port>`) |
 | `--slug <slug>` | `http` | Path under `/svc/`; used only when the service is created |
 | `--access open\|login\|api-key` | `http` | Access mode; used only when the service is created. `login` is the relay's `burrow_login`, `api-key` is `api_key` and creates no key |
-| `--remote <port>` | `tcp` | Fixed public port (default: any free port) |
+| `--access open\|ip\|private` | `tcp` | Access mode, default `private`: no public port, reached with `burrow forward`. `ip` and `open` open a public port. A dashboard mode stricter than the flag is kept; a looser one makes the relay refuse with "restart with --access `<mode>`". Against a relay too old for tcp modes, `ip` and `private` register nothing |
+| `--remote <port>` | `tcp` | Fixed public port (default: any free port). Needs `--access open` or `ip`; with `private` it is a usage error |
 
 The command runs in the foreground until interrupted and reconnects by itself.
 Exit codes: 2 bad target or flag; 3 not signed in (or the stored sign-in is for
 another relay); 4 token rejected; 6 client too old; 1 anything else, including
 a slug the relay refused and an access mode the relay did not apply. When the
 relay cannot be reached, the command says so once and keeps retrying.
+
+### forward
+
+```sh
+burrow forward <target> [local-port] [--bind <address>]
+```
+
+Listens on a local address and sends each connection to a private tcp service
+through the relay. `<target>` is the service's slug (shown in the dashboard and
+printed by `burrow tcp`), the name of one of your own tcp services, or its id.
+
+| Flag or argument | Default | Description |
+|------------------|---------|-------------|
+| `[local-port]` | `13389` | Local port to listen on |
+| `--bind <address>` | `127.0.0.1` | IP address or `localhost`. Anything but loopback lets other machines use the forward without signing in, and prints a warning |
+
+The command runs in the foreground. One relay stream carries each local
+connection. The local port stays open while the relay is away and closes
+connections made then; it works again after the reconnect. The relay allows the
+forward only to the owner and to roles in the service's access policy. A target
+that does not exist and one you may not reach give the same answer. A forward
+stops for good on `not_found`; on `offline`, `rate_limited` and errors it keeps
+going. Against a relay that cannot forward it stops with "relay too old". Exit
+codes are those of `tcp`. See
+[Remote desktop and other TCP services](/guide/remote-desktop-and-tcp).
 
 ### up
 
@@ -418,6 +446,10 @@ services:
     type: tcp
     access: ip                    # open | ip | private; without it: the stored mode (new: open)
     remote: 9001                  # fixed port with open or ip; 0 = auto-assigned
+forwards:                         # optional; a file may hold forwards alone
+  - target: rdp                   # slug, own service name or id
+    local_port: 13389             # default 13389
+    bind: 127.0.0.1               # default 127.0.0.1
 ```
 
 ::: details YAML field reference
@@ -430,7 +462,11 @@ services:
 | `services[].name` | Yes | Tunnel name (displayed in dashboard) |
 | `services[].local` | Yes | Local address to expose, e.g. `127.0.0.1:3000` |
 | `services[].type` | No (default `tcp`) | `tcp` or `http` |
-| `services[].remote` | No (default `0`) | Fixed TCP port on the relay; `0` = auto. Ignored for HTTP tunnels. |
+| `services[].remote` | No (default `0`) | Fixed TCP port on the relay; `0` = auto. Ignored for HTTP tunnels. Refused with `access: private` |
+| `services[].access` | No | `http`: `open`, `login` or `api-key`. `tcp`: `open`, `ip` or `private`. A tcp entry without it keeps the stored mode (a new service is `open`) |
+| `forwards[].target` | Yes, per forward | Slug, own service name or id of a tcp service |
+| `forwards[].local_port` | No (default `13389`) | Local port to listen on |
+| `forwards[].bind` | No (default `127.0.0.1`) | Local address to listen on |
 
 :::
 

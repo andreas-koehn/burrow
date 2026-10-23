@@ -121,8 +121,11 @@ The table below lists the major resource groups, their path prefixes, and what t
 | **tunnels** | `/api/v1/tunnels/` | Live tunnel view — what is connected right now |
 | **services** | `/api/v1/services/` | Durable service config: access mode, API keys, policy, AI config, inspector, cache |
 | **api-keys** | `/api/v1/services/{id}/api-keys/` | Mint and revoke per-service API keys |
-| **access-mode** | `/api/v1/services/{id}/access-mode` | Set access mode (`open`, `api_key`, `burrow_login`, `mtls`) |
-| **access-policy** | `/api/v1/services/{id}/access-policy` | Role allowlist of `burrow_login` mode |
+| **access-mode** | `/api/v1/services/{id}/access-mode` | Set access mode (`open`, `api_key`, `burrow_login`, `mtls` for http; `open`, `ip`, `private` for tcp) |
+| **access-policy** | `/api/v1/services/{id}/access-policy` | Role allowlist of `burrow_login` mode; for a tcp service, the roles that may `burrow forward` (empty: owner only) |
+| **ip-grants** | `/api/v1/services/{id}/ip-grants` | Time-limited address grants of a tcp service in `ip` mode |
+| **connections** | `/api/v1/services/{id}/connections` | Live visitors and forwards of a tcp service; `DELETE` disconnects one |
+| **max-connections** | `/api/v1/services/{id}/max-connections` | Visitor cap of a tcp service (0 = default 32, at most 256) |
 | **webhooks** | `/api/v1/webhooks/` | HMAC outbound webhooks: create, list, pause, resume, delivery log |
 | **audit** | `/api/v1/audit/` | Immutable audit event log; chain verify and export |
 | **backups** | `/api/v1/backups/` | Create, list, verify, download, delete and restore database backups |

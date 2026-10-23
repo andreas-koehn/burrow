@@ -1018,7 +1018,10 @@ components:
             listed; GET /api/v1/services/{serviceID} returns it by id.
         slug:
           type: string
-          description: URL segment of an http service; empty for tcp or until one is assigned.
+          description: >
+            URL segment of an http service; empty until one is assigned. A tcp
+            service has a generated slug too: it is the target of `burrow forward`
+            and is never part of an address (`url` stays empty for tcp).
         url:
           type: string
           description: Public address, `https://<auth_domain>/svc/<slug>/`; empty without a slug or auth domain, and empty while `gateway_only` is true.

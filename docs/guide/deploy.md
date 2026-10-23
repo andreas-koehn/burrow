@@ -16,7 +16,7 @@ One container. One domain. Automatic HTTPS.
   HTTP-01 challenges and HTTPS redirects.
 - Every HTTP tunnel is reachable at `https://burrow.insingo.com/svc/<slug>/`
   (same origin as the dashboard, no extra DNS).
-- Raw TCP tunnels get a dedicated port in the `9000–9100` range (open only the
+- Raw TCP tunnels in mode `open` or `ip` get a dedicated port in the `9000–9100` range; `private` ones get none (open only the
   ports you actually use).
 
 **Topology**
@@ -149,7 +149,7 @@ services:
       - "80:80"
       - "443:443"
       - "7000:7000"
-      # Uncomment if you use raw TCP tunnels:
+      # Uncomment if you use open or ip TCP tunnels (private ones need no port):
       # - "9001:9001"
     environment:
       BURROW_ACME_DOMAIN: burrow.insingo.com

@@ -90,6 +90,54 @@ the REST API. Without the host-routed ingress the API refuses `mtls`.
 
 ---
 
+## Access modes of TCP services
+
+The four modes above belong to HTTP services. A TCP service has three others,
+and a TCP tunnel is **not** open by default when a current client creates it:
+
+| Mode | Public port | Who can reach the service |
+|------|-------------|---------------------------|
+| `private` | none | Signed-in Burrow clients that run `burrow forward`: the owner, and roles the owner allows |
+| `ip` | yes | Permanent CIDRs plus time-limited grants; everyone else is closed without a byte |
+| `open` | yes | Everyone, with connection limits |
+
+`burrow tcp` creates `private` services. A tcp service from an old client, or
+from a `burrow.yaml` entry without `access:`, is `open`. The mode of an existing
+service is set on its page in the dashboard, or with
+`PUT /api/v1/services/{id}/access-mode`. A change closes the tunnel and the
+client registers again. The full guide is
+[Remote desktop and other TCP services](/guide/remote-desktop-and-tcp).
+
+**Forward policy.** Who may run `burrow forward` to a TCP service is the
+service's access policy (`PUT /api/v1/services/{id}/access-policy`): the owner
+always, and any user whose role is on the list. An empty list means the owner
+only. The list is read on every forward.
+
+**IP grants.** In `ip` mode, `POST /api/v1/services/{id}/ip-grants` allows an
+address for 1 to 168 hours (the dashboard offers 1, 8 and 24); `GET` lists the
+active grants and `DELETE /api/v1/services/{id}/ip-grants/{grantID}` revokes
+one. Permanent CIDRs are the IP/geo allow list of the service; for a TCP
+service no entry may be wider than a `/8` (IPv4) or `/32` (IPv6), and countries
+do not apply. Adding a grant and disconnecting a live connection ask for a
+recent password confirmation. These routes and the writes of the access mode,
+the access policy and the IP/geo lists are not tools of the management MCP
+server: an agent cannot widen access to a service.
+
+**Permissions.** No new permission exists. The mode, the forward policy, the
+connection cap and the live connections use `services:configure:own` or `:any`;
+the CIDR list and the grants use `ipgeo:manage:own` or `:any`; reading the
+connection log and the audit log uses `audit:read`.
+
+**Audit actions.** `service.tcp_access.update`, `ipgeo.update`,
+`service.ip_grant.add`, `service.ip_grant.revoke`,
+`service.max_connections.update`, `service.connection.close`,
+`service.tcp_port.reclaimed` and `tcp.forward.open` (one row per user and
+service per minute; the connection log holds every forward as a `tcp_forward`
+row). Refusals are `rejected` rows in the connection log and the
+`access.denied` webhook event.
+
+---
+
 ## Configuring the access mode
 
 ### Dashboard
@@ -417,9 +465,10 @@ Open only the ports Burrow needs. With ACME (recommended):
 | `8443` | Host-routed ingress (opt-in, off by default; mTLS) |
 | `7000` | Client control channel (TLS) |
 
-If you use raw TCP tunnels, also open the specific port you pin in `remote:`
-(e.g. `9001`). No need to open the full `9000`–`9100` range unless you expose
-many dynamic TCP services.
+If you use raw TCP tunnels in mode `open` or `ip`, also open the specific port
+you pin in `remote:` (e.g. `9001`). No need to open the full `9000`–`9100`
+range unless you expose many dynamic TCP services. `private` services need no
+port.
 
 ::: warning Keep `8443` closed unless you enable the host-routed ingress
 `BURROW_HTTP_PROXY_LISTEN` is empty by default, so nothing listens on `8443`.
@@ -506,5 +555,6 @@ flag is set correctly by default.
 
 - [Deploy on a server](/guide/deploy) — firewall setup and ACME configuration
 - [Expose services](/guide/expose-services) — tunnel types and URL shapes
+- [Remote desktop and other TCP services](/guide/remote-desktop-and-tcp) — private, ip and open modes
 - [Configuration](/guide/configuration) — full `BURROW_*` env var reference
 - [Operations](/guide/operations) — backup, restore, and log settings

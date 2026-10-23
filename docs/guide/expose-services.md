@@ -92,7 +92,7 @@ with "relay too old".
 
 A mode set in the dashboard that is stricter than `--access` is kept. A looser
 one is not widened by the client: the relay refuses with "restart with
---access <mode>". Against a relay too old for tcp access modes, `ip` and
+--access `<mode>`". Against a relay too old for tcp access modes, `ip` and
 `private` are never sent: the service is not registered and no port opens.
 
 In `burrow.yaml`, a tcp service takes `access: open|ip|private`. **A tcp entry
@@ -126,7 +126,10 @@ the stored sign-in, so `server` and `token` may be left out); see
 ## (A) TCP tunnel — SSH, Postgres, and other raw protocols
 
 A TCP tunnel forwards any TCP connection to a port on the relay. The upstream
-sees raw bytes — no HTTP parsing, no header injection.
+sees raw bytes — no HTTP parsing, no header injection. The port is public only
+in mode `open` or `ip`; the default `private` opens none (see
+[TCP access modes](#tcp-access)). For remote desktop, see
+[Remote desktop and other TCP services](/guide/remote-desktop-and-tcp).
 
 ### `burrow.yaml`
 
@@ -168,7 +171,7 @@ psql "host=burrow.insingo.com port=9001 user=myuser dbname=mydb"
 ```
 
 ::: warning Firewall and Docker Compose
-TCP tunnel data ports must be open in your firewall and published in your
+This applies to `open` and `ip` services; `private` ones need no port. TCP tunnel data ports must be open in your firewall and published in your
 Compose file. If you are running the relay in Docker, add the port to your
 `compose.yaml`:
 

@@ -70,13 +70,16 @@ services:
 The service is then reachable at `burrow.insingo.com:9001` from the addresses
 allowed in the dashboard. With `access: private` the relay opens no port and the
 service is reached with `burrow forward` (see
-[TCP access modes](/guide/expose-services#tcp-access)).
+[TCP access modes](/guide/expose-services#tcp-access) and
+[Remote desktop and other TCP services](/guide/remote-desktop-and-tcp)).
 
 ---
 
 ## Access modes
 
-Every HTTP tunnel has an access policy controlling who can reach it.
+Every HTTP tunnel has an access policy controlling who can reach it. TCP
+services have their own modes (`private`, `ip`, `open`); see
+[Remote desktop and other TCP services](/guide/remote-desktop-and-tcp).
 
 | Mode | Who can access |
 |------|----------------|

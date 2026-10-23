@@ -331,6 +331,8 @@ API keys can be revoked. Go to the service detail page → **API Keys** to confi
 
 **Symptom:** `nc -zv burrow.insingo.com 9001` times out even though the tunnel appears connected.
 
+A `private` service has no public port at all: reach it with `burrow forward`. For forward errors (`not_found`, `offline`, `rate_limited`, "relay too old"), see [Remote desktop and other TCP services](/guide/remote-desktop-and-tcp#troubleshooting).
+
 ### 1. Port is not published
 
 For Docker deployments, the TCP port must be published in `compose.yaml`:
