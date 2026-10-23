@@ -25,6 +25,7 @@ function kindClass(kind: ConnectionLogKind): string {
   switch (kind) {
     case "http_proxy": return "info";
     case "tcp_proxy": return "warning";
+    case "tcp_forward": return "warning";
     case "control": return "default";
   }
 }
@@ -35,6 +36,8 @@ const KIND_LABELS: Record<ConnectionLogKind, string> = {
   control: "Client connection",
   http_proxy: "HTTP proxy",
   tcp_proxy: "TCP proxy",
+  // A signed-in client reaching a tcp service with `burrow forward`.
+  tcp_forward: "Forward",
 };
 const KINDS = Object.keys(KIND_LABELS) as ConnectionLogKind[];
 
@@ -75,6 +78,7 @@ function LogDetail({ row, service }: { row: ConnectionLog; service: string }) {
     // The id of the live connection the service was served through.
     ["Service connection", row.tunnel_id],
     ["User", row.user_id],
+    ...(row.token_name ? [["Client token", row.token_name] as [string, string]] : []),
     ["Bytes in", String(row.bytes_in)],
     ["Bytes out", String(row.bytes_out)],
   ];

@@ -79,6 +79,36 @@ export interface ClientView {
   service_count: number;
   total_bytes_in: number;
   total_bytes_out: number;
+  /** Forward streams (`burrow forward`) the session has open; absent on a relay that predates them. */
+  forward_count?: number;
+  forwards?: ClientForward[];
+}
+
+/** One open forward stream of a client session to a tcp service. */
+export interface ClientForward {
+  /** The live connection, as GET /services/{id}/connections names it. */
+  id: string;
+  service_id: string;
+  /** The name of the service. */
+  service: string;
+  since: string;
+  bytes_in: number;
+  bytes_out: number;
+}
+
+/** One live connection of a tcp service: a visitor of its public port, or a forward stream. */
+export interface ServiceConnection {
+  id: string;
+  kind: "visitor" | "forward";
+  source_ip: string;
+  /** user_id, user_email, token_name and session_id name who forwards; "" for a visitor. */
+  user_id: string;
+  user_email: string;
+  token_name: string;
+  session_id: string;
+  since: string;
+  bytes_in: number;
+  bytes_out: number;
 }
 
 /** GET /client/discovery: what a client may know before it has a token. Public. */
@@ -155,6 +185,7 @@ export interface Service {
    * The list leaves these out; one read by its id can be of this type.
    */
   type: "tcp" | "http" | "direct";
+  /** The URL segment of an http service; for a tcp service the global target of `burrow forward`. */
   slug: string;
   url: string;
   access_mode: AccessMode;
@@ -881,7 +912,7 @@ export interface CustomDomainRejection {
 }
 
 // Connection logs (spec Part E).
-export type ConnectionLogKind = "control" | "http_proxy" | "tcp_proxy";
+export type ConnectionLogKind = "control" | "http_proxy" | "tcp_proxy" | "tcp_forward";
 export type ConnectionLogStatus = "closed_clean" | "closed_error" | "closed_idle" | "rejected";
 
 export interface ConnectionLog {
@@ -900,6 +931,8 @@ export interface ConnectionLog {
   bytes_out: number;
   status: ConnectionLogStatus;
   reason: string;
+  /** The client token name of the user who forwards (kind tcp_forward); "" otherwise. Absent on an older relay. */
+  token_name?: string;
 }
 
 // ConnectionLogRollupTopIP — one (ip, sessions) entry from the per-rollup

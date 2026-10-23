@@ -3,11 +3,8 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
-import { matchTcpService } from "@/lib/tcpAccess";
 import { RelativeTime } from "@/components/RelativeTime";
-import type { ConnectionLog, Service } from "@/lib/contract";
-
-interface LiveTunnel { id: string; service_id?: string; name: string; type: string; bytes_in: number; bytes_out: number; connected: boolean }
+import type { ConnectionLog } from "@/lib/contract";
 
 const STATUS: Record<ConnectionLog["status"], string> = {
   closed_clean: "closed",
@@ -25,9 +22,8 @@ function duration(ms: number): string {
 }
 
 /**
- * What came through a tcp service: the bytes it carries right now (from the live
- * connection of its client) and the connection log of the service. A connection
- * enters the log when it ends, so the panel does not list the ones still open.
+ * The connection log of a tcp service: visitors, forwards and refusals. A connection
+ * enters the log when it ends; the open ones are in TcpLiveConnectionsPanel.
  */
 export function TcpConnectionsPanel({ serviceId }: { serviceId: string }) {
   const titleId = useId();
@@ -37,38 +33,14 @@ export function TcpConnectionsPanel({ serviceId }: { serviceId: string }) {
     refetchInterval: 15_000,
     retry: false,
   });
-  // The live counters belong to the tunnel a client holds; it names the service by its name and type.
-  const tunnels = useQuery({
-    queryKey: ["tunnels"],
-    queryFn: () => apiFetch<LiveTunnel[]>("/tunnels"),
-    refetchInterval: 15_000,
-    retry: false,
-  });
-  // Names are per owner, so two services may share one: a tunnel counts only when it names this
-  // service, or when this is the one tcp service of that name.
-  const services = useQuery({
-    queryKey: ["services"],
-    queryFn: () => apiFetch<Service[]>("/services"),
-    retry: false,
-  });
-  const live = services.data
-    ? (tunnels.data ?? []).find((t) => t.type === "tcp" && t.connected && matchTcpService(services.data, t)?.id === serviceId)
-    : undefined;
   const denied = logs.error instanceof ApiError && logs.error.status === 403;
   const rows = logs.data ?? [];
 
   return (
     <section className="card col gap-3" aria-labelledby={titleId}>
       <h2 id={titleId}>Recent connections</h2>
-      {live && (
-        <p aria-label="Live traffic" className="row row-center gap-3">
-          <span className="muted small">Live traffic of the client</span>
-          <span title={`In: ${live.bytes_in} bytes`}>↓ {formatBytes(live.bytes_in)}</span>
-          <span title={`Out: ${live.bytes_out} bytes`}>↑ {formatBytes(live.bytes_out)}</span>
-        </p>
-      )}
       <p className="muted small">
-        Connections appear here when they end. The traffic log has the same rows, with filters and an export.
+        Ended connections are listed here, newest first. The traffic log has the same rows, with filters and an export.
       </p>
       {denied ? (
         <p className="muted small">The connection log needs audit access, which your role does not have.</p>
@@ -85,7 +57,12 @@ export function TcpConnectionsPanel({ serviceId }: { serviceId: string }) {
             <tbody>
               {rows.map((r) => (
                 <tr key={r.id}>
-                  <td className="mono">{r.source_ip || "—"}</td>
+                  <td>
+                    <span className="mono">{r.source_ip || "—"}</span>
+                    {r.kind === "tcp_forward" && (
+                      <span className="muted small"> · Forward{r.token_name ? ` · ${r.token_name}` : ""}</span>
+                    )}
+                  </td>
                   <td><RelativeTime value={r.started_at} /></td>
                   <td>{r.status === "rejected" ? "—" : duration(r.duration_ms)}</td>
                   <td>

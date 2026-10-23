@@ -5,6 +5,7 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { Badge, PageHeader, SkeletonRows, TableEmptyRow } from "@/components/ds";
 import { StatusBadge } from "@/components/StatusBadge";
+import { RelativeTime } from "@/components/RelativeTime";
 import { ACCESS_LABEL } from "@/lib/tcpAccess";
 import type { AccessMode, ClientDetail as ClientDetailT } from "@/lib/contract";
 
@@ -76,6 +77,25 @@ export default function ClientDetail() {
           </table>
         </div>
       </section>
+      {(data.forwards ?? []).length > 0 && (
+        <section className="account-section" aria-labelledby="sec-forwards">
+          <div className="section-head"><div className="left"><h2 id="sec-forwards">Forwards</h2></div></div>
+          <div className="table-wrap">
+            <table className="data" aria-label="Forwards">
+              <thead><tr><th>Target</th><th>Since</th><th>Traffic</th></tr></thead>
+              <tbody>
+                {(data.forwards ?? []).map((f) => (
+                  <tr key={f.id}>
+                    <td><Link className="link-inline" to={`/services/${encodeURIComponent(f.service_id)}`}>{f.service}</Link></td>
+                    <td><RelativeTime value={f.since} /></td>
+                    <td className="col-created">↓{formatBytes(f.bytes_in)} ↑{formatBytes(f.bytes_out)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

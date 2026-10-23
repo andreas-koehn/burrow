@@ -673,7 +673,7 @@ export default function Services() {
 /** The address of a tcp service: the command that reaches a private one, else host:port. */
 function TcpAddress({ service, host, showPort }: { service: Service; host: string; showPort: boolean }) {
   if (service.access_mode === "private") {
-    const cmd = forwardCommand(service.name || service.id);
+    const cmd = forwardCommand(service.slug || service.name || service.id);
     return <CopyAddress text={cmd} label={`Copy command ${cmd}`} />;
   }
   // The live view has the port in its own column.

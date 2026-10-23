@@ -395,7 +395,7 @@ describe("ServiceDetail of a tcp service", () => {
       expect(within(panel).getByRole("link", { name: /open the traffic log/i }))
         .toHaveAttribute("href", "/traffic?service=svc_rdp01");
       // The relay lists a connection once it has ended: the panel says so.
-      expect(panel).toHaveTextContent(/appear here when they end/i);
+      expect(panel).toHaveTextContent(/ended connections are listed here/i);
     });
 
     it("says what it cannot read without audit access", async () => {
@@ -406,39 +406,116 @@ describe("ServiceDetail of a tcp service", () => {
       expect(await within(panel).findByText(/needs audit access/i)).toBeInTheDocument();
     });
 
-    it("shows the live traffic of the connected service", async () => {
-      addTcp({ access_mode: "ip", remote_port: 9005 });
-      db.clients[0].services.push({ id: "tnl_rdp", name: "rdp", type: "tcp", remote_port: 9005, local_addr: "127.0.0.1:3389", access_mode: "ip", bytes_in: 3072, bytes_out: 5120, total_bytes_in: 3072, total_bytes_out: 5120 });
+    it("labels a forward and names who forwarded", async () => {
+      addTcp();
+      db.connectionLogs.push({
+        id: "cl_f", kind: "tcp_forward", service_id: "svc_rdp01", tunnel_id: "t", user_id: "u1", client_session_id: "s",
+        source_ip: "192.0.2.10", user_agent: "", started_at: "2026-10-23T09:00:00Z", ended_at: "2026-10-23T09:05:00Z",
+        duration_ms: 300000, bytes_in: 1, bytes_out: 2, status: "closed_clean", reason: "", token_name: "alice-laptop",
+      });
       mount();
       const panel = await screen.findByRole("region", { name: "Recent connections" });
-      const live = await within(panel).findByLabelText("Live traffic");
-      expect(live).toHaveTextContent("3.0 KiB");
-      expect(live).toHaveTextContent("5.0 KiB");
+      const row = (await within(panel).findByText("192.0.2.10")).closest("tr")!;
+      expect(row).toHaveTextContent("Forward");
+      expect(row).toHaveTextContent("alice-laptop");
     });
   });
 
-  describe("tunnel names shared by several tcp services", () => {
-    it("shows no live traffic when two tcp services have the name", async () => {
+  describe("live connections", () => {
+    const visitor = { id: "c_v1", kind: "visitor" as const, source_ip: "198.51.100.77", user_id: "", user_email: "", token_name: "", session_id: "", bytes_in: 2048, bytes_out: 4096 };
+    const forward = { id: "c_f1", kind: "forward" as const, source_ip: "192.0.2.10", user_id: "u1", user_email: "alice@acme.io", token_name: "alice-laptop", session_id: "sess_x", bytes_in: 1024, bytes_out: 3072 };
+    const since = () => new Date(Date.now() - 5 * 60_000).toISOString();
+
+    it("lists visitors and forwards with who, since and live bytes", async () => {
       addTcp({ access_mode: "ip", remote_port: 9005 });
-      addTcp({ id: "svc_rdp02", user_id: "someone_else", access_mode: "ip", remote_port: 9006 });
-      db.clients[0].services.push({ id: "tnl_rdp", name: "rdp", type: "tcp", remote_port: 9005, local_addr: "127.0.0.1:3389", access_mode: "ip", bytes_in: 3072, bytes_out: 5120, total_bytes_in: 1, total_bytes_out: 1 });
+      db.serviceConnections.svc_rdp01 = [{ ...visitor, since: since() }, { ...forward, since: since() }];
       mount();
-      const panel = await screen.findByRole("region", { name: "Recent connections" });
-      await within(panel).findByText(/Nothing has connected yet/);
-      expect(within(panel).queryByLabelText("Live traffic")).toBeNull();
+      const panel = await screen.findByRole("region", { name: "Live connections" });
+      const v = (await within(panel).findByText("198.51.100.77")).closest("tr")!;
+      expect(v).toHaveTextContent("Visitor");
+      expect(v).toHaveTextContent("2.0 KiB");
+      expect(v).toHaveTextContent("4.0 KiB");
+      const f = within(panel).getByText("alice@acme.io").closest("tr")!;
+      expect(f).toHaveTextContent("Forward");
+      expect(f).toHaveTextContent("alice-laptop");
     });
 
-    it("prefers the service id a tunnel names", async () => {
-      addTcp({ access_mode: "ip", remote_port: 9005 });
-      addTcp({ id: "svc_rdp02", user_id: "someone_else", access_mode: "ip", remote_port: 9006 });
-      server.use(http.get("/api/v1/tunnels", () => HttpResponse.json([
-        { id: "t1", name: "rdp", type: "tcp", remote_port: 9005, local_addr: "x:3389", bytes_in: 1024, bytes_out: 2048, connected: true, service_id: "svc_rdp01" },
-        { id: "t2", name: "rdp", type: "tcp", remote_port: 9006, local_addr: "x:3389", bytes_in: 7168, bytes_out: 8192, connected: true, service_id: "svc_rdp02" },
-      ])));
+    it("says when nothing is connected", async () => {
+      addTcp();
       mount();
-      const live = await screen.findByLabelText("Live traffic");
-      expect(live).toHaveTextContent("1.0 KiB");
-      expect(live).not.toHaveTextContent("7.0 KiB");
+      const panel = await screen.findByRole("region", { name: "Live connections" });
+      expect(await within(panel).findByText(/No connection is open right now/)).toBeInTheDocument();
+    });
+
+    it("asks again about every 5 seconds", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        addTcp();
+        let calls = 0;
+        server.use(http.get("/api/v1/services/svc_rdp01/connections", () => { calls++; return HttpResponse.json([]); }));
+        mount();
+        await screen.findByText(/No connection is open right now/);
+        const before = calls;
+        await act(async () => { await vi.advanceTimersByTimeAsync(5_500); });
+        await waitFor(() => expect(calls).toBeGreaterThan(before));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("disconnects one connection after a confirmation", async () => {
+      addTcp({ access_mode: "ip", remote_port: 9005 });
+      db.serviceConnections.svc_rdp01 = [{ ...visitor, since: since() }];
+      const spy = vi.spyOn(globalThis, "fetch");
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: "Disconnect 198.51.100.77" }));
+      const dialog = await screen.findByRole("dialog", { name: /Disconnect/ });
+      expect(dialog).toHaveTextContent("198.51.100.77");
+      expect(spy.mock.calls.some(([, i]) => (i as RequestInit)?.method === "DELETE")).toBe(false);
+      await userEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+      await waitFor(() => expect(spy.mock.calls.some(([u, i]) =>
+        String(u).endsWith("/services/svc_rdp01/connections/c_v1") && (i as RequestInit)?.method === "DELETE")).toBe(true));
+      await waitFor(() => expect(screen.queryByText("198.51.100.77")).toBeNull());
+    });
+
+    it("keeps the connection when the disconnect is cancelled", async () => {
+      addTcp({ access_mode: "ip", remote_port: 9005 });
+      db.serviceConnections.svc_rdp01 = [{ ...visitor, since: since() }];
+      const spy = vi.spyOn(globalThis, "fetch");
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: "Disconnect 198.51.100.77" }));
+      await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cancel" }));
+      expect(spy.mock.calls.some(([, i]) => (i as RequestInit)?.method === "DELETE")).toBe(false);
+      expect(screen.getByText("198.51.100.77")).toBeInTheDocument();
+    });
+
+    it("shows the relay's refusal in the dialog", async () => {
+      addTcp({ access_mode: "ip", remote_port: 9005 });
+      db.serviceConnections.svc_rdp01 = [{ ...visitor, since: since() }];
+      server.use(http.delete("/api/v1/services/svc_rdp01/connections/c_v1", () =>
+        HttpResponse.json({ error: "connection not found" }, { status: 404 })));
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: "Disconnect 198.51.100.77" }));
+      const dialog = await screen.findByRole("dialog");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+      expect(await within(dialog).findByText("connection not found")).toBeInTheDocument();
+    });
+
+    it("is not offered without services:configure", async () => {
+      addTcp();
+      db.me = { id: db.me.id, email: "bob@acme.io", role: "operator", permissions: ["tunnels:read:own"] };
+      mount();
+      await screen.findByRole("region", { name: "Recent connections" });
+      expect(screen.queryByRole("region", { name: "Live connections" })).toBeNull();
+    });
+  });
+
+  describe("the forward target", () => {
+    it("is the slug when the service has one", async () => {
+      addTcp({ slug: "rdp-x7k2" });
+      mount();
+      const card = await screen.findByRole("region", { name: "Connect" });
+      expect(within(card).getByText("burrow forward rdp-x7k2 13389")).toBeInTheDocument();
     });
   });
 });

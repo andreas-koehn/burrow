@@ -48,6 +48,11 @@ function Serves({ client, services }: { client: KnownClient; services: Service[]
     // A relay that does not name what a session serves still counts it.
     const n = client.sessions.reduce((sum, s) => sum + s.service_count, 0);
     const first = client.sessions[0];
+    // A session that only forwards serves nothing: the forwards are what it does.
+    const f = client.sessions.reduce((sum, x) => sum + (x.forward_count ?? 0), 0);
+    if (first && n === 0 && f > 0) {
+      return <Link className="link-inline" to={`/clients/${first.session_id}`}>{f} {f === 1 ? "forward" : "forwards"}</Link>;
+    }
     if (!first || n === 0) return <>—</>;
     return <Link className="link-inline" to={`/clients/${first.session_id}`}>{n} {n === 1 ? "service" : "services"}</Link>;
   }

@@ -1,7 +1,7 @@
 import { ALL_PERMISSIONS } from "@/auth/permissions";
 import type {
   UserAdmin, RoleSummary, Session, ClientDetail, ClientDiscovery, ClientLoginRequest, SettingsMap, AiProviderModel,
-  Service, ServiceApiKey, CostSummary, ServiceAIConfig, IpGrant, IpGeoConfig,
+  Service, ServiceApiKey, CostSummary, ServiceAIConfig, IpGrant, IpGeoConfig, ServiceConnection,
   InspectorEntry, CacheSettings, RedactionRule, RedactionSettings,
   GuardrailPattern, GuardrailSettingsResponse, Budget, CostGroupBy, CostGroupRow, PricingTable, AuditEvent, McpStatus, McpTool, Webhook,
   WebhookDelivery, ProvisioningKey, ProvisioningPending,
@@ -109,6 +109,8 @@ export interface MockDb {
   /** Just-in-time grants and the permanent ip-geo lists of tcp services, by service id. */
   ipGrants: Record<string, IpGrant[]>;
   tcpIpGeo: Record<string, IpGeoConfig>;
+  /** Live connections of tcp services, by service id. */
+  serviceConnections: Record<string, ServiceConnection[]>;
   /** The address the relay sees for the dashboard's caller; a grant without a cidr is for it. */
   callerIp: string;
   aiMeta: Record<string, AiMetaRow>;
@@ -263,6 +265,7 @@ function seed(): MockDb {
     },
     ipGrants: {},
     tcpIpGeo: {},
+    serviceConnections: {},
     callerIp: "203.0.113.7",
     aiMeta: {
       svc_ai001: {

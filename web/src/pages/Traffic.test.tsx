@@ -183,7 +183,7 @@ describe("Traffic page", () => {
     const t = await table();
     const picker = screen.getByRole("combobox", { name: "Protocol" });
     expect(within(picker).getAllByRole("option").map((o) => [o.getAttribute("value"), o.textContent])).toEqual([
-      ["", "All"], ["control", "Client connection"], ["http_proxy", "HTTP proxy"], ["tcp_proxy", "TCP proxy"],
+      ["", "All"], ["control", "Client connection"], ["http_proxy", "HTTP proxy"], ["tcp_proxy", "TCP proxy"], ["tcp_forward", "Forward"],
     ]);
     const hint = screen.getByRole("button", { name: "What is Client connection?" });
     // The hint stands beside "Protocol": what it shows names the one it explains.
@@ -439,5 +439,19 @@ describe("Traffic page", () => {
         ),
       ).toBe(true);
     });
+  });
+});
+
+describe("Traffic: forward rows", () => {
+  it("labels tcp_forward as Forward and offers it as a protocol", async () => {
+    db.connectionLogs.push({
+      id: "cl_fwd", kind: "tcp_forward", service_id: "svc_pg001", tunnel_id: "t", user_id: "u1", client_session_id: "s",
+      source_ip: "192.0.2.10", user_agent: "", started_at: new Date().toISOString(), ended_at: new Date().toISOString(),
+      duration_ms: 10, bytes_in: 1, bytes_out: 2, status: "closed_clean", reason: "", token_name: "alice-laptop",
+    });
+    renderApp(<Traffic />, "/traffic");
+    const cell = await screen.findByText("192.0.2.10");
+    expect(within(cell.closest("tr")!).getByText("Forward")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Forward" })).toBeInTheDocument();
   });
 });

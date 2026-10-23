@@ -1361,6 +1361,25 @@ export const handlers = [
     return noContent();
   }),
 
+  // ---- live connections of a tcp service ----
+  http.get("/api/v1/services/:id/connections", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = db.services.find((s) => s.id === params.id);
+    if (!svc || !canConfigure(svc)) return err(404, "service not found");
+    if (svc.type !== "tcp") return err(409, "connections are for a tcp service");
+    return json(db.serviceConnections[svc.id] ?? []);
+  }),
+  http.delete("/api/v1/services/:id/connections/:connId", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = db.services.find((s) => s.id === params.id);
+    if (!svc || !canConfigure(svc)) return err(404, "service not found");
+    const list = db.serviceConnections[svc.id] ?? [];
+    const i = list.findIndex((c) => c.id === params.connId);
+    if (i < 0) return err(404, "connection not found");
+    list.splice(i, 1);
+    return noContent();
+  }),
+
   // ---- just-in-time grants of a tcp service ----
   http.get("/api/v1/services/:id/ip-grants", ({ request, params }) => {
     const g = gate(request); if (g) return g;

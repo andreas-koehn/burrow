@@ -2,6 +2,8 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
+import { http, HttpResponse } from "msw";
+import { server } from "@/mocks/server";
 import { db, type ServiceRow } from "@/mocks/db";
 import Services from "@/pages/Services";
 
@@ -79,5 +81,25 @@ describe("Services list: tcp services", () => {
     const row = (await within(table).findByText("rdp")).closest("tr")!;
     expect(within(row).queryByRole("link", { name: "rdp" })).toBeNull();
     expect(within(row).queryByRole("link", { name: "Configure" })).toBeNull();
+  });
+
+  it("writes the forward command with the slug when the service has one", async () => {
+    addTcp({ slug: "rdp-x7k2" });
+    renderApp(<Services />, "/services");
+    const table = await screen.findByRole("table", { name: "Services" });
+    const row = within(table).getByText("rdp").closest("tr")!;
+    expect(within(row).getByText("burrow forward rdp-x7k2 13389")).toBeInTheDocument();
+  });
+
+  it("joins a live tcp connection by the service id it names, even when two services share the name", async () => {
+    addTcp({});
+    addTcp({ id: "svc_rdp02", user_id: "someone_else" });
+    server.use(http.get("/api/v1/tunnels", () => HttpResponse.json([
+      { id: "t1", name: "rdp", type: "tcp", remote_port: 0, local_addr: "127.0.0.1:3389", bytes_in: 1, bytes_out: 2, connected: true, service_id: "svc_rdp02", access_mode: "private" },
+    ])));
+    renderApp(<Services />, "/services?live=1");
+    const table = await screen.findByRole("table", { name: "Services" });
+    const link = await within(table).findByRole("link", { name: "rdp" });
+    expect(link).toHaveAttribute("href", "/services/svc_rdp02");
   });
 });

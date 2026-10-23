@@ -8,6 +8,7 @@ import { AccessPolicyEditor } from "@/components/AccessPolicyEditor";
 import { CopyableCode } from "@/components/CopyableCode";
 import { IPGeoPanel } from "@/components/IPGeoPanel";
 import { TcpConnectionsPanel } from "@/components/TcpConnectionsPanel";
+import { TcpLiveConnectionsPanel } from "@/components/TcpLiveConnectionsPanel";
 import { TcpGrantsPanel } from "@/components/TcpGrantsPanel";
 import { useRelayHost } from "@/lib/useRelayHost";
 import { ACCESS_LABEL, FORWARD_LOCAL_PORT, RISKY_PORTS, forwardCommand, restrictiveness, riskyPort, localPort } from "@/lib/tcpAccess";
@@ -122,6 +123,7 @@ export function TcpAccessPanel({ service }: { service: Service }) {
         </section>
       )}
 
+      {canConfigure && <TcpLiveConnectionsPanel serviceId={service.id} />}
       <TcpConnectionsPanel serviceId={service.id} />
     </div>
   );
@@ -130,7 +132,8 @@ export function TcpAccessPanel({ service }: { service: Service }) {
 function ConnectCard({ service, mode }: { service: Service; mode: TcpAccessMode }) {
   const titleId = useId();
   const host = useRelayHost(mode !== "private");
-  const target = service.name || service.id;
+  // The slug is the global target of `burrow forward`; a service without one is reached by its name.
+  const target = service.slug || service.name || service.id;
   const rdp = localPort(service.local_addr) === 3389;
   const address = service.remote_port > 0 ? `${host}:${service.remote_port}` : null;
 
