@@ -125,6 +125,9 @@ func runWithView(ctx context.Context, release func(), o client.Options, t termin
 
 	store := view.NewStore(relayHost(o.Server), version.Version, o.Tunnels)
 	store.AddForwards(o.Forwards)
+	for _, f := range o.Forwards {
+		store.Note(wideBindNote(f))
+	}
 	gate := &probeGate{Store: store, stops: map[string]context.CancelFunc{}}
 	// What there is to say about the run is shown in the view, not printed
 	// over it.

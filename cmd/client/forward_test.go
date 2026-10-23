@@ -264,3 +264,34 @@ func TestReport_TCPAccessAndForwards(t *testing.T) {
 		t.Fatalf("not found: %s", out.String())
 	}
 }
+
+// In the status view the wide-bind warning is a note of the view, and the
+// view shows the forward; nothing is printed over it.
+func TestStatusView_ShowsForwardsAndTheWideBindNote(t *testing.T) {
+	cleanEnv(t)
+	errOut := useStderr(t)
+	term := useTerminal(t, nil, 120, 40, false)
+	useProbes(t)
+	useClient(t, func(_ context.Context, o client.Options) error {
+		o.Observer.State(client.StateConnected, "", 0)
+		if fo, ok := o.Observer.(client.ForwardObserver); ok {
+			fo.Forward(client.ForwardState{Index: 0, Target: "rdp", Addr: "0.0.0.0:13389", Connected: true, Open: 1, Total: 2})
+		} else {
+			t.Error("the view's observer takes no forwards")
+		}
+		return nil
+	})
+	fw := []client.ForwardSpec{{Target: "rdp", Addr: "0.0.0.0:13389"}}
+	if err := runClient(withForwards(context.Background(), fw), viewCreds, nil, viewFlags); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(term.out.lastView(), "\n")
+	for _, want := range []string{"forward rdp   0.0.0.0:13389", "1 open, 2 total", "! The forward to rdp listens on 0.0.0.0:13389"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("missing %q in:\n%s", want, all)
+		}
+	}
+	if errOut.String() != "" {
+		t.Errorf("stderr used: %q", errOut.String())
+	}
+}

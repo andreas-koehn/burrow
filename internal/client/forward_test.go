@@ -644,3 +644,187 @@ func TestTCPAccess_ALooserWishIsServedInTheStoredMode(t *testing.T) {
 		t.Fatalf("registered %+v", reg)
 	}
 }
+
+// flakyListener fails its first Accepts with an error that is no timeout.
+type flakyListener struct {
+	net.Listener
+	mu    sync.Mutex
+	fails int
+}
+
+func (l *flakyListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	fail := l.fails > 0
+	if fail {
+		l.fails--
+	}
+	l.mu.Unlock()
+	if fail {
+		return nil, errors.New("accept: too many open files")
+	}
+	return l.Listener.Accept()
+}
+
+func TestForward_AcceptErrorsAreRetried(t *testing.T) {
+	prev := listenTCP
+	listenTCP = func(network, addr string) (net.Listener, error) {
+		ln, err := net.Listen(network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return &flakyListener{Listener: ln, fails: 3}, nil
+	}
+	t.Cleanup(func() { listenTCP = prev })
+
+	r := startForwardRelay(t, true)
+	r.home(t)
+	obs := &forwardObserver{}
+	o := r.options("")
+	o.Forwards = []ForwardSpec{{Target: "rdp", Addr: "127.0.0.1:0"}}
+	o.Observer = obs
+	start(t, o)
+	addr := obs.addr(t)
+	if !waitTrue(func() bool { s, _ := obs.last(); return s.Connected }, 3*time.Second) {
+		t.Fatal("no session")
+	}
+	if err := through(t, addr, []byte("still accepting")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// closedSoon reports whether the connection is closed by the other side
+// within d.
+func closedSoon(c net.Conn, d time.Duration) bool {
+	_ = c.SetReadDeadline(time.Now().Add(d))
+	buf := make([]byte, 64)
+	for {
+		if _, err := c.Read(buf); err != nil {
+			return !errors.Is(err, os.ErrDeadlineExceeded)
+		}
+	}
+}
+
+func TestForward_ACloseOnEitherSideEndsTheOther(t *testing.T) {
+	r := startForwardRelay(t, true)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	served := make(chan net.Conn, 4)
+	go func() {
+		for {
+			c, e := ln.Accept()
+			if e != nil {
+				return
+			}
+			served <- c
+		}
+	}()
+	home, _ := start(t, r.options("", TunnelSpec{Name: "rdp", Type: "tcp", LocalAddr: ln.Addr().String(), Access: "private"}))
+	if !waitTrue(home.Registered, 3*time.Second) {
+		t.Fatal("home never registered")
+	}
+	obs := &forwardObserver{}
+	o := r.options("")
+	o.Forwards = []ForwardSpec{{Target: "rdp", Addr: "127.0.0.1:0"}}
+	o.Observer = obs
+	start(t, o)
+	addr := obs.addr(t)
+	if !waitTrue(func() bool { s, _ := obs.last(); return s.Connected }, 3*time.Second) {
+		t.Fatal("no session")
+	}
+	open := func() (local, remote net.Conn) {
+		t.Helper()
+		local, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = local.Close() })
+		_, _ = local.Write([]byte("x")) // the service sees the connection
+		select {
+		case remote = <-served:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the service was not reached")
+		}
+		t.Cleanup(func() { _ = remote.Close() })
+		return local, remote
+	}
+
+	// The local program hangs up: the service's connection ends.
+	local, remote := open()
+	_ = local.Close()
+	if !closedSoon(remote, 5*time.Second) {
+		t.Fatal("the service's connection stayed open after the local close")
+	}
+	// The service hangs up: the local connection ends.
+	local, remote = open()
+	_ = remote.Close()
+	if !closedSoon(local, 5*time.Second) {
+		t.Fatal("the local connection stayed open after the service closed")
+	}
+}
+
+func TestForward_RateLimitedHoldsOffNewConnections(t *testing.T) {
+	prev := forwardCooldown
+	forwardCooldown = 700 * time.Millisecond
+	t.Cleanup(func() { forwardCooldown = prev })
+
+	r := startForwardRelay(t, true)
+	r.svcs.set("rdp", "private") // exists, nobody serves it: every open is answered offline
+	obs := &forwardObserver{}
+	o := r.options("")
+	o.Forwards = []ForwardSpec{{Target: "rdp", Addr: "127.0.0.1:0"}}
+	o.Observer = obs
+	start(t, o)
+	addr := obs.addr(t)
+	if !waitTrue(func() bool { s, _ := obs.last(); return s.Connected }, 3*time.Second) {
+		t.Fatal("no session")
+	}
+	problem := func() string { s, _ := obs.last(); return s.Problem }
+	dial := func() {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		if !closedSoon(c, 5*time.Second) {
+			t.Fatal("a refused forward kept the local connection open")
+		}
+	}
+	// The relay takes a burst of 10 opens; the eleventh is rate limited.
+	limited := false
+	for i := 0; i < 14 && !limited; i++ {
+		dial()
+		limited = waitTrue(func() bool { return strings.Contains(problem(), "limits forwards") }, 300*time.Millisecond)
+	}
+	if !limited {
+		t.Fatalf("never rate limited; problem %q", problem())
+	}
+	// Right after, a local connection is closed without asking the relay.
+	dial()
+	if !waitTrue(func() bool { return strings.Contains(problem(), "waiting") }, 2*time.Second) {
+		t.Fatalf("problem %q, want the hold-off", problem())
+	}
+	// After the hold-off the relay is asked again.
+	time.Sleep(forwardCooldown + 100*time.Millisecond)
+	dial()
+	if !waitTrue(func() bool { return !strings.Contains(problem(), "waiting") }, 2*time.Second) {
+		t.Fatalf("still holding off: %q", problem())
+	}
+}
+
+func TestForward_AListenAddressInUseSaysSo(t *testing.T) {
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taken.Close()
+	_, port, _ := net.SplitHostPort(taken.Addr().String())
+	o := Options{Server: "127.0.0.1:1", Token: "bur_test_0000", Logger: slog.New(slog.DiscardHandler),
+		Forwards: []ForwardSpec{{Target: "rdp", Addr: taken.Addr().String()}}}
+	err, _ = runFor(t, o, 3*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "local port "+port+" is in use; pick another") {
+		t.Fatalf("error = %v", err)
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -46,6 +47,13 @@ const (
 	// forwardAnswerWait bounds the wait for the relay's answer to an open. The
 	// relay itself gives up after 5 s of authorization and 5 s of pairing.
 	forwardAnswerWait = 15 * time.Second
+)
+
+// Seams for the tests: how a listener is opened, and how long local
+// connections are closed without asking the relay after it said rate_limited.
+var (
+	listenTCP       = net.Listen
+	forwardCooldown = 5 * time.Second
 )
 
 // ForwardTargetRule is the rule of a target, as the messages state it.
@@ -162,6 +170,10 @@ type forwarder struct {
 	problem     string
 	stopped     bool
 	conns       map[net.Conn]struct{} // local connections being forwarded
+	// holdUntil: the relay said rate_limited; until then local connections
+	// are closed without opening a stream, which would only count against
+	// the session's limit again.
+	holdUntil time.Time
 }
 
 // listenForwards opens the listener of every forward. One that cannot be
@@ -169,10 +181,10 @@ type forwarder struct {
 func (c *Client) listenForwards() error {
 	c.fwdEnd = make(chan struct{})
 	for i, spec := range c.opts.Forwards {
-		ln, err := net.Listen("tcp", spec.Addr)
+		ln, err := listenTCP("tcp", spec.Addr)
 		if err != nil {
 			c.closeForwards()
-			return fmt.Errorf("forward %s: cannot listen on %s: %w", spec.Target, spec.Addr, err)
+			return listenError(spec, err)
 		}
 		f := &forwarder{c: c, i: i, spec: spec, ln: ln, conns: map[net.Conn]struct{}{}}
 		f.spec.Addr = ln.Addr().String()
@@ -185,6 +197,30 @@ func (c *Client) listenForwards() error {
 		c.fwdWG.Go(f.accept)
 	}
 	return nil
+}
+
+// listenError says why a forward's listener could not be opened; most often
+// its local port is taken.
+func listenError(spec ForwardSpec, err error) error {
+	_, port, _ := net.SplitHostPort(spec.Addr)
+	if addrInUse(err) {
+		return fmt.Errorf("forward %s: local port %s is in use; pick another local port: burrow forward %s <local-port>, or local_port in burrow.yaml: %w",
+			spec.Target, port, spec.Target, err)
+	}
+	return fmt.Errorf("forward %s: cannot listen on %s: %w", spec.Target, spec.Addr, err)
+}
+
+// addrInUse reports whether a listen failed because the address is taken.
+// Windows reports WSAEADDRINUSE (10048), which is not syscall.EADDRINUSE there.
+func addrInUse(err error) bool {
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) && errno == 10048 {
+		return true
+	}
+	return strings.Contains(err.Error(), "address already in use")
 }
 
 // closeForwards closes every listener and every forwarded connection, and
@@ -295,15 +331,31 @@ func (f *forwarder) stop(problem string, err error) {
 }
 
 func (f *forwarder) accept() {
+	var delay time.Duration // as the relay's accept loops: 5 ms doubling up to 1 s
 	for {
 		conn, err := f.ln.Accept()
 		if err != nil {
-			var ne net.Error
-			if errors.As(err, &ne) && ne.Timeout() {
-				time.Sleep(50 * time.Millisecond) // out of descriptors, say
-				continue
+			if errors.Is(err, net.ErrClosed) {
+				return // stopped, or the run ended
 			}
-			return
+			// Out of descriptors, say: the listener stays and tries again.
+			if delay == 0 {
+				delay = 5 * time.Millisecond
+			} else if delay *= 2; delay > time.Second {
+				delay = time.Second
+			}
+			f.c.log.Warn("forward: accept failed; trying again", "target", f.spec.Target, "err", err, "retry_in", delay)
+			time.Sleep(delay)
+			continue
+		}
+		delay = 0
+		f.mu.Lock()
+		wait := time.Until(f.holdUntil)
+		f.mu.Unlock()
+		if wait > 0 {
+			_ = conn.Close()
+			f.setProblem(fmt.Sprintf("waiting %d s after the relay's limit on forwards; the local connection was closed", int((wait+time.Second-1)/time.Second)))
+			continue
 		}
 		sess := f.c.forwardSession()
 		if sess == nil {
@@ -385,6 +437,9 @@ func (f *forwarder) refused(resp proto.ForwardOpenResponse) {
 		p = fmt.Sprintf("%s is offline: no client serves it right now; try again when its machine is connected", t)
 	case proto.CodeRateLimited:
 		p = "the relay limits forwards (too many connections at once or in a minute); wait a moment and connect again"
+		f.mu.Lock()
+		f.holdUntil = time.Now().Add(forwardCooldown)
+		f.mu.Unlock()
 	case proto.CodeInternal:
 		p = "the relay could not look the service up; try again"
 	default:

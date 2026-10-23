@@ -262,7 +262,8 @@ services:
   - name: ssh
     local: 127.0.0.1:22
     type: tcp
-    remote: 9001
+    access: ip          # public port 9001 for the addresses allowed in the dashboard;
+    remote: 9001        # use access: private and burrow forward for no public port
 ```
 
 ```sh

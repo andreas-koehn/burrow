@@ -72,7 +72,7 @@ func runUp(cmd *cobra.Command, d deps) error {
 		return err
 	}
 	if len(fc.Forwards) > 0 {
-		warnWideForwards(fc.Forwards)
+		warnWideForwards(fc.Forwards, g)
 		cmd.SetContext(withForwards(cmd.Context(), fc.Forwards))
 	}
 	return foregroundWithBridges(cmd, d, creds, fc.Tunnels, g)

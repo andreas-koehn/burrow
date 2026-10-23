@@ -363,6 +363,7 @@ services:
   - name: ssh
     local: 127.0.0.1:22
     type: tcp
+    access: ip      # a public port needs open or ip; ip takes allowed addresses only
     remote: 9001
 ```
 

@@ -532,12 +532,25 @@ func TestLoadFileConfig_Forwards(t *testing.T) {
 		{"a port out of range", "  - { target: rdp, local_port: 70000 }", `forward[0] "rdp": the local port must be between 1 and 65535`},
 		{"a host name to bind", "  - { target: rdp, bind: example.com }", `forward[0] "rdp": the bind address must be an IP address or localhost`},
 		{"the same address twice", "  - { target: a }\n  - { target: b }", `forward[1] "b": 127.0.0.1:13389 is the address of forward[0] already`},
+		{"localhost is the loopback address", "  - { target: a, local_port: 2000 }\n  - { target: b, local_port: 2000, bind: localhost }", `forward[1] "b": localhost:2000 is the address of forward[0] already`},
+		{"every address takes the port", "  - { target: a, local_port: 2000 }\n  - { target: b, local_port: 2000, bind: 0.0.0.0 }", `forward[1] "b": 0.0.0.0:2000 is the address of forward[0] already`},
 	}
 	for _, tc := range bad {
 		os.WriteFile(yml, []byte("forwards:\n"+tc.forwards+"\n"), 0o600)
 		if _, err := LoadFileConfig(yml); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err = %v, want it to contain %q", tc.name, err, tc.want)
 		}
+	}
+
+	// A forward on the local port of a service of the file.
+	os.WriteFile(yml, []byte("services:\n  - { name: rdp, local: 127.0.0.1:3389, access: private }\nforwards:\n  - { target: rdp, local_port: 3389, bind: localhost }\n"), 0o600)
+	if _, err := LoadFileConfig(yml); err == nil || !strings.Contains(err.Error(), `forward[0] "rdp": localhost:3389 is the local address of service "rdp"`) {
+		t.Fatalf("overlap with a service: %v", err)
+	}
+	// private has no public port to fix.
+	os.WriteFile(yml, []byte("services:\n  - { name: rdp, local: 127.0.0.1:3389, access: private, remote: 9001 }\n"), 0o600)
+	if _, err := LoadFileConfig(yml); err == nil || !strings.Contains(err.Error(), `service[0] "rdp": remote needs access open or ip`) {
+		t.Fatalf("private with remote: %v", err)
 	}
 
 	// Neither services nor forwards.

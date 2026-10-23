@@ -33,13 +33,27 @@ func forwardsOf(ctx context.Context) []client.ForwardSpec {
 	return fw
 }
 
-// warnWideForwards says on stderr that a forward listens where other machines
-// can reach it: whoever reaches that address reaches the private service.
-func warnWideForwards(fw []client.ForwardSpec) {
+// wideBindNote says that a forward listens where other machines can reach
+// it: whoever reaches that address reaches the private service. "" for a
+// loopback address.
+func wideBindNote(f client.ForwardSpec) string {
+	if client.LoopbackAddr(f.Addr) {
+		return ""
+	}
+	return fmt.Sprintf("The forward to %s listens on %s: every machine that can reach that address reaches the service without signing in. "+
+		"Keep it on 127.0.0.1 unless that is what you want.", f.Target, f.Addr)
+}
+
+// warnWideForwards prints wideBindNote on stderr, before log lines. The
+// status view shows it as a note instead (runWithView): a line printed
+// before the view would scroll away under it.
+func warnWideForwards(fw []client.ForwardSpec, g globalFlags) {
+	if g.view {
+		return
+	}
 	for _, f := range fw {
-		if !client.LoopbackAddr(f.Addr) {
-			fmt.Fprintf(viewErr, "WARNING: the forward to %s listens on %s: every machine that can reach that address reaches the service without signing in. "+
-				"Keep it on 127.0.0.1 unless that is what you want.\n", f.Target, f.Addr)
+		if n := wideBindNote(f); n != "" {
+			fmt.Fprintln(viewErr, "WARNING: "+n)
 		}
 	}
 }
@@ -97,7 +111,7 @@ func newForwardCmd(d deps) *cobra.Command {
 				return err
 			}
 			fw := []client.ForwardSpec{{Target: target, Addr: addr}}
-			warnWideForwards(fw)
+			warnWideForwards(fw, g)
 			cmd.SetContext(withForwards(cmd.Context(), fw))
 			return foreground(cmd, d, creds, nil, g)
 		},

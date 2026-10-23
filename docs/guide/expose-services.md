@@ -95,9 +95,13 @@ one is not widened by the client: the relay refuses with "restart with
 --access <mode>". Against a relay too old for tcp access modes, `ip` and
 `private` are never sent: the service is not registered and no port opens.
 
-In `burrow.yaml`, a tcp service takes `access: open|ip|private` (without it
-nothing is asked for, as before), and a `forwards:` section runs forwards with
-`burrow up`; a file may hold forwards alone:
+In `burrow.yaml`, a tcp service takes `access: open|ip|private`. **A tcp entry
+without `access:` asks for nothing and keeps the mode stored on the relay; a new
+service created that way is `open`, on a public port anyone can reach.** Write
+`access: private` for remote desktop, SSH, VNC and databases (3389, 22, 5900,
+5432) unless other machines must connect directly; then use `access: ip`.
+`access: private` together with `remote:` is refused. A `forwards:` section runs
+forwards with `burrow up`; a file may hold forwards alone:
 
 ```yaml
 forwards:
@@ -133,9 +137,13 @@ services:
   - name: ssh
     local: 127.0.0.1:22
     type: tcp
+    access: ip     # public port for the addresses allowed in the dashboard
     remote: 9001
 ```
 
+- **`access: ip`** — the public port takes the addresses allowed in the
+  dashboard only. Use `access: private` (no public port, reach it with
+  `burrow forward`) unless other machines must connect directly.
 - **`type: tcp`** — selects raw TCP forwarding (this is also the default when
   `type` is omitted).
 - **`remote: 9001`** — requests a fixed port on the relay. Without this, the

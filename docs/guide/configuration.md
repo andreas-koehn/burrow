@@ -478,7 +478,8 @@ services:
   - name: ssh
     local: 127.0.0.1:22
     type: tcp
-    remote: 9001                # fixed public TCP port; 0 = auto-assigned
+    access: ip                  # a public port for the allowed addresses only; private = no public port
+    remote: 9001                # fixed public TCP port (open or ip); 0 = auto-assigned
 ```
 
 ### Field reference

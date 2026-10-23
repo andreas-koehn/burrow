@@ -63,10 +63,14 @@ services:
   - name: ssh
     local: 127.0.0.1:22
     type: tcp
+    access: ip     # public port, allowed addresses only (private: no port, use burrow forward)
     remote: 9001   # pin a stable port; 0 = auto-assigned
 ```
 
-The service is then reachable at `burrow.insingo.com:9001`.
+The service is then reachable at `burrow.insingo.com:9001` from the addresses
+allowed in the dashboard. With `access: private` the relay opens no port and the
+service is reached with `burrow forward` (see
+[TCP access modes](/guide/expose-services#tcp-access)).
 
 ---
 

@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
@@ -224,6 +225,9 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 				if !ok {
 					return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: access %s", i, svc.Name, TCPAccessRule)
 				}
+				if mode == "private" && svc.RemotePort != 0 {
+					return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: remote needs access open or ip: a private service has no public port", i, svc.Name)
+				}
 				spec.Access = mode
 			} else if svc.Access != "" {
 				mode, ok := AccessMode(svc.Access)
@@ -237,6 +241,9 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 		tunnels = append(tunnels, spec)
 	}
 
+	if err := forwardsOverlapServices(forwards, tunnels); err != nil {
+		return FileConfig{}, err
+	}
 	return FileConfig{
 		Server:   server,
 		Token:    token,
@@ -249,7 +256,6 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 // `burrow forward`: local port 13389 on 127.0.0.1.
 func forwardsFromFile(raw []rawForward) ([]ForwardSpec, error) {
 	out := make([]ForwardSpec, 0, len(raw))
-	at := map[string]int{}
 	for i, f := range raw {
 		if f.Target == "" {
 			return nil, fmt.Errorf("loadfileconfig: forward[%d]: target is required", i)
@@ -261,11 +267,51 @@ func forwardsFromFile(raw []rawForward) ([]ForwardSpec, error) {
 		if err != nil {
 			return nil, fmt.Errorf("loadfileconfig: forward[%d] %q: %w", i, f.Target, err)
 		}
-		if j, ok := at[addr]; ok {
-			return nil, fmt.Errorf("loadfileconfig: forward[%d] %q: %s is the address of forward[%d] already; give it another local_port", i, f.Target, addr, j)
+		for j, o := range out {
+			if sameListenAddr(addr, o.Addr) {
+				return nil, fmt.Errorf("loadfileconfig: forward[%d] %q: %s is the address of forward[%d] already; give it another local_port", i, f.Target, addr, j)
+			}
 		}
-		at[addr] = i
 		out = append(out, ForwardSpec{Target: f.Target, Addr: addr})
 	}
 	return out, nil
+}
+
+// forwardsOverlapServices refuses a forward that would listen on the local
+// address of a service of the same file: the service could not be reached,
+// or the forward would lead back into itself.
+func forwardsOverlapServices(forwards []ForwardSpec, tunnels []TunnelSpec) error {
+	for i, f := range forwards {
+		for _, t := range tunnels {
+			if t.LocalAddr != "" && sameListenAddr(f.Addr, t.LocalAddr) {
+				return fmt.Errorf("loadfileconfig: forward[%d] %q: %s is the local address of service %q; give the forward another local_port", i, f.Target, f.Addr, t.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// sameListenAddr reports whether two host:port addresses take the same local
+// port: the same port on the same host (localhost is the loopback address),
+// or on any host when one of them is every address (0.0.0.0, ::).
+func sameListenAddr(a, b string) bool {
+	ha, pa, err1 := net.SplitHostPort(a)
+	hb, pb, err2 := net.SplitHostPort(b)
+	if err1 != nil || err2 != nil || pa != pb {
+		return false
+	}
+	norm := func(h string) string {
+		if h == "localhost" {
+			return "127.0.0.1"
+		}
+		if ip := net.ParseIP(h); ip != nil {
+			if ip.IsUnspecified() {
+				return "*"
+			}
+			return ip.String()
+		}
+		return h
+	}
+	ha, hb = norm(ha), norm(hb)
+	return ha == hb || ha == "*" || hb == "*"
 }

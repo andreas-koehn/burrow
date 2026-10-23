@@ -416,7 +416,8 @@ services:
   - name: ssh
     local: 127.0.0.1:22
     type: tcp
-    remote: 9001                  # fixed port; 0 = auto-assigned
+    access: ip                    # open | ip | private; without it: the stored mode (new: open)
+    remote: 9001                  # fixed port with open or ip; 0 = auto-assigned
 ```
 
 ::: details YAML field reference
