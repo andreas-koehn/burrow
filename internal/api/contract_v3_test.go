@@ -172,7 +172,7 @@ func TestContractV3_ServicesList_Shape(t *testing.T) {
 	}
 	want := []string{
 		"access_mode", "api_key_header", "client_session_id", "connected", "gateway_only", "id",
-		"last_client", "last_seen", "local_addr", "name", "provider_slug", "remote_port", "slug",
+		"last_client", "last_seen", "local_addr", "max_connections", "name", "provider_slug", "remote_port", "slug",
 		"status", "type", "url",
 	}
 	assertKeys(t, "GET /services[0]", keysOf(t, obj), want)
@@ -210,7 +210,7 @@ func TestContractV3_ServiceDetail_Shape(t *testing.T) {
 	want := []string{
 		"access_mode", "access_policy", "api_key_count", "api_key_header",
 		"client_session_id", "connected", "gateway_only", "id", "last_client", "last_seen",
-		"local_addr", "name", "provider_slug", "remote_port", "slug", "status", "type", "url",
+		"local_addr", "max_connections", "name", "provider_slug", "remote_port", "slug", "status", "type", "url",
 	}
 	assertKeys(t, "GET /services/{id}", keysOf(t, obj), want)
 
@@ -284,7 +284,7 @@ func TestContractV3_SetAccessMode_InvalidMode_400Body(t *testing.T) {
 	}
 	obj := decodeObj(t, r)
 	// v0.4.0 Task 16: enum now includes "mtls".
-	if obj["error"] != "access_mode must be 'open', 'api_key', 'burrow_login', or 'mtls'" {
+	if obj["error"] != "access_mode must be 'open', 'api_key', 'burrow_login', or 'mtls' (http), or 'open', 'ip', or 'private' (tcp)" {
 		t.Errorf(`error body: got %v`, obj)
 	}
 }

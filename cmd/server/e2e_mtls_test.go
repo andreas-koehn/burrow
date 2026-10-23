@@ -336,8 +336,8 @@ func TestE2EMTLS_AccessMode(t *testing.T) {
 	if resp4.StatusCode != http.StatusConflict {
 		t.Fatalf("PUT access-mode mtls on TCP: want 409, got %d body=%s", resp4.StatusCode, body4)
 	}
-	// Spec Part J.2 wording (also pinned by contract_v3_test.go).
-	want := "api_key, burrow_login, and mtls require an http service"
+	// A tcp service takes its own modes (native tcp).
+	want := "a tcp service takes the access modes open, ip and private"
 	if !strings.Contains(body4, want) {
 		t.Fatalf("409 body: want contains %q, got: %s", want, body4)
 	}

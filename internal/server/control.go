@@ -24,6 +24,12 @@ const authReadTimeout = 10 * time.Second
 type HandshakeOptions struct {
 	// MinClientVersion: see Options.MinClientVersion.
 	MinClientVersion string
+	// Capabilities are announced to a client that is let in.
+	Capabilities []string
+	// RateLimited: the source of the connection has failed too often. Its
+	// auth_request is answered with proto.CodeRateLimited, and the token is
+	// not looked at.
+	RateLimited bool
 }
 
 // HandleHandshake is HandleHandshakeWith without a minimum client version.
@@ -34,7 +40,8 @@ func HandleHandshake(conn net.Conn, auth TokenAuthenticator, sessionID string) (
 // HandleHandshakeWith reads the auth frame from a raw conn, validates the token
 // via the supplied TokenAuthenticator, replies auth_response, and returns a new
 // ClientSession on success. On failure it writes an error/auth_response and
-// returns nil.
+// returns nil. A failure for what the client sent (a wrong token, a first
+// message that is no auth_request) matches errAuthFailed.
 func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID string, o HandshakeOptions) (*ClientSession, error) {
 	_ = conn.SetReadDeadline(time.Now().Add(authReadTimeout))
 	var env proto.Envelope
@@ -43,12 +50,19 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 	}
 	if env.Type != proto.MsgAuthRequest {
 		_ = proto.WriteMessage(conn, proto.MsgError, proto.Error{Message: "expected auth_request", Code: proto.CodeBadRequest})
-		return nil, fmt.Errorf("first message was %s", env.Type)
+		return nil, authFailure{fmt.Errorf("first message was %s", env.Type)}
 	}
 	var ar proto.AuthRequest
 	if err := proto.DecodePayload(env, &ar); err != nil {
 		_ = proto.WriteMessage(conn, proto.MsgError, proto.Error{Message: "bad auth payload", Code: proto.CodeBadRequest})
-		return nil, err
+		return nil, authFailure{err}
+	}
+	if o.RateLimited {
+		_ = proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{
+			OK: false, Code: proto.CodeRateLimited,
+			Error: "too many failed sign-ins from this address; try again in a few minutes",
+		})
+		return nil, errors.New("auth refused: too many failed sign-ins from this address")
 	}
 	var userID, tokenID, tokenName string
 	var err error
@@ -65,7 +79,7 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 	}
 	if err != nil {
 		_ = proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{OK: false, Error: "invalid token", Code: proto.CodeInvalidToken})
-		return nil, fmt.Errorf("token auth: %w", err)
+		return nil, authFailure{fmt.Errorf("token auth: %w", err)}
 	}
 	// After the token: only a client that may connect is told it is too old.
 	if olderThan(ar.ClientVersion, o.MinClientVersion) {
@@ -77,7 +91,9 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 		return nil, fmt.Errorf("client version %q is older than the minimum %s", ar.ClientVersion, min)
 	}
 	_ = conn.SetReadDeadline(time.Time{}) // clear deadline
-	if err := proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{OK: true, SessionID: sessionID, RelayVersion: version.Version}); err != nil {
+	if err := proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{
+		OK: true, SessionID: sessionID, RelayVersion: version.Version, Capabilities: o.Capabilities,
+	}); err != nil {
 		return nil, err
 	}
 	cs := &ClientSession{
@@ -226,7 +242,8 @@ const errTCPLookup = "the relay could not look up the service; try again later"
 // services (see TCPServiceResolver), and reads the holds on ports. Without a
 // resolver the zero tcpService is returned; a tunnel without a name (an old
 // client that was given none) gets the holds and no service. The client's
-// access and slug wishes are not passed on: a tcp service has neither yet.
+// access wish is passed on (it applies when the service is created); a tcp
+// service has no slug.
 func (s *Server) resolveTCP(cs *ClientSession, tr proto.TunnelRegister) (tcpService, error) {
 	tcp, ok := s.opts.Services.(TCPServiceResolver)
 	if !ok {
@@ -237,7 +254,7 @@ func (s *Server) resolveTCP(cs *ClientSession, tr proto.TunnelRegister) (tcpServ
 	var res Resolved
 	if tr.Name != "" {
 		var err error
-		if res, err = tcp.ResolveTCP(ctx, cs.UserID, tr.Name, ResolveOptions{}); err != nil {
+		if res, err = tcp.ResolveTCP(ctx, cs.UserID, tr.Name, ResolveOptions{Access: tr.Access}); err != nil {
 			return tcpService{}, err
 		}
 	} else if s.unnamedWarned.CompareAndSwap(false, true) {
@@ -305,13 +322,34 @@ func (s *Server) endTCPTunnel(tn *Tunnel) {
 	s.releaseTCPService(tn.ServiceID)
 }
 
-// registerTCP registers a tcp tunnel: its service, its public port and its
-// listener, and answers the client.
+// registerTCP registers a tcp tunnel: its service, its access mode, its
+// public port and its listener, and answers the client.
+//
+// A tunnel never gets a public port that its client did not ask for and
+// that its service does not have: a client that asked for a mode the relay
+// cannot apply (no tcp services, no name) or for another mode than the
+// service has is refused with proto.CodeAccessInvalid, and nothing is
+// opened. Mode private opens no port at all; mode ip opens one whose
+// visitors pass the service's ip policy before the home client is told.
 func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRegister) {
 	refuseWith := func(code, msg string) {
 		_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: msg, Code: code})
 		s.refused(reg, cs, tr, code)
 	}
+	if tr.Access != "" && !ValidTCPAccessMode(tr.Access) {
+		refuseWith(proto.CodeAccessInvalid, "access for a tcp service must be one of: open, ip, private")
+		return
+	}
+	_, keepsServices := s.opts.Services.(TCPServiceResolver)
+	if tr.Access != "" && tr.Access != TCPAccessOpen && (!keepsServices || tr.Name == "") {
+		msg := "this relay cannot apply an access mode to a tcp tunnel; nothing was opened"
+		if keepsServices {
+			msg = "a tcp tunnel needs a name to have an access mode; nothing was opened"
+		}
+		refuseWith(proto.CodeAccessInvalid, msg)
+		return
+	}
+	epoch := s.accessEpoch.Load()
 	svc, rerr := s.resolveTCP(cs, tr)
 	if rerr != nil {
 		var re *RefusalError
@@ -324,6 +362,36 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 		return
 	}
 	serviceID := svc.res.ServiceID
+	mode := TCPAccessOpen
+	if serviceID != "" {
+		if svc.res.AccessMode != "" {
+			mode = svc.res.AccessMode
+		}
+		if !ValidTCPAccessMode(mode) {
+			s.log.Warn("tcp service has no tcp access mode, registration refused", "service_id", serviceID, "access_mode", mode)
+			refuseWith(proto.CodeAccessInvalid, fmt.Sprintf("the service %q has the access mode %q, which a tcp service cannot have; change it in the dashboard", tr.Name, mode))
+			return
+		}
+		if tr.Access != "" && tr.Access != mode {
+			refuseWith(proto.CodeAccessInvalid, fmt.Sprintf("the service %q is in access mode %s, not %s; change the mode in the dashboard or ask for %s", tr.Name, mode, tr.Access, mode))
+			return
+		}
+	}
+	maxConns := svc.res.MaxConnections
+	var policy *tcpPolicy
+	if mode == TCPAccessIP {
+		var perr error
+		if policy, maxConns, perr = s.loadTCPPolicy(serviceID); perr != nil {
+			var re *RefusalError
+			if errors.As(perr, &re) {
+				refuseWith(re.Code, re.Message)
+				return
+			}
+			s.log.Warn("load tcp ip policy failed", "session_id", cs.SessionID, "service_id", serviceID, "err", perr)
+			refuseWith(proto.CodeInternal, errTCPLookup)
+			return
+		}
+	}
 	if ok, same := s.claimTCPService(serviceID, cs.TokenID); !ok {
 		// The same token: likely the client's own last session, not reaped
 		// yet; it tries again. Another token: another machine, which must
@@ -335,6 +403,68 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 		refuseWith(code, fmt.Sprintf("the service %q is already served by another client", tr.Name))
 		return
 	}
+	tn := &Tunnel{
+		ID: uuid.NewString(), Name: tr.Name, Type: tr.Type, LocalAddr: tr.LocalAddr, sess: cs,
+		ServiceID: serviceID, accessMode: mode, created: svc.res.Created,
+	}
+	if mode == TCPAccessPrivate {
+		// No listener and no port. An automatic hold the service kept from
+		// an earlier mode is given back to the pool; a pinned one stays.
+		if svc.tcp != nil && svc.res.TCPPort != 0 && !svc.res.TCPPortPinned {
+			ctx, cancel := context.WithTimeout(context.Background(), sessionRecordTimeout)
+			if err := svc.tcp.SetServiceTCPPort(ctx, serviceID, 0, false, ""); err != nil {
+				s.log.Warn("release tcp port of a private service failed", "service_id", serviceID, "err", err)
+			}
+			cancel()
+		}
+	} else if !s.openTCPPort(reg, cs, tr, svc, tn, maxConns, policy, refuseWith) {
+		return
+	}
+	reg.AddTunnel(cs, tn)
+	// Best-effort persist. RunControlLoop is serial (ping/pong/register/
+	// unregister on one goroutine), so any TunnelStore wired here MUST be
+	// fast and non-blocking — a slow store would stall heartbeat handling
+	// for this client. (Task 8 wires local sqlite; offload if ever remote.)
+	if err := s.opts.Tunnels.SaveTunnel(context.Background(), cs.UserID, tn); err != nil {
+		s.log.Warn("persist tunnel failed", "tunnel_id", tn.ID, "err", err)
+	}
+	s.recordSession(reg, cs)
+	s.stampService(cs, tn)
+	s.opts.Events.PublishTunnelsChanged(cs.UserID)
+	s.log.Info("tunnel registered", "tunnel_id", tn.ID, "remote_port", tn.RemotePort, "service_id", serviceID,
+		"access_mode", mode, "session_id", cs.SessionID)
+	resp := proto.TunnelRegisterResponse{OK: true, TunnelID: tn.ID, RemotePort: tn.RemotePort}
+	if serviceID != "" {
+		resp.AccessMode, resp.Created = mode, svc.res.Created
+		if s.opts.AuthDomain != "" {
+			resp.DashboardURL = "https://" + s.opts.AuthDomain + "/services/" + serviceID
+		}
+		if tr.Slug != "" {
+			resp.Ignored = []string{"slug"} // a tcp service has no slug
+		}
+	} else {
+		// No service: neither wish could be applied (an access other than
+		// open was refused above).
+		resp.Ignored = ignoredOptions(tr)
+	}
+	_ = cs.SendControl(proto.MsgTunnelRegisterResp, resp)
+	// The service changed while this registration read it: read it again,
+	// now that RefreshTCPService can find the tunnel. A new mode ends the
+	// session the client was just answered on, and it registers again.
+	if serviceID != "" && s.accessEpoch.Load() != epoch {
+		ctx, cancel := context.WithTimeout(context.Background(), tcpResolveTimeout)
+		_ = s.reconcileTCP(ctx, tn)
+		cancel()
+	}
+}
+
+// openTCPPort gives a tcp tunnel in mode open or ip its public port, its
+// limits and policy, and its listener, and keeps the port on the service. On
+// a refusal it has answered the client, freed what it took, and returns
+// false.
+func (s *Server) openTCPPort(reg *Registry, cs *ClientSession, tr proto.TunnelRegister, svc tcpService, tn *Tunnel,
+	maxConns int, policy *tcpPolicy, refuseWith func(code, msg string)) bool {
+	serviceID := tn.ServiceID
 	plan, perr := s.ports.allocateTCP(tcpPortRequest{
 		requested: tr.RemotePort, serviceID: serviceID, userID: cs.UserID,
 		own: svc.res.TCPPort, ownPinned: svc.res.TCPPortPinned, limit: svc.res.TCPPortLimit,
@@ -343,18 +473,19 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 	if perr != nil {
 		s.releaseTCPService(serviceID)
 		refuseWith(proto.CodePortUnavailable, perr.Error())
-		return
+		return false
 	}
 	port := plan.port
-	tn := &Tunnel{
-		ID: uuid.NewString(), Name: tr.Name, Type: tr.Type, RemotePort: port, LocalAddr: tr.LocalAddr, sess: cs,
-		ServiceID: serviceID, accessMode: svc.res.AccessMode, created: svc.res.Created,
+	tn.RemotePort = port
+	tn.limits = newTCPLimits(maxConns)
+	if tn.accessMode == TCPAccessIP {
+		tn.policy.Store(policy)
 	}
 	if lerr := s.startPublicListener(tn); lerr != nil {
 		s.ports.Release(port)
 		s.releaseTCPService(serviceID)
 		refuseWith(proto.CodePortUnavailable, lerr.Error())
-		return
+		return false
 	}
 	// The service keeps the port for its next registration. A hold that
 	// another service has meanwhile (a take-over that lost a race) refuses
@@ -375,30 +506,95 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 				s.log.Warn("keep tcp port failed, registration refused", "service_id", serviceID, "remote_port", port, "err", err)
 				s.endTCPTunnel(tn)
 				refuseWith(proto.CodePortUnavailable, portNotAvailable(port).Error())
-				return
+				return false
 			}
 			s.log.Warn("keep tcp port failed", "service_id", serviceID, "remote_port", port, "err", err)
 		} else if plan.takeFrom != "" {
 			s.portReclaimed(reg, cs, serviceID, plan.takeFrom, port, plan.reason)
 		}
 	}
-	reg.AddTunnel(cs, tn)
-	// Best-effort persist. RunControlLoop is serial (ping/pong/register/
-	// unregister on one goroutine), so any TunnelStore wired here MUST be
-	// fast and non-blocking — a slow store would stall heartbeat handling
-	// for this client. (Task 8 wires local sqlite; offload if ever remote.)
-	if err := s.opts.Tunnels.SaveTunnel(context.Background(), cs.UserID, tn); err != nil {
-		s.log.Warn("persist tunnel failed", "tunnel_id", tn.ID, "err", err)
+	return true
+}
+
+// loadTCPPolicy reads and compiles the ip policy of a service in mode ip,
+// with its cap on visitors. A relay without a TCPAccessLoader cannot let
+// anybody in, and a service whose mode changed meanwhile is retried by the
+// client.
+func (s *Server) loadTCPPolicy(serviceID string) (*tcpPolicy, int, error) {
+	if s.opts.TCPAccess == nil {
+		return nil, 0, &RefusalError{Code: proto.CodeAccessInvalid, Message: "this relay cannot apply the access mode ip; nothing was opened"}
 	}
-	s.recordSession(reg, cs)
-	s.stampService(cs, tn)
-	s.opts.Events.PublishTunnelsChanged(cs.UserID)
-	s.log.Info("tunnel registered", "tunnel_id", tn.ID, "remote_port", port, "service_id", serviceID, "session_id", cs.SessionID)
-	_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{
-		OK: true, TunnelID: tn.ID, RemotePort: port,
-		// A tcp service has neither a slug nor an access mode yet.
-		Ignored: ignoredOptions(tr),
-	})
+	ctx, cancel := context.WithTimeout(context.Background(), tcpResolveTimeout)
+	defer cancel()
+	acc, err := s.opts.TCPAccess.TCPAccess(ctx, serviceID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if acc.Mode != TCPAccessIP {
+		return nil, 0, &RefusalError{Code: proto.CodeServiceBusy, Message: "the access mode of the service changed while registering; trying again"}
+	}
+	p, err := compileTCPPolicy(acc)
+	if err != nil {
+		return nil, 0, err
+	}
+	return p, acc.MaxConnections, nil
+}
+
+// RefreshTCPService tells the relay that the access of a tcp service changed
+// (its mode, its ip lists, its grants or its cap on visitors). The live
+// tunnel of the service reads it again: a new mode closes the session that
+// serves it, so that its client registers again under the new mode (D14); a
+// new policy or cap applies to the next visitor, and connected ones stay. A
+// service the relay cannot read is closed too: it fails closed. Without a
+// live tunnel nothing is read, but a registration under way reads the
+// service again when it is done.
+func (s *Server) RefreshTCPService(ctx context.Context, serviceID string) error {
+	if serviceID == "" {
+		return nil
+	}
+	s.accessEpoch.Add(1)
+	tn, ok := s.LookupTunnelByServiceID(serviceID)
+	if !ok || tn.IsHTTP {
+		return nil
+	}
+	return s.reconcileTCP(ctx, tn)
+}
+
+// reconcileTCP applies the access of the service as it is now to its live
+// tcp tunnel tn (see RefreshTCPService).
+func (s *Server) reconcileTCP(ctx context.Context, tn *Tunnel) error {
+	if s.opts.TCPAccess == nil {
+		return nil
+	}
+	closeIt := func(why string, err error) {
+		n := s.reg.CloseByService(tn.ServiceID)
+		s.log.Info("tcp tunnel closed: "+why, "service_id", tn.ServiceID, "tunnel_id", tn.ID, "sessions", n, "err", err)
+	}
+	acc, err := s.opts.TCPAccess.TCPAccess(ctx, tn.ServiceID)
+	if err != nil {
+		closeIt("its access could not be read", err)
+		return err
+	}
+	mode := acc.Mode
+	if mode == "" {
+		mode = TCPAccessOpen
+	}
+	if mode != tn.accessMode {
+		closeIt("its access mode changed from "+tn.accessMode+" to "+mode, nil)
+		return nil
+	}
+	if tn.limits != nil {
+		tn.limits.setMax(acc.MaxConnections)
+	}
+	if mode == TCPAccessIP {
+		p, err := compileTCPPolicy(acc)
+		if err != nil {
+			closeIt("its ip policy could not be compiled", err)
+			return err
+		}
+		tn.policy.Store(p)
+	}
+	return nil
 }
 
 // RunControlLoop processes control-stream messages until the stream closes.

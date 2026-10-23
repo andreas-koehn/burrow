@@ -129,3 +129,32 @@ func (s *Server) tcpTraffic(tun *Tunnel, visitor net.Conn, started time.Time, in
 		})
 	}
 }
+
+// refuseVisitor closes a visitor of a tcp tunnel that may not reach the home
+// client, before a byte is read or written, and counts it: every refusal is
+// told to the observer (metrics, and the access.denied event within its own
+// budget), and the first of each (service, reason, address) in a minute is
+// written to the connection log as a rejected row (see refusalSampler). ip is
+// the address the relay saw, "" when it could read none.
+func (s *Server) refuseVisitor(tun *Tunnel, visitor net.Conn, ip, reason string) {
+	_ = visitor.Close()
+	now := time.Now()
+	s.reg.observer().ObserveTraffic(observe.Traffic{
+		Kind: observe.TrafficTCP, ServiceID: tun.ServiceID, TunnelID: tun.ID,
+		UserID: tun.sess.UserID, SessionID: tun.sess.SessionID,
+		Outcome: observe.OutcomeRejected, RejectReason: reason, SourceIP: ip,
+		Started: now,
+	})
+	key := tun.ServiceID
+	if key == "" {
+		key = tun.ID
+	}
+	if !s.refusals.sample(key, reason, ip, now) || s.opts.ConnLog == nil {
+		return
+	}
+	s.opts.ConnLog.RecordConnection(context.Background(), ConnLogEntry{
+		Kind: observe.TrafficTCP, ServiceID: tun.ServiceID, TunnelID: tun.ID,
+		UserID: tun.sess.UserID, ClientSessionID: tun.sess.SessionID, SourceIP: ip,
+		StartedAt: now, EndedAt: now, Status: observe.OutcomeRejected, Reason: reason,
+	})
+}

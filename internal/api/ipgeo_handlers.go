@@ -17,6 +17,7 @@ import (
 	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/proxy"
+	"github.com/ankoehn/burrow/internal/server"
 )
 
 // IPGeoStore is the narrow CRUD surface the ip-geo handlers consume. *db.DB
@@ -187,6 +188,16 @@ func (d Deps) PutServiceIPGeo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "ip-geo store unavailable")
 		return
 	}
+	// A tcp service in mode ip compiles the lists on the relay, which must
+	// read every entry (a block entry left out would let in what it blocks).
+	if svc, err := d.IPGeoServices.GetServiceByID(r.Context(), serviceID); err == nil && svc.Type == "tcp" {
+		for _, c := range append(append([]string{}, in.AllowCIDRs...), in.BlockCIDRs...) {
+			if _, err := server.ParseTCPPrefix(c); err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+	}
 	if err := d.IPGeo.SetServiceIPGeo(r.Context(), db.ServiceIPGeoConfig{
 		ServiceID:      serviceID,
 		Enabled:        in.Enabled,
@@ -198,6 +209,8 @@ func (d Deps) PutServiceIPGeo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "save ip-geo failed")
 		return
 	}
+	// The lists are the permanent part of a tcp service's ip policy.
+	d.refreshTCP(r.Context(), serviceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

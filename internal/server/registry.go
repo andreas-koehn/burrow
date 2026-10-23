@@ -51,8 +51,16 @@ type Tunnel struct {
 	IsHTTP    bool   // true for http-mode tunnels (no TCP port allocated)
 
 	// What the registration reported, for the observer's TunnelOpened event.
+	// accessMode is also the mode a tcp tunnel was registered in; it does
+	// not change while the tunnel lives (a new mode closes the session, see
+	// Server.RefreshTCPService).
 	accessMode string
 	created    bool
+
+	// policy is the compiled ip policy of a tcp tunnel in mode ip (nil lets
+	// nobody in); limits are the limits of a tcp tunnel with a public port.
+	policy atomic.Pointer[tcpPolicy]
+	limits *tcpLimits
 }
 
 // ClientSession is one authenticated client connection.

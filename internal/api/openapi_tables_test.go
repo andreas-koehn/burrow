@@ -51,6 +51,10 @@ var openAPIOperationIDs = map[string]string{
 	"PUT /api/v1/services/{serviceID}/access-policy":                            "serviceAccessPolicyUpdate",
 	"GET /api/v1/services/{serviceID}/ip-geo":                                   "serviceIpGeoGet",
 	"PUT /api/v1/services/{serviceID}/ip-geo":                                   "serviceIpGeoUpdate",
+	"GET /api/v1/services/{serviceID}/ip-grants":                                "serviceIpGrantsList",
+	"POST /api/v1/services/{serviceID}/ip-grants":                               "serviceIpGrantCreate",
+	"DELETE /api/v1/services/{serviceID}/ip-grants/{grantID}":                   "serviceIpGrantDelete",
+	"PUT /api/v1/services/{serviceID}/max-connections":                          "serviceMaxConnectionsUpdate",
 	"DELETE /api/v1/services/{serviceID}/cache/entries":                         "serviceCacheEntriesDelete",
 	"GET /api/v1/services/{serviceID}/ai-config":                                "serviceAiConfigGet",
 	"PUT /api/v1/services/{serviceID}/ai-config":                                "serviceAiConfigUpdate",
@@ -265,6 +269,10 @@ var openAPIMCPDisabled = map[string]string{
 	"serviceAiConfigUpdate":           "PUT /api/v1/services/{serviceID}/ai-config",
 	"retentionSettingsUpdate":         "PUT /api/v1/settings/retention",
 	"serviceGatewayOnlyUpdate":        "PUT /api/v1/services/{serviceID}/gateway-only",
+	// Nor let an address reach a tcp service (an agent's own, say).
+	"serviceIpGrantsList":  "GET /api/v1/services/{serviceID}/ip-grants",
+	"serviceIpGrantCreate": "POST /api/v1/services/{serviceID}/ip-grants",
+	"serviceIpGrantDelete": "DELETE /api/v1/services/{serviceID}/ip-grants/{grantID}",
 	// Nor widen access, grant privileges, put a data-plane secret into the
 	// model's context or plant an instruction in other users' requests.
 	"serviceAccessModeUpdate": "PUT /api/v1/services/{serviceID}/access-mode",
@@ -356,6 +364,8 @@ var openAPIRequestBodies = map[string]openAPIRequestBody{
 	"serviceApiKeyCreate":             {typ: oaType[createAPIKeyReq]()},
 	"serviceAccessPolicyUpdate":       {typ: oaType[setAccessPolicyReq]()},
 	"serviceIpGeoUpdate":              {typ: oaType[ipGeoReq]()},
+	"serviceIpGrantCreate":            {typ: oaType[ipGrantReq]()},
+	"serviceMaxConnectionsUpdate":     {typ: oaType[maxConnectionsReq]()},
 	"serviceUpstreamCredentialUpdate": {typ: oaType[putCredReq]()},
 	"serviceDomainCreate":             {typ: oaType[postDomainReq]()},
 	"serviceDomainUpdate":             {typ: oaType[putDomainReq]()},
@@ -479,6 +489,8 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"serviceApiKeyCreate":      {status: "201", typ: oaType[createAPIKeyResp]()},
 	"serviceAccessPolicyGet":   {status: "200", typ: oaType[accessPolicyResp]()},
 	"serviceIpGeoGet":          {status: "200", typ: oaType[ipGeoResp]()},
+	"serviceIpGrantsList":      {status: "200", typ: oaType[ipGrantResp](), list: true},
+	"serviceIpGrantCreate":     {status: "201", typ: oaType[ipGrantCreatedResp]()},
 	// The one answer that stays an exception: the handler writes the stored
 	// blob, a JSON object with no closed key set and no type to name. The nine
 	// other map-literal answers are pinned by keys, so that at least the

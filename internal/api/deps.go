@@ -40,6 +40,9 @@ type ServiceStore interface {
 	// SetServiceGatewayOnly closes or reopens every direct door of an http
 	// service; it stays reachable through the AI gateway.
 	SetServiceGatewayOnly(ctx context.Context, callerID, callerRole, serviceID string, on bool) error
+	// SetServiceMaxConnections sets the cap on connected visitors of a tcp
+	// service (0: the relay's default) and returns the previous one.
+	SetServiceMaxConnections(ctx context.Context, callerID, callerRole, serviceID string, n int) (int, error)
 	// DeleteService removes the service and returns its name. Owner or a
 	// holder of services:configure:any; store.ErrForbidden otherwise.
 	// store.ErrServiceHasProvider and store.ErrProviderInUse refuse it.
@@ -639,6 +642,14 @@ type Deps struct {
 	IPGeo         IPGeoStore
 	IPGeoServices ServiceOwnerLookup
 	GeoLookup     GeoLookupSurface
+	// IPGrants holds the just-in-time grants of tcp services in mode ip
+	// (*db.DB). nil: the grant routes answer 500.
+	IPGrants IPGrantStore
+	// TCPServices is told when the access of a tcp service changed (its
+	// mode, ip lists, grants or cap), so that its live tunnel applies it
+	// (*server.Server). nil: a change applies when the tunnel registers
+	// again.
+	TCPServices TCPServiceRefresher
 
 	// v0.4.0 Task 20: backup / restore JSON API (spec Part L).
 	// BackupDir is the on-disk directory the GET /backups handler scans and

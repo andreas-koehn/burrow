@@ -265,6 +265,9 @@ func TestRegistry_CredentialRoutingAndInspectionWritesAreNotTools(t *testing.T) 
 		"aiModelCreate", "aiModelUpdate",
 		// It sets a new service's access mode as it creates it.
 		"serviceCreate",
+		// Native tcp: an agent must not let an address (its own) reach a
+		// port; the tcp modes go through serviceAccessModeUpdate.
+		"serviceIpGrantsList", "serviceIpGrantCreate", "serviceIpGrantDelete",
 	} {
 		if _, ok := r.Lookup(id); ok {
 			t.Errorf("%s is a management tool", id)
@@ -326,6 +329,7 @@ var mcpExposedWrites = map[string]bool{
 	"serviceDelete":                 true,
 	"serviceDomainDelete":           true,
 	"serviceIpGeoUpdate":            true,
+	"serviceMaxConnectionsUpdate":   true, // a cap of 1 to 256 visitors; widens nobody's access
 	"serviceSlugUpdate":             true,
 	"sessionDelete":                 true,
 	"sessionsRevokeAll":             true,

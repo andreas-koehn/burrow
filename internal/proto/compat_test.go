@@ -60,6 +60,9 @@ func TestWithoutTheAdditionsTheBytesAreUnchanged(t *testing.T) {
 		{"auth request, no capabilities", AuthRequest{ProtocolVersion: 1, Capabilities: []string{}},
 			`{"protocol_version":1,"token":"","client_version":"","os":"","arch":""}`},
 		{"auth response", AuthResponse{OK: true, SessionID: "s1"}, `{"ok":true,"session_id":"s1"}`},
+		{"auth response, no capabilities", AuthResponse{OK: true, SessionID: "s1", Capabilities: []string{}}, `{"ok":true,"session_id":"s1"}`},
+		{"tcp register without access", TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "127.0.0.1:3389"},
+			`{"name":"rdp","type":"tcp","remote_port":0,"local_addr":"127.0.0.1:3389"}`},
 		{"auth refusal", AuthResponse{Error: "invalid token"}, `{"ok":false,"error":"invalid token"}`},
 		{"register", TunnelRegister{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000"},
 			`{"name":"web","type":"http","remote_port":0,"local_addr":"127.0.0.1:3000"}`},
@@ -100,7 +103,7 @@ func TestOlderPeerReadsNewMessages(t *testing.T) {
 		t.Errorf("auth request: %+v", ar)
 	}
 	var resp oldAuthResponse
-	decode(AuthResponse{OK: true, SessionID: "s", RelayVersion: "0.7.0"}, &resp)
+	decode(AuthResponse{OK: true, SessionID: "s", RelayVersion: "0.7.0", Capabilities: []string{CapTCPAccess, CapForward}}, &resp)
 	if resp != (oldAuthResponse{OK: true, SessionID: "s"}) {
 		t.Errorf("auth response: %+v", resp)
 	}
@@ -119,6 +122,16 @@ func TestOlderPeerReadsNewMessages(t *testing.T) {
 		DashboardURL: "d", Ignored: []string{"access", "slug"}}, &rr)
 	if rr != (oldTunnelRegisterResponse{OK: true, TunnelID: "t", URL: "u"}) {
 		t.Errorf("register response: %+v", rr)
+	}
+	var tcp oldTunnelRegisterResponse
+	decode(TunnelRegisterResponse{OK: true, TunnelID: "t", AccessMode: "private", Created: true}, &tcp)
+	if tcp != (oldTunnelRegisterResponse{OK: true, TunnelID: "t"}) {
+		t.Errorf("private tcp register response: %+v", tcp)
+	}
+	var tcpReg oldTunnelRegister
+	decode(TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "127.0.0.1:3389", Access: "private"}, &tcpReg)
+	if tcpReg != (oldTunnelRegister{"rdp", "tcp", 0, "127.0.0.1:3389"}) {
+		t.Errorf("tcp register: %+v", tcpReg)
 	}
 	var e oldError
 	decode(Error{Message: "boom", Code: CodeInternal}, &e)
@@ -141,7 +154,30 @@ func TestNewPeerReadsOlderMessages(t *testing.T) {
 	if err := DecodePayload(Envelope{Payload: json.RawMessage(`{"ok":false,"error":"invalid token"}`)}, &ar); err != nil {
 		t.Fatal(err)
 	}
-	if ar != (AuthResponse{Error: "invalid token"}) {
+	if !reflect.DeepEqual(ar, AuthResponse{Error: "invalid token"}) {
 		t.Errorf("auth response: %+v", ar)
+	}
+	// An older relay announces no capabilities: the client sees none.
+	var ok AuthResponse
+	if err := DecodePayload(Envelope{Payload: json.RawMessage(`{"ok":true,"session_id":"s1","relay_version":"0.12.0"}`)}, &ok); err != nil {
+		t.Fatal(err)
+	}
+	if ok.Capabilities != nil {
+		t.Errorf("capabilities of an older relay: %v", ok.Capabilities)
+	}
+}
+
+// The relay capabilities travel as they are named; they are part of the wire
+// contract.
+func TestRelayCapabilityNames(t *testing.T) {
+	if CapTCPAccess != "tcp_access" || CapForward != "forward" || CodeRateLimited != "rate_limited" {
+		t.Fatalf("names changed: %q %q %q", CapTCPAccess, CapForward, CodeRateLimited)
+	}
+	b, err := json.Marshal(AuthResponse{OK: true, SessionID: "s", Capabilities: []string{CapTCPAccess}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"ok":true,"session_id":"s","capabilities":["tcp_access"]}` {
+		t.Errorf("got %s", b)
 	}
 }

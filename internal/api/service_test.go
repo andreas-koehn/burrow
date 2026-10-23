@@ -68,6 +68,10 @@ type fakeServiceStore struct {
 	suggestSlug        string
 	suggestErr         error
 
+	// SetServiceMaxConnections
+	maxConnsErr  error
+	lastMaxConns int
+
 	// last args captured for inspection
 	lastMode   string
 	lastHeader string
@@ -117,6 +121,10 @@ type gatewayOnlyCall struct {
 func (f *fakeServiceStore) SetServiceGatewayOnly(_ context.Context, callerID, role, serviceID string, on bool) error {
 	f.gatewayOnlyCalls = append(f.gatewayOnlyCalls, gatewayOnlyCall{callerID, role, serviceID, on})
 	return f.gatewayOnlyErr
+}
+func (f *fakeServiceStore) SetServiceMaxConnections(_ context.Context, _, _, _ string, n int) (int, error) {
+	f.lastMaxConns = n
+	return 0, f.maxConnsErr
 }
 func (f *fakeServiceStore) DeleteService(_ context.Context, _, _, _ string) (string, error) {
 	return "", nil

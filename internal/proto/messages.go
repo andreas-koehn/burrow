@@ -30,6 +30,18 @@ const (
 // that reads request_summary messages.
 const CapRequestSummaries = "request_summaries"
 
+// Capabilities a relay announces in AuthResponse.Capabilities. A client that
+// needs one checks for it before it relies on it: an older relay announces
+// none.
+const (
+	// CapTCPAccess: the relay applies TunnelRegister.Access to a tcp tunnel
+	// (the modes open, ip and private) and reports the mode it applied in
+	// TunnelRegisterResponse.AccessMode.
+	CapTCPAccess = "tcp_access"
+	// CapForward: the relay accepts forward streams to private tcp services.
+	CapForward = "forward"
+)
+
 // Envelope wraps every control message with its type and an optional correlation ID.
 type Envelope struct {
 	Type    MessageType     `json:"type"`
@@ -61,6 +73,10 @@ type AuthResponse struct {
 	// Code names the reason of a refusal (see the Code constants). Optional:
 	// an older relay sends Error alone.
 	Code string `json:"code,omitempty"`
+	// Capabilities names what this relay does beyond the base protocol (the
+	// Cap… constants for a relay), on success. Optional: an older relay
+	// sends none, and a client must not assume any.
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // TunnelRegister asks the server to allocate a public port for a tunnel.
@@ -69,9 +85,11 @@ type TunnelRegister struct {
 	Type       string `json:"type"`        // "tcp" | "http"
 	RemotePort int    `json:"remote_port"` // 0 = auto-assign
 	LocalAddr  string `json:"local_addr"`  // "127.0.0.1:3000"
-	// Slug and Access (a relay access mode: open, api_key, burrow_login) are
-	// wishes for an http service that does not exist yet. The relay applies
-	// them only when it creates the service. Optional.
+	// Slug and Access are wishes for a service that does not exist yet. The
+	// relay applies them only when it creates the service. Access is a relay
+	// access mode: open, api_key or burrow_login for http; open, ip or
+	// private for tcp (a relay that announces CapTCPAccess; an older one
+	// ignores it for tcp and reports it in Ignored). Optional.
 	Slug   string `json:"slug,omitempty"`
 	Access string `json:"access,omitempty"`
 }
@@ -80,13 +98,15 @@ type TunnelRegister struct {
 type TunnelRegisterResponse struct {
 	OK         bool   `json:"ok"`
 	TunnelID   string `json:"tunnel_id,omitempty"`
-	RemotePort int    `json:"remote_port,omitempty"` // resolved port; 0 for http tunnels
+	RemotePort int    `json:"remote_port,omitempty"` // resolved port; 0 for http tunnels and tcp tunnels in mode private
 	URL        string `json:"url,omitempty"`         // e.g. "https://burrow.example.com/svc/k7p2qx/" (http only)
 	Hostname   string `json:"hostname,omitempty"`    // no longer set by the server; kept so older peers still decode
 	Error      string `json:"error,omitempty"`
 	// The fields below are optional; an older relay sends none of them.
 	//
-	// AccessMode is the access mode of the http service as it is now.
+	// AccessMode is the access mode of the service as it is now: of an http
+	// service, and of a tcp service on a relay that announces CapTCPAccess.
+	// A tcp tunnel in mode private has no public port: RemotePort is 0.
 	AccessMode string `json:"access_mode,omitempty"`
 	// Created says that this registration created the service.
 	Created bool `json:"created,omitempty"`
@@ -97,7 +117,8 @@ type TunnelRegisterResponse struct {
 	GatewayOnly bool `json:"gateway_only,omitempty"`
 	// Ignored lists, sorted, which of "access" and "slug" the client asked
 	// for and the relay did not apply: the service existed with other values,
-	// or it is a tcp service, which has neither.
+	// or it is a tcp service, which has no slug (and, on an older relay, no
+	// access mode).
 	Ignored []string `json:"ignored,omitempty"`
 	// Code names the reason of a refusal (see the Code constants).
 	Code string `json:"code,omitempty"`
@@ -168,6 +189,9 @@ const (
 	// last session of the same client that the relay has not seen end yet,
 	// so a client tries again.
 	CodeServiceBusy = "service_busy"
+	// CodeRateLimited: too many attempts from this address or session; the
+	// client waits and tries again.
+	CodeRateLimited = "rate_limited"
 )
 
 // StreamHeader is the first frame the client writes on a new data stream,

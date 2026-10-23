@@ -66,7 +66,10 @@ type ServiceView struct {
 	AccessMode   string // "open" | "api_key" | "burrow_login"
 	APIKeyHeader string // effective header name (default "Authorization")
 	GatewayOnly  bool   // reachable through the AI gateway only
-	CreatedAt    time.Time
+	// MaxConnections is a tcp service's cap on connected visitors; 0 is the
+	// relay's default.
+	MaxConnections int
+	CreatedAt      time.Time
 	// LastSeen is when a client last served the service, nil when none ever
 	// did; LastClient is the name of the client token of that client.
 	LastSeen   *time.Time
@@ -177,11 +180,13 @@ func (s *Store) GetService(ctx context.Context, callerID, callerRole, serviceID 
 
 // SetServiceAccessMode validates and applies a new access mode to the given
 // service. Gate: configure:own (owner) or configure:any (admin).
-// Validation order: gate → mode enum → http-only constraint → mtls_ca_pem.
+// Validation order: gate → mode enum → per-type constraint → mtls_ca_pem.
 //   - ErrForbidden if not authorized
 //   - db.ErrNotFound if the service does not exist
-//   - ErrInvalidAccessMode if mode ∉ {open,api_key,burrow_login,mtls}
-//   - ErrServiceNotHTTP if mode ≠ "open" and service.Type ≠ "http"
+//   - ErrInvalidAccessMode if mode ∉ {open,api_key,burrow_login,mtls,ip,private}
+//   - ErrTCPAccessMode if the service is tcp and mode ∉ {open,ip,private}
+//   - ErrHTTPAccessMode if the service is http and mode ∈ {ip,private}
+//   - ErrServiceNotHTTP if mode ≠ "open" and the service is of another type
 //   - ErrMTLSCARequired if mode == "mtls" and caPEM is empty
 //   - ErrInvalidMTLSCAPEM if mode == "mtls" and caPEM has no valid block
 //
@@ -207,11 +212,17 @@ func (s *Store) SetServiceAccessMode(ctx context.Context, callerID, callerRole, 
 		return ErrDirectService
 	}
 	switch mode {
-	case "open", "api_key", "burrow_login", "mtls":
+	case "open", "api_key", "burrow_login", "mtls", "ip", "private":
 	default:
 		return ErrInvalidAccessMode
 	}
-	if mode != "open" && svc.Type != "http" {
+	tcpMode := mode == "open" || mode == "ip" || mode == "private"
+	switch {
+	case svc.Type == "tcp" && !tcpMode:
+		return ErrTCPAccessMode
+	case svc.Type == "http" && (mode == "ip" || mode == "private"):
+		return ErrHTTPAccessMode
+	case svc.Type != "http" && svc.Type != "tcp" && mode != "open":
 		return ErrServiceNotHTTP
 	}
 	if mode == "mtls" {
@@ -235,7 +246,11 @@ func (s *Store) SetServiceAccessMode(ctx context.Context, callerID, callerRole, 
 		}
 	}
 	ctx = withAuditDeadline(ctx) // one deadline for the rows of this mutation
-	s.emitAudit(ctx, audit.ActionServiceAccessModeUpdate, func(e *audit.Event) {
+	action := audit.ActionServiceAccessModeUpdate
+	if svc.Type == "tcp" {
+		action = audit.ActionServiceTCPAccessUpdate
+	}
+	s.emitAudit(ctx, action, func(e *audit.Event) {
 		e.SubjectID = serviceID
 		e.SubjectLabel = svc.Name
 		e.Payload = audit.MustJSON(map[string]string{"from": oldMode, "to": mode})
@@ -248,6 +263,38 @@ func (s *Store) SetServiceAccessMode(ctx context.Context, callerID, callerRole, 
 	}
 	return nil
 }
+
+// SetServiceMaxConnections sets the cap on connected visitors of a tcp
+// service: 1 to server.MaxTCPMaxConnections, or 0 for the relay's default.
+// Same permission rule as SetServiceAccessMode. ErrServiceNotTCP for any
+// other type, ErrInvalidMaxConnections for a number out of range. Returns the
+// previous cap.
+func (s *Store) SetServiceMaxConnections(ctx context.Context, callerID, callerRole, serviceID string, n int) (int, error) {
+	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
+	if err != nil {
+		return 0, err
+	}
+	if svc.Type != "tcp" {
+		return 0, ErrServiceNotTCP
+	}
+	if n < 0 || n > MaxTCPMaxConnections {
+		return 0, ErrInvalidMaxConnections
+	}
+	if err := s.q.SetServiceMaxConnections(ctx, serviceID, n); err != nil {
+		return 0, err
+	}
+	s.emitAudit(withAuditDeadline(ctx), audit.ActionServiceMaxConnectionsUpdate, func(e *audit.Event) {
+		e.SubjectID = serviceID
+		e.SubjectLabel = svc.Name
+		e.Payload = audit.MustJSON(map[string]int{"from": svc.MaxConnections, "to": n})
+	})
+	return svc.MaxConnections, nil
+}
+
+// MaxTCPMaxConnections is the most visitors a tcp service may let connect at
+// once; it is server.MaxTCPMaxConnections (the store does not import the
+// relay).
+const MaxTCPMaxConnections = 256
 
 // SetServiceSlug changes the URL segment of an http service. Same permission
 // rule as SetServiceAccessMode (owner or a role that may configure any
@@ -553,6 +600,8 @@ func serviceToView(s db.Service) ServiceView {
 		CreatedAt:    s.CreatedAt,
 		LastSeen:     s.LastSeen,
 		LastClient:   s.LastClient,
+
+		MaxConnections: s.MaxConnections,
 	}
 }
 

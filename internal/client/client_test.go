@@ -218,13 +218,18 @@ func TestConcurrentVisitors(t *testing.T) {
 		t.Fatal("register failed")
 	}
 	port := itoa(cl.lastRemotePortForTest())
+	// Sixteen at once: the relay lets a tcp tunnel have at most 16 visitors
+	// waiting for the client and a source at most 4 connections (native
+	// tcp, D11), so each comes from an address of its own (127.0.0.0/8 is
+	// all loopback on Linux).
 	var wg sync.WaitGroup
-	errc := make(chan error, 50)
-	for i := 0; i < 50; i++ {
+	errc := make(chan error, 16)
+	for i := 0; i < 16; i++ {
 		wg.Add(1)
-		go func() {
+		go func(i int) {
 			defer wg.Done()
-			vc, e := net.DialTimeout("tcp", "127.0.0.1:"+port, 3*time.Second)
+			d := net.Dialer{Timeout: 3 * time.Second, LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, byte(2+i))}}
+			vc, e := d.Dial("tcp", "127.0.0.1:"+port)
 			if e != nil {
 				errc <- e
 				return
@@ -236,7 +241,7 @@ func TestConcurrentVisitors(t *testing.T) {
 			if _, e := io.ReadFull(vc, b); e != nil || string(b) != "abcd" {
 				errc <- fmt.Errorf("got %q err=%v", b, e)
 			}
-		}()
+		}(i)
 	}
 	wg.Wait()
 	close(errc)

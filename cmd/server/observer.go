@@ -330,8 +330,10 @@ func (o *observer) ObserveTraffic(e observe.Traffic) {
 	switch {
 	case e.Outcome == observe.OutcomeRejected:
 		// A refusal is a 401 or a 403: the redirect of a first visit to the
-		// login page and the 500 of a misconfigured service are not.
-		if e.Status != http.StatusUnauthorized && e.Status != http.StatusForbidden {
+		// login page and the 500 of a misconfigured service are not. A tcp
+		// visitor the relay closed before the home client was told (its ip
+		// policy, a limit) is one too; it has no status.
+		if e.Kind != observe.TrafficTCP && e.Status != http.StatusUnauthorized && e.Status != http.StatusForbidden {
 			break
 		}
 		// One per service and reason per minute, however many are refused.

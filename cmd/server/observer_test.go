@@ -751,3 +751,25 @@ func TestObserver_AnswerFlagAndJudgeBlockBothAnnounced(t *testing.T) {
 		}
 	}
 }
+
+// A tcp visitor the relay refused (its ip policy, a limit) is an
+// access.denied event too, within the same budget: one per service and
+// reason per minute, with the address the relay saw. It is counted as a
+// rejected tcp connection of its service.
+func TestObserver_TCPRefusalsAreAccessDenied(t *testing.T) {
+	o, rec, em, _ := newTestObserver(t)
+	deny := func(reason, ip string) observe.Traffic {
+		return observe.Traffic{Kind: observe.TrafficTCP, ServiceID: "svc-rdp", TunnelID: "t1", UserID: "u1",
+			Outcome: observe.OutcomeRejected, RejectReason: reason, SourceIP: ip}
+	}
+	for i := 0; i < 20; i++ {
+		o.ObserveTraffic(deny(observe.RejectedIPGeo, "198.51.100.9"))
+	}
+	o.ObserveTraffic(deny("rate_limited", "198.51.100.9"))
+	got := em.named("access.denied")
+	if len(got) != 2 || got[0]["ServiceID"] != "svc-rdp" || got[0]["Reason"] != observe.RejectedIPGeo || got[0]["IP"] != "198.51.100.9" ||
+		got[1]["Reason"] != "rate_limited" {
+		t.Fatalf("access.denied events: %v", got)
+	}
+	wantLines(t, expo(t, rec), `burrow_connections_total{service="svc-rdp",kind="tcp_proxy",status="rejected"} 21`)
+}

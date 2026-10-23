@@ -43,7 +43,7 @@ var ErrInvalidStatus = errors.New("store: status must be 'active' or 'suspended'
 
 // ErrInvalidAccessMode is returned by SetTunnelAccessMode for a value other
 // than 'open', 'api_key', 'burrow_login', or 'mtls'.
-var ErrInvalidAccessMode = errors.New("store: access_mode must be 'open', 'api_key', 'burrow_login', or 'mtls'")
+var ErrInvalidAccessMode = errors.New("store: access_mode must be 'open', 'api_key', 'burrow_login', 'mtls', 'ip', or 'private'")
 
 // ErrMTLSCARequired is returned by SetServiceAccessMode when the caller asks
 // for access_mode='mtls' but does not supply a non-empty CA PEM. Maps to 400.
@@ -63,6 +63,22 @@ var ErrForbidden = errors.New("store: forbidden")
 // ErrServiceNotHTTP is returned by SetServiceAccessMode when mode is not
 // "open" and the service type is not "http" (maps to HTTP 409).
 var ErrServiceNotHTTP = errors.New("store: api_key and burrow_login require an http service")
+
+// ErrTCPAccessMode is returned by SetServiceAccessMode for a tcp service and
+// a mode that is not one of open, ip and private (maps to HTTP 409).
+var ErrTCPAccessMode = errors.New("store: a tcp service takes the access modes open, ip and private")
+
+// ErrHTTPAccessMode is returned by SetServiceAccessMode for an http service
+// and a tcp mode, ip or private (maps to HTTP 409).
+var ErrHTTPAccessMode = errors.New("store: ip and private are access modes of a tcp service")
+
+// ErrServiceNotTCP is returned for a setting of tcp services only (maps to
+// HTTP 409).
+var ErrServiceNotTCP = errors.New("store: the setting applies to tcp services only")
+
+// ErrInvalidMaxConnections is returned by SetServiceMaxConnections for a
+// number out of range (maps to HTTP 400).
+var ErrInvalidMaxConnections = errors.New("store: max_connections must be 0 (the default) or 1 to 256")
 
 // ErrNameRequired is returned by CreateAPIKey when the name argument is empty
 // (maps to HTTP 400 in the API layer).

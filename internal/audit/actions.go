@@ -29,28 +29,32 @@ const (
 	ActionSessionDelete       = "session.delete"
 	ActionSessionRevokeOthers = "session.revoke_others"
 
-	ActionServiceCreate             = "service.create"
-	ActionServiceDelete             = "service.delete"
-	ActionServiceAccessModeUpdate   = "service.access_mode.update"
-	ActionServiceSlugChange         = "service.slug_changed"
-	ActionServiceGatewayOnlyUpdate  = "service.gateway_only.update"
-	ActionServiceTCPPortReclaimed   = "service.tcp_port.reclaimed" // a tcp registration took an offline service's automatic port
-	ActionServiceAccessPolicyUpdate = "service.access_policy.update"
-	ActionServiceAPIKeyCreate       = "service.api_key.create"
-	ActionServiceAPIKeyRevoke       = "service.api_key.revoke"
-	ActionServiceAIConfigUpdate     = "service.ai_config.update"
-	ActionAIProviderCreate          = "ai_provider.create"
-	ActionAIProviderUpdate          = "ai_provider.update"
-	ActionAIProviderDelete          = "ai_provider.delete"
-	ActionAIProviderModelsSync      = "ai_provider.models_sync"
-	ActionAIProviderModelAdd        = "ai_provider.model_add"
-	ActionAIProviderModelRemove     = "ai_provider.model_remove"
-	ActionAIModelCreate             = "ai_model.create"
-	ActionAIModelUpdate             = "ai_model.update"
-	ActionAIModelDelete             = "ai_model.delete"
-	ActionAIGatewayKeyCreate        = "ai_gateway_key.create"
-	ActionAIGatewayKeyRevoke        = "ai_gateway_key.revoke"
-	ActionAIGatewayKeyUpdate        = "ai_gateway_key.update"
+	ActionServiceCreate               = "service.create"
+	ActionServiceDelete               = "service.delete"
+	ActionServiceAccessModeUpdate     = "service.access_mode.update"
+	ActionServiceSlugChange           = "service.slug_changed"
+	ActionServiceGatewayOnlyUpdate    = "service.gateway_only.update"
+	ActionServiceTCPPortReclaimed     = "service.tcp_port.reclaimed" // a tcp registration took an offline service's automatic port
+	ActionServiceTCPAccessUpdate      = "service.tcp_access.update"  // the access mode of a tcp service: open, ip, private
+	ActionServiceIPGrantAdd           = "service.ip_grant.add"       // a just-in-time grant of a tcp service in mode ip
+	ActionServiceIPGrantRevoke        = "service.ip_grant.revoke"
+	ActionServiceMaxConnectionsUpdate = "service.max_connections.update" // the cap on connected visitors of a tcp service
+	ActionServiceAccessPolicyUpdate   = "service.access_policy.update"
+	ActionServiceAPIKeyCreate         = "service.api_key.create"
+	ActionServiceAPIKeyRevoke         = "service.api_key.revoke"
+	ActionServiceAIConfigUpdate       = "service.ai_config.update"
+	ActionAIProviderCreate            = "ai_provider.create"
+	ActionAIProviderUpdate            = "ai_provider.update"
+	ActionAIProviderDelete            = "ai_provider.delete"
+	ActionAIProviderModelsSync        = "ai_provider.models_sync"
+	ActionAIProviderModelAdd          = "ai_provider.model_add"
+	ActionAIProviderModelRemove       = "ai_provider.model_remove"
+	ActionAIModelCreate               = "ai_model.create"
+	ActionAIModelUpdate               = "ai_model.update"
+	ActionAIModelDelete               = "ai_model.delete"
+	ActionAIGatewayKeyCreate          = "ai_gateway_key.create"
+	ActionAIGatewayKeyRevoke          = "ai_gateway_key.revoke"
+	ActionAIGatewayKeyUpdate          = "ai_gateway_key.update"
 
 	ActionCacheClear          = "cache.clear"
 	ActionCacheSettingsUpdate = "cache.settings.update"
@@ -196,7 +200,8 @@ var AllActions = []string{
 	ActionSessionCreate, ActionSessionDelete, ActionSessionRevokeOthers,
 	ActionServiceCreate, ActionServiceDelete,
 	ActionServiceAccessModeUpdate, ActionServiceSlugChange, ActionServiceGatewayOnlyUpdate, ActionServiceAccessPolicyUpdate,
-	ActionServiceTCPPortReclaimed,
+	ActionServiceTCPPortReclaimed, ActionServiceTCPAccessUpdate, ActionServiceIPGrantAdd, ActionServiceIPGrantRevoke,
+	ActionServiceMaxConnectionsUpdate,
 	ActionServiceAPIKeyCreate, ActionServiceAPIKeyRevoke,
 	ActionServiceAIConfigUpdate,
 	ActionAIProviderCreate, ActionAIProviderUpdate, ActionAIProviderDelete,

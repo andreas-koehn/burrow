@@ -46,6 +46,9 @@ type serviceResp struct {
 	// ProviderSlug is the slug of the tunnel provider the service backs, ""
 	// when it backs none.
 	ProviderSlug string `json:"provider_slug"`
+	// MaxConnections is a tcp service's cap on connected visitors; 0 is the
+	// relay's default (32). Always 0 for other types.
+	MaxConnections int `json:"max_connections"`
 }
 
 // What a service or a tunnel provider reports of the client behind it: the
@@ -89,6 +92,8 @@ func (d Deps) serviceView(sv store.ServiceView, providerSlug string) serviceResp
 		LastSeen:     sv.LastSeen,
 		LastClient:   sv.LastClient,
 		ProviderSlug: providerSlug,
+
+		MaxConnections: sv.MaxConnections,
 	}
 	if snap.Connected {
 		v.ClientSessionID = snap.SessionID
@@ -208,7 +213,19 @@ func mapServiceErr(w http.ResponseWriter, err error, notFoundMsg string) bool {
 		writeErr(w, http.StatusNotFound, notFoundMsg)
 		return true
 	case errors.Is(err, store.ErrInvalidAccessMode):
-		writeErr(w, http.StatusBadRequest, "access_mode must be 'open', 'api_key', 'burrow_login', or 'mtls'")
+		writeErr(w, http.StatusBadRequest, "access_mode must be 'open', 'api_key', 'burrow_login', or 'mtls' (http), or 'open', 'ip', or 'private' (tcp)")
+		return true
+	case errors.Is(err, store.ErrTCPAccessMode):
+		writeErr(w, http.StatusConflict, "a tcp service takes the access modes open, ip and private")
+		return true
+	case errors.Is(err, store.ErrHTTPAccessMode):
+		writeErr(w, http.StatusConflict, "ip and private are access modes of a tcp service")
+		return true
+	case errors.Is(err, store.ErrServiceNotTCP):
+		writeErr(w, http.StatusConflict, "this setting applies to tcp services only")
+		return true
+	case errors.Is(err, store.ErrInvalidMaxConnections):
+		writeErr(w, http.StatusBadRequest, "max_connections must be 0 (the default, 32) or 1 to 256")
 		return true
 	case errors.Is(err, store.ErrServiceNotHTTP):
 		writeErr(w, http.StatusConflict, "api_key, burrow_login, and mtls require an http service")
@@ -454,12 +471,16 @@ func (d Deps) SetServiceAccessMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := userID(r.Context())
+	// What the service is now: a tcp service whose mode changes has its
+	// live tunnel closed. A failed read leaves it to the store to answer.
+	before, _ := d.Services.GetService(r.Context(), uid, role, serviceID)
 	if err := d.Services.SetServiceAccessMode(r.Context(), uid, role, serviceID, in.AccessMode, header, caPEM); err != nil {
 		if !mapServiceErr(w, err, "service not found") {
 			writeErr(w, http.StatusInternalServerError, "internal error")
 		}
 		return
 	}
+	d.afterAccessModeChange(r.Context(), before, in.AccessMode)
 	w.WriteHeader(http.StatusNoContent)
 }
 

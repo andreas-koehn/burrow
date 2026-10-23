@@ -34,17 +34,26 @@ type tcpResolver struct {
 	names    []string
 	listErr  error
 	resErr   error
+	// modes is the access mode of each service id that has another than
+	// open; maxConns the cap of each. onResolve runs inside ResolveTCP.
+	modes     map[string]string
+	maxConns  map[string]int
+	onResolve func()
 }
 
 func newTCPResolver() *tcpResolver {
-	return &tcpResolver{ids: map[string]string{}, holds: map[int]TCPPortHold{}, seen: map[string]time.Time{}, httpName: map[string]bool{}}
+	return &tcpResolver{ids: map[string]string{}, holds: map[int]TCPPortHold{}, seen: map[string]time.Time{}, httpName: map[string]bool{},
+		modes: map[string]string{}, maxConns: map[string]int{}}
 }
 
 func (r *tcpResolver) Resolve(context.Context, string, string, string) (string, string, error) {
 	return "", "", errors.New("Resolve must not be used for tcp")
 }
 
-func (r *tcpResolver) ResolveTCP(_ context.Context, userID, name string, _ ResolveOptions) (Resolved, error) {
+func (r *tcpResolver) ResolveTCP(_ context.Context, userID, name string, o ResolveOptions) (Resolved, error) {
+	if r.onResolve != nil {
+		r.onResolve()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.names = append(r.names, name)
@@ -58,9 +67,16 @@ func (r *tcpResolver) ResolveTCP(_ context.Context, userID, name string, _ Resol
 	if !ok {
 		id = "svc-" + name
 		r.ids[name] = id
+		if o.Access != "" && o.Access != "open" {
+			r.modes[id] = o.Access
+		}
 	}
 	_, served := r.seen[id]
-	res := Resolved{ServiceID: id, AccessMode: "open", Created: !served, TCPPortLimit: r.limit}
+	mode := "open"
+	if m, ok := r.modes[id]; ok {
+		mode = m
+	}
+	res := Resolved{ServiceID: id, AccessMode: mode, Created: !served, TCPPortLimit: r.limit, MaxConnections: r.maxConns[id]}
 	for p, h := range r.holds {
 		if h.ServiceID == id {
 			res.TCPPort, res.TCPPortPinned = p, h.Pinned
@@ -125,6 +141,19 @@ func (r *tcpResolver) hold(id string) (port int, pinned bool) {
 }
 
 func (r *tcpResolver) portOf(id string) int { p, _ := r.hold(id); return p }
+
+// setMode gives the service of name (created when it is not there) a mode.
+func (r *tcpResolver) setMode(name, mode string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id, ok := r.ids[name]
+	if !ok {
+		id = "svc-" + name
+		r.ids[name] = id
+	}
+	r.modes[id] = mode
+	return id
+}
 
 func (r *tcpResolver) resolved() []string {
 	r.mu.Lock()
@@ -204,8 +233,8 @@ func TestRegisterTCP_ServiceAndStickyPort(t *testing.T) {
 	if !rr.OK || rr.RemotePort != 19401 {
 		t.Fatalf("rdp: %+v", rr)
 	}
-	// The answer is the one tcp has always had: no access mode yet (P02).
-	if rr.AccessMode != "" || rr.Created || rr.URL != "" {
+	// The answer names the service's mode (P02); a tcp service has no URL.
+	if rr.AccessMode != "open" || !rr.Created || rr.URL != "" || len(rr.Ignored) != 0 {
 		t.Fatalf("answer: %+v", rr)
 	}
 	if p := res.portOf("svc-rdp"); p != 19401 {

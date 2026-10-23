@@ -628,6 +628,15 @@ func newRouter(d Deps) http.Handler {
 			r.Get("/services/{serviceID}/ip-geo", d.GetServiceIPGeo)
 			r.With(recent).Put("/services/{serviceID}/ip-geo", d.PutServiceIPGeo)
 			r.Get("/geo/status", d.GetGeoStatus)
+			// Just-in-time grants of a tcp service in mode ip: the same
+			// permission and owner check as ip-geo. A new grant widens who
+			// may connect, so it asks for a recent confirmation; a revoke
+			// narrows it and does not.
+			r.Get("/services/{serviceID}/ip-grants", d.ListIPGrants)
+			r.With(recent).Post("/services/{serviceID}/ip-grants", d.PostIPGrant)
+			r.Delete("/services/{serviceID}/ip-grants/{grantID}", d.DeleteIPGrant)
+			// The cap on connected visitors of a tcp service.
+			r.Put("/services/{serviceID}/max-connections", d.PutServiceMaxConnections)
 			// v0.4.0 Task 15: editable custom roles + permission matrix
 			// (spec Part I). The permission catalog is open to who reads or
 			// manages roles and to who manages automation tokens (a token

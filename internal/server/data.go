@@ -244,7 +244,10 @@ func (a *portAllocator) Release(port int) {
 	a.mu.Unlock()
 }
 
-// startPublicListener binds tun.RemotePort and bridges each visitor.
+// startPublicListener binds tun.RemotePort and bridges each visitor that
+// admitVisitor lets in. The judgement runs on the accept loop, before any
+// goroutine is started for the visitor and before the home client is told:
+// a refused visitor costs one accept and one close.
 func (s *Server) startPublicListener(tun *Tunnel) error {
 	addr := fmt.Sprintf("%s:%d", s.opts.PublicBind, tun.RemotePort)
 	l, err := net.Listen("tcp", addr)
@@ -275,21 +278,61 @@ func (s *Server) startPublicListener(tun *Tunnel) error {
 				continue
 			}
 			delay = 0 // reset on success
-			go s.bridgeVisitor(tun, visitor)
+			source, ok := s.admitVisitor(tun, visitor)
+			if !ok {
+				continue
+			}
+			go s.bridgeVisitor(tun, visitor, source)
 		}
 	}()
 	return nil
 }
 
-func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn) {
+// admitVisitor decides whether a visitor of a tcp tunnel may reach the home
+// client: in mode ip its address must be allowed by the tunnel's policy, and
+// in every mode it must fit the tunnel's limits. A refused visitor is closed
+// at once, without a byte, and counted (see refuseVisitor). On success it
+// returns the source the limits count it by; the caller must end it with
+// tun.limits.done.
+//
+// The address is the connection's own (RemoteAddr): behind Docker's
+// userland proxy it is the bridge gateway, and that is what is checked and
+// recorded.
+func (s *Server) admitVisitor(tun *Tunnel, visitor net.Conn) (string, bool) {
+	ip := visitorAddr(visitor)
+	if !ip.IsValid() {
+		s.refuseVisitor(tun, visitor, "", TCPRefusedNoAddress)
+		return "", false
+	}
+	if tun.accessMode == TCPAccessIP && !tun.policy.Load().allows(ip, time.Now()) {
+		s.refuseVisitor(tun, visitor, ip.String(), observe.RejectedIPGeo)
+		return "", false
+	}
+	source := sourceKey(ip)
+	if tun.limits != nil {
+		if reason := tun.limits.admit(source); reason != "" {
+			s.refuseVisitor(tun, visitor, ip.String(), reason)
+			return "", false
+		}
+	}
+	return source, true
+}
+
+func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn, source string) {
 	defer visitor.Close()
+	if tun.limits != nil {
+		defer tun.limits.done(source)
+	}
 	started := time.Now()
 	streamID := uuid.NewString()
-	stream, err := tun.sess.Pending().Await(streamID, 10*time.Second, func() error {
+	stream, err := tun.sess.Pending().Await(streamID, tcpPairTimeout, func() error {
 		return tun.sess.SendControl(proto.MsgNewConnection, proto.NewConnection{
 			TunnelID: tun.ID, StreamID: streamID, SourceIP: visitor.RemoteAddr().String(),
 		})
 	})
+	if tun.limits != nil {
+		tun.limits.paired()
+	}
 	if err != nil {
 		s.log.Warn("client did not open stream", "tunnel_id", tun.ID, "err", err)
 		s.tcpTraffic(tun, visitor, started, 0, 0, observe.OutcomeError, ConnLogReasonNoStream)

@@ -19,6 +19,7 @@ import (
 	"github.com/hashicorp/yamux"
 
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/proto"
 )
 
 // TokenAuthenticator validates a client's plaintext token, returning its user id.
@@ -59,6 +60,9 @@ type Resolved struct {
 	// TCPPortLimit is how many ports the owner may hold; 0 is no limit (an
 	// administrator, or a relay without one).
 	TCPPortLimit int
+	// MaxConnections is a tcp service's cap on connected visitors; 0 is the
+	// relay's default (DefaultTCPMaxConnections).
+	MaxConnections int
 }
 
 // TCPPortHold is a service's hold on a public port.
@@ -92,9 +96,11 @@ type OptionsResolver interface {
 // service, as before.
 type TCPServiceResolver interface {
 	// ResolveTCP returns the tcp service of the name, creating it when there
-	// is none. A name that belongs to a service of another type is a
-	// *RefusalError with proto.CodeNameInUse. Resolved.TCPPort is the port the
-	// service holds.
+	// is none, in mode o.Access (open when empty). A name that belongs to a
+	// service of another type is a *RefusalError with proto.CodeNameInUse; an
+	// access that is no tcp mode one with proto.CodeAccessInvalid. An
+	// existing service keeps its mode: Resolved.AccessMode is the mode it
+	// has. Resolved.TCPPort is the port the service holds.
 	ResolveTCP(ctx context.Context, userID, name string, o ResolveOptions) (Resolved, error)
 	// TCPPortReservations maps every port a service holds to the hold.
 	TCPPortReservations(ctx context.Context) (map[int]TCPPortHold, error)
@@ -270,6 +276,9 @@ type Options struct {
 	// (unregistered, or still open when the session ends). nil: nothing is
 	// stamped.
 	ServiceRecorder ServiceRecorder
+	// TCPAccess reads the ip policy of a tcp service in mode ip. nil: a tcp
+	// registration in mode ip is refused, since nobody could be let in.
+	TCPAccess TCPAccessLoader
 }
 
 // Server is the burrowd relay control server.
@@ -289,6 +298,14 @@ type Server struct {
 	// unnamedWarned: the warning about a tcp tunnel without a name was
 	// logged.
 	unnamedWarned atomic.Bool
+	// accessEpoch counts the calls of RefreshTCPService. A registration that
+	// read a service's access before a call and added its tunnel after it
+	// reads the access again.
+	accessEpoch atomic.Uint64
+	// refusals samples the refused visitors of tcp tunnels; authFails counts
+	// the failed auth_requests on the control port.
+	refusals  *refusalSampler
+	authFails *authFailures
 }
 
 // New validates options and loads the TLS keypair.
@@ -326,7 +343,9 @@ func New(o Options) (*Server, error) {
 	}
 	s := &Server{
 		opts: o, log: o.Logger, reg: NewRegistry(),
-		tlsC: tlsCfg,
+		tlsC:      tlsCfg,
+		refusals:  &refusalSampler{log: o.Logger},
+		authFails: newAuthFailures(),
 	}
 	s.ports = newPortAllocator(o.PortMin, o.PortMax)
 	return s, nil
@@ -451,11 +470,31 @@ func yamuxConfig() *yamux.Config {
 	return yamux.DefaultConfig()
 }
 
+// Capabilities are what this relay announces to a client it lets in
+// (proto.Cap… for a relay): tcp_access when it keeps tcp services, whose
+// access modes it then applies.
+func (s *Server) Capabilities() []string {
+	var out []string
+	if _, ok := s.opts.Services.(TCPServiceResolver); ok {
+		out = append(out, proto.CapTCPAccess)
+	}
+	return out
+}
+
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	sid := uuid.NewString()
-	cs, err := HandleHandshakeWith(conn, s.opts.Auth, sid, HandshakeOptions{MinClientVersion: s.opts.MinClientVersion})
+	// Failed sign-ins are counted per source; a source that used them up is
+	// answered rate_limited without a token lookup until its bucket refills.
+	source := sourceKey(visitorAddr(conn))
+	cs, err := HandleHandshakeWith(conn, s.opts.Auth, sid, HandshakeOptions{
+		MinClientVersion: s.opts.MinClientVersion, Capabilities: s.Capabilities(),
+		RateLimited: s.authFails.limited(source),
+	})
 	if err != nil {
+		if errors.Is(err, errAuthFailed) {
+			s.authFails.failed(source)
+		}
 		s.log.Warn("handshake failed", "remote_addr", conn.RemoteAddr().String(), "err", err)
 		return
 	}

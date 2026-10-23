@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"github.com/ankoehn/burrow/internal/audit"
 	"math/big"
 	"strings"
 	"testing"
@@ -88,10 +89,69 @@ func TestServiceConfigPermissionGate(t *testing.T) {
 	if err := st.SetServiceAccessMode(ctx, admin.ID, "admin", svc.ID, "open", "", nil); err != nil {
 		t.Fatalf("admin should be allowed: %v", err)
 	}
-	// non-open on a tcp service → ErrServiceNotHTTP
+	// an http mode on a tcp service → ErrTCPAccessMode (native tcp)
 	tcp := mustGetOrCreateService(t, st, owner.ID, "db", "tcp")
-	if err := st.SetServiceAccessMode(ctx, owner.ID, "user", tcp.ID, "api_key", "", nil); !errors.Is(err, ErrServiceNotHTTP) {
-		t.Fatalf("want ErrServiceNotHTTP, got %v", err)
+	if err := st.SetServiceAccessMode(ctx, owner.ID, "user", tcp.ID, "api_key", "", nil); !errors.Is(err, ErrTCPAccessMode) {
+		t.Fatalf("want ErrTCPAccessMode, got %v", err)
+	}
+}
+
+// The access modes are per type: a tcp service takes open, ip and private
+// (audited as service.tcp_access.update), an http service refuses the tcp
+// modes; the cap on visitors is for tcp services and bounded.
+func TestServiceAccessModesPerType(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	owner := mustCreateUser(t, st, "owner@x", "user")
+	other := mustCreateUser(t, st, "other@x", "user")
+	sink := &auditSink{}
+	st.SetAuditLogger(sink)
+	web := mustGetOrCreateService(t, st, owner.ID, "web", "http")
+	rdp := mustGetOrCreateService(t, st, owner.ID, "rdp", "tcp")
+	for _, m := range []string{"ip", "private", "open"} {
+		if err := st.SetServiceAccessMode(ctx, owner.ID, "user", rdp.ID, m, "", nil); err != nil {
+			t.Fatalf("tcp %s: %v", m, err)
+		}
+	}
+	for _, m := range []string{"api_key", "burrow_login", "mtls"} {
+		if err := st.SetServiceAccessMode(ctx, owner.ID, "user", rdp.ID, m, "", []byte("x")); !errors.Is(err, ErrTCPAccessMode) {
+			t.Fatalf("tcp %s: %v", m, err)
+		}
+	}
+	for _, m := range []string{"ip", "private"} {
+		if err := st.SetServiceAccessMode(ctx, owner.ID, "user", web.ID, m, "", nil); !errors.Is(err, ErrHTTPAccessMode) {
+			t.Fatalf("http %s: %v", m, err)
+		}
+	}
+	if len(sink.ev) != 3 || sink.ev[0].Action != audit.ActionServiceTCPAccessUpdate || string(sink.ev[0].Payload) != `{"from":"open","to":"ip"}` {
+		t.Fatalf("audit %+v", sink.ev)
+	}
+	if err := st.SetServiceAccessMode(ctx, owner.ID, "user", web.ID, "api_key", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if sink.ev[3].Action != audit.ActionServiceAccessModeUpdate {
+		t.Fatalf("http audit %+v", sink.ev[3])
+	}
+
+	if _, err := st.SetServiceMaxConnections(ctx, owner.ID, "user", rdp.ID, 8); err != nil {
+		t.Fatal(err)
+	}
+	if prev, err := st.SetServiceMaxConnections(ctx, owner.ID, "user", rdp.ID, 0); err != nil || prev != 8 {
+		t.Fatalf("prev %d, %v", prev, err)
+	}
+	for _, n := range []int{-1, MaxTCPMaxConnections + 1} {
+		if _, err := st.SetServiceMaxConnections(ctx, owner.ID, "user", rdp.ID, n); !errors.Is(err, ErrInvalidMaxConnections) {
+			t.Fatalf("%d: %v", n, err)
+		}
+	}
+	if _, err := st.SetServiceMaxConnections(ctx, owner.ID, "user", web.ID, 3); !errors.Is(err, ErrServiceNotTCP) {
+		t.Fatalf("http: %v", err)
+	}
+	if _, err := st.SetServiceMaxConnections(ctx, other.ID, "user", rdp.ID, 3); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("another user: %v", err)
+	}
+	if last := sink.ev[len(sink.ev)-1]; last.Action != audit.ActionServiceMaxConnectionsUpdate || string(last.Payload) != `{"from":8,"to":0}` {
+		t.Fatalf("cap audit %+v", last)
 	}
 }
 

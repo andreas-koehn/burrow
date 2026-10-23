@@ -633,8 +633,11 @@ func newRootCmd() *cobra.Command {
 				ServiceRecorder: st,
 				// v0.3.0: HTTP tunnel service identity + subdomain resolver;
 				// v0.13.0: tcp tunnels are services too, with sticky ports.
-				Services:   serviceResolverAdapter{db: db.Wrap(database), authDomain: proxyAuthDomain, tcpPortsPerUser: cfg.TCPPortsPerUser},
-				ConnLog:    serverConnLogAdapter{sink: connLogSink},
+				Services: serviceResolverAdapter{db: db.Wrap(database), authDomain: proxyAuthDomain, tcpPortsPerUser: cfg.TCPPortsPerUser},
+				ConnLog:  serverConnLogAdapter{sink: connLogSink},
+				// v0.13.0: the ip policy and cap of a tcp service, read when
+				// its tunnel registers and when the API says it changed.
+				TCPAccess:  tcpAccessAdapter{db: db.Wrap(database)},
 				AuthDomain: proxyAuthDomain,
 				// Tunnel addresses are on the services host when one is set.
 				ServicesDomain: cfg.ServicesDomain,
@@ -1048,6 +1051,10 @@ func newRootCmd() *cobra.Command {
 				// and the semantic cache collection (the rows go with the
 				// service by cascade).
 				ServiceSessions: srv,
+				// A tcp service's mode, ip lists, grants and cap reach its
+				// live tunnel; just-in-time grants are kept in the database.
+				TCPServices: srv,
+				IPGrants:    db.Wrap(database),
 				OnServiceDeleted: func(serviceID string) {
 					v04.InspectorMgr.Remove(serviceID)
 					_ = v05.SemanticCache.ClearService(context.Background(), serviceID)

@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -279,15 +280,25 @@ func (a serviceResolverAdapter) create(ctx context.Context, userID, name, typ st
 }
 
 // ResolveTCP implements server.TCPServiceResolver: the user's tcp service of
-// that name, created in mode open when there is none. A tcp service has no
-// slug, and o is not applied: there is nothing to choose for one yet. As for
+// that name, created in mode o.Access (open when empty) when there is none.
+// An access that is no tcp mode is refused with proto.CodeAccessInvalid; an
+// existing service is returned with the mode it has (the relay refuses a
+// registration that asked for another). A tcp service has no slug. As for
 // http, any client token's owner may create one: a tcp tunnel has always
-// been open to every token.
+// been open to every token, and the modes ip and private only narrow who
+// may reach it, so choosing them needs no permission.
 //
 // Created is true until a client served the service once (last_seen is
 // set when a registration succeeds), so a registration that created the row
 // and then failed for want of a port does not use up the announcement.
-func (a serviceResolverAdapter) ResolveTCP(ctx context.Context, userID, name string, _ server.ResolveOptions) (server.Resolved, error) {
+func (a serviceResolverAdapter) ResolveTCP(ctx context.Context, userID, name string, o server.ResolveOptions) (server.Resolved, error) {
+	mode := o.Access
+	if mode == "" {
+		mode = server.TCPAccessOpen
+	}
+	if !server.ValidTCPAccessMode(mode) {
+		return server.Resolved{}, refuse(proto.CodeAccessInvalid, "access for a tcp service must be one of: open, ip, private")
+	}
 	limit, err := a.tcpPortLimit(ctx, userID)
 	if err != nil {
 		return server.Resolved{}, err
@@ -303,12 +314,13 @@ func (a serviceResolverAdapter) ResolveTCP(ctx context.Context, userID, name str
 			return server.Resolved{
 				ServiceID: svc.ID, AccessMode: svc.AccessMode, Created: svc.LastSeen == nil,
 				TCPPort: svc.TCPPort, TCPPortPinned: svc.TCPPortPinned, TCPPortLimit: limit,
+				MaxConnections: svc.MaxConnections,
 			}, nil
 		}
 		id := uuid.NewString()
-		err = a.db.CreateService(ctx, db.Service{ID: id, UserID: userID, Name: name, Type: "tcp", AccessMode: "open"})
+		err = a.db.CreateService(ctx, db.Service{ID: id, UserID: userID, Name: name, Type: "tcp", AccessMode: mode})
 		if err == nil {
-			return server.Resolved{ServiceID: id, AccessMode: "open", Created: true, TCPPortLimit: limit}, nil
+			return server.Resolved{ServiceID: id, AccessMode: mode, Created: true, TCPPortLimit: limit}, nil
 		}
 		if !errors.Is(err, db.ErrDuplicateService) {
 			return server.Resolved{}, fmt.Errorf("resolve service: create: %w", err)
@@ -693,4 +705,55 @@ func (a liveTunnelLookupAdapter) LookupByTunnelID(tunnelID string) (api.TunnelLo
 	}
 	// Found via Tunnels but no session snapshot yet — still return serviceID.
 	return api.TunnelLocator{ServiceID: serviceID, UserID: ""}, true
+}
+
+// ---------------------------------------------------------------------------
+// tcpAccessAdapter (server.TCPAccessLoader)
+// ---------------------------------------------------------------------------
+
+// tcpAccessDB is what tcpAccessAdapter reads. *db.DB satisfies it.
+type tcpAccessDB interface {
+	GetServiceByID(ctx context.Context, id string) (db.Service, error)
+	GetServiceIPGeo(ctx context.Context, serviceID string) (db.ServiceIPGeoConfig, error)
+	ListIPGrants(ctx context.Context, serviceID string, now time.Time) ([]db.IPGrant, error)
+}
+
+// tcpAccessAdapter reads the access of a tcp service for the relay: its
+// mode and cap from the service row, and for mode ip the CIDR lists of
+// service_ip_geo (the countries and the enabled flag are not used: mode ip
+// is the switch) and the grants that have not expired.
+type tcpAccessAdapter struct {
+	db  tcpAccessDB
+	now func() time.Time
+}
+
+func (a tcpAccessAdapter) TCPAccess(ctx context.Context, serviceID string) (server.TCPAccess, error) {
+	svc, err := a.db.GetServiceByID(ctx, serviceID)
+	if err != nil {
+		return server.TCPAccess{}, fmt.Errorf("tcp access: service: %w", err)
+	}
+	if svc.Type != "tcp" {
+		return server.TCPAccess{}, fmt.Errorf("tcp access: service %s is of type %s", serviceID, svc.Type)
+	}
+	acc := server.TCPAccess{Mode: svc.AccessMode, MaxConnections: svc.MaxConnections}
+	if acc.Mode != server.TCPAccessIP {
+		return acc, nil
+	}
+	ipgeo, err := a.db.GetServiceIPGeo(ctx, serviceID)
+	if err != nil {
+		return server.TCPAccess{}, fmt.Errorf("tcp access: ip lists: %w", err)
+	}
+	acc.AllowCIDRs, acc.BlockCIDRs = ipgeo.AllowCIDRs, ipgeo.BlockCIDRs
+	now := time.Now
+	if a.now != nil {
+		now = a.now
+	}
+	grants, err := a.db.ListIPGrants(ctx, serviceID, now())
+	if err != nil {
+		return server.TCPAccess{}, fmt.Errorf("tcp access: grants: %w", err)
+	}
+	for _, g := range grants {
+		acc.Grants = append(acc.Grants, server.TCPGrant{CIDR: g.CIDR, ExpiresAt: g.ExpiresAt})
+	}
+	return acc, nil
 }

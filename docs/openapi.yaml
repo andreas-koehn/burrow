@@ -1006,7 +1006,7 @@ components:
         created_at: { type: string, format: date-time }
     Service:
       type: object
-      required: [id, name, type, slug, url, access_mode, api_key_header, gateway_only, connected, remote_port, local_addr, status, last_seen, last_client, client_session_id, provider_slug]
+      required: [id, name, type, slug, url, access_mode, api_key_header, gateway_only, connected, remote_port, local_addr, status, last_seen, last_client, client_session_id, provider_slug, max_connections]
       properties:
         id: { type: string }
         name: { type: string }
@@ -1022,7 +1022,10 @@ components:
         url:
           type: string
           description: Public address, `https://<auth_domain>/svc/<slug>/`; empty without a slug or auth domain, and empty while `gateway_only` is true.
-        access_mode: { type: string, enum: [open, api_key, burrow_login, mtls] }
+        access_mode:
+          type: string
+          enum: [open, api_key, burrow_login, mtls, ip, private]
+          description: open, api_key, burrow_login or mtls for http; open, ip or private for tcp.
         api_key_header:
           type: string
           description: The request header that carries the key in api_key mode.
@@ -1033,7 +1036,7 @@ components:
         connected: { type: boolean }
         remote_port:
           type: integer
-          description: Public port of a connected tcp service; 0 for http and while not connected.
+          description: Public port of a connected tcp service; 0 for http, for a tcp service in mode private, and while not connected.
         local_addr:
           type: string
           description: Address the client forwards to; empty while not connected.
@@ -1063,6 +1066,60 @@ components:
         provider_slug:
           type: string
           description: The slug of the tunnel provider this service backs; empty when it backs none.
+        max_connections:
+          type: integer
+          description: The cap on connected visitors of a tcp service; 0 is the relay's default (32). 0 for other types.
+    IpGrant:
+      type: object
+      required: [id, cidr, family, expires_at, note, created_by, created_at]
+      properties:
+        id: { type: string }
+        cidr:
+          type: string
+          description: The range, masked; a single address is a /32 or a /128.
+          example: 203.0.113.7/32
+        family: { type: string, enum: [ipv4, ipv6] }
+        expires_at: { type: string, format: date-time }
+        note: { type: string }
+        created_by:
+          type: string
+          description: The id of the user who made the grant; empty when that user was deleted.
+        created_at: { type: string, format: date-time }
+    IpGrantCreated:
+      allOf:
+        - { $ref: '#/components/schemas/IpGrant' }
+        - type: object
+          required: [from_caller]
+          properties:
+            from_caller:
+              type: boolean
+              description: The grant is for the caller's own address (no cidr was given).
+            warning:
+              type: string
+              description: Set when the address is not a public one (private, loopback, link-local, carrier NAT), which the relay may see instead of the visitor's.
+    IpGrantInput:
+      type: object
+      required: [ttl_hours]
+      properties:
+        cidr:
+          type: string
+          description: An address or a CIDR, at most a /16 of IPv4 or a /48 of IPv6. Empty for the caller's own address.
+          example: 203.0.113.0/24
+        ttl_hours:
+          type: integer
+          minimum: 1
+          maximum: 168
+          description: How long the grant lasts; the dashboard offers 1, 8 and 24.
+        note: { type: string, maxLength: 200 }
+    MaxConnectionsReq:
+      type: object
+      required: [max_connections]
+      properties:
+        max_connections:
+          type: integer
+          minimum: 0
+          maximum: 256
+          description: 0 for the relay's default (32).
     Tunnel:
       type: object
       description: One live tunnel of the caller.
@@ -1152,7 +1209,17 @@ components:
       type: object
       required: [access_mode]
       properties:
-        access_mode: { type: string, enum: [open, api_key, burrow_login, mtls] }
+        access_mode:
+          type: string
+          enum: [open, api_key, burrow_login, mtls, ip, private]
+          description: >
+            An http service takes open, api_key, burrow_login and mtls; a tcp
+            service takes open (a public port), ip (a public port that lets
+            in only the allow list and just-in-time grants) and private (no
+            public port; reached through burrow forward). Another mode for
+            the type is a 409. A new mode of a tcp service closes the session
+            of the client that serves it, which registers again under the new
+            mode; it is audited as service.tcp_access.update.
         api_key_header:
           type: string
           description: >
@@ -3717,6 +3784,13 @@ paths:
       operationId: serviceIpGeoUpdate
       x-burrow-permission: {kind: needs, any_of: ["ipgeo:manage:own", "ipgeo:manage:any"]}
       summary: Replace per-service IP / Geo rules
+      description: |
+        For a tcp service in access mode `ip` the CIDR lists are the
+        permanent part of its policy (countries and `enabled` are not used):
+        a visitor is let in when an allow entry or a just-in-time grant holds
+        its address and no block entry does; an empty allow list without
+        grants lets nobody in. The relay applies a change to the next
+        visitor.
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
         required: true
@@ -3727,6 +3801,116 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '204': { description: Updated. }
         '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/services/{serviceID}/ip-grants:
+    get:
+      tags: [services]
+      operationId: serviceIpGrantsList
+      x-burrow-permission: {kind: needs, any_of: ["ipgeo:manage:own", "ipgeo:manage:any"]}
+      x-burrow-mcp: false
+      summary: List the just-in-time grants of a tcp service
+      description: |
+        The grants that have not expired, the first to expire first. A tcp
+        service in access mode `ip` lets a visitor in when its address is in
+        the permanent allow list (`/ip-geo`, CIDRs only) or in a grant, and
+        in no block entry.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      responses:
+        '200':
+          description: The grants.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/IpGrant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not a tcp service. }
+    post:
+      tags: [services]
+      operationId: serviceIpGrantCreate
+      x-burrow-permission: {kind: needs, any_of: ["ipgeo:manage:own", "ipgeo:manage:any"]}
+      x-burrow-mcp: false
+      summary: Grant an address access to a tcp service for a while
+      description: |
+        Lets `cidr` (an address or a range of at most a /16 of IPv4 or a /48
+        of IPv6), or the caller's own address when `cidr` is empty, connect
+        to the service's public port for `ttl_hours` (1 to 168). The caller's
+        address is the one the dashboard sees after the trusted proxies: the
+        answer names its family, and `warning` says when it is not a public
+        address. A service has at most 32 grants. The relay applies the grant
+        to the next visitor; an expired grant stops new connections and
+        leaves connected ones. Audited as `service.ip_grant.add`.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IpGrantInput' }
+      responses:
+        '201':
+          description: The grant.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IpGrantCreated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not a tcp service, or it has 32 grants. }
+
+  /api/v1/services/{serviceID}/ip-grants/{grantID}:
+    delete:
+      tags: [services]
+      operationId: serviceIpGrantDelete
+      x-burrow-permission: {kind: needs, any_of: ["ipgeo:manage:own", "ipgeo:manage:any"]}
+      x-burrow-mcp: false
+      summary: Revoke a just-in-time grant
+      description: |
+        New visitors from the grant's range are refused at once; connected
+        ones stay. Audited as `service.ip_grant.revoke`.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
+      parameters:
+        - { $ref: '#/components/parameters/PathServiceID' }
+        - { name: grantID, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Revoked. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not a tcp service. }
+
+  /api/v1/services/{serviceID}/max-connections:
+    put:
+      tags: [services]
+      operationId: serviceMaxConnectionsUpdate
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      summary: Set the cap on connected visitors of a tcp service
+      description: |
+        1 to 256 visitors at once, or 0 for the relay's default (32). The
+        relay applies it to the next visitor; connected ones stay. Each
+        source address may also open at most 10 connections a minute (5 at
+        once in a burst) and hold 4 at once. Audited as
+        `service.max_connections.update`.
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MaxConnectionsReq' }
+      responses:
+        '204': { description: Set. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not a tcp service. }
 
   /api/v1/services/{serviceID}/cache/entries:
     delete:

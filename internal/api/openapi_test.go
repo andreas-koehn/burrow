@@ -503,6 +503,10 @@ func (*fullDepsStub) SetServiceGatewayOnly(context.Context, string, string, stri
 	stubPanic("SetServiceGatewayOnly")
 	return nil
 }
+func (*fullDepsStub) SetServiceMaxConnections(context.Context, string, string, string, int) (int, error) {
+	stubPanic("SetServiceMaxConnections")
+	return 0, nil
+}
 func (*fullDepsStub) DeleteService(context.Context, string, string, string) (string, error) {
 	stubPanic("DeleteService")
 	return "", nil
