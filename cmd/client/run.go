@@ -66,7 +66,8 @@ func runClient(ctx context.Context, creds client.Credentials, tunnels []client.T
 	o := client.Options{
 		Server: creds.Control, Token: creds.Token, Insecure: g.insecure,
 		RootCAs: pool, ServerName: sn, Logger: log,
-		Tunnels: tunnels,
+		Tunnels:  tunnels,
+		Forwards: forwardsOf(ctx),
 		// A refusal that trying again does not change ends the command with
 		// its message and exit code.
 		StopOnRefusal: after || g.view,
@@ -152,9 +153,10 @@ func pinRefresher(g globalFlags, creds client.Credentials, log *slog.Logger) (fu
 	return refresh, stored
 }
 
-// requireSecureForward is the check P05's `burrow forward` makes before it
-// opens a listener (D13): a client that does not verify the relay may not
-// carry a private service's traffic unless --insecure-forward is given.
+// requireSecureForward is the check `burrow forward`, and `burrow up` with
+// forwards, make before a listener is opened (D13): a client that does not
+// verify the relay may not carry a private service's traffic unless
+// --insecure-forward is given.
 func (g globalFlags) requireSecureForward() error {
 	if err := client.ForwardAllowed(g.insecure, g.insecureForward); err != nil {
 		return usageErrorf("%s", err.Error())

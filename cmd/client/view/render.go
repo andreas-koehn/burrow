@@ -58,6 +58,10 @@ func Render(m Model, width int, color bool) []string {
 		rows = append(rows, row{})
 		rows = append(rows, service(s, w)...)
 	}
+	for _, f := range m.Forwards {
+		rows = append(rows, row{})
+		rows = append(rows, forward(f, w)...)
+	}
 	// A note starts with "! " and its further lines are indented to its
 	// text; a narrow terminal gets the smaller margin.
 	first, next := "  ! ", "    "
@@ -286,6 +290,35 @@ func service(s Service, w int) []row {
 			rows = append(rows, row{text: one, warn: true})
 		} else {
 			rows = append(rows, row{text: "  ! no listener on", warn: true}, row{text: "    " + local, warn: true})
+		}
+	}
+	return rows
+}
+
+// forward renders one local listener of `burrow forward`.
+func forward(f Forward, w int) []row {
+	target, addr := clean(f.Target), clean(f.Addr)
+	name := "forward " + target
+	var rows []row
+	indent := 2 + length(name) + 3
+	if one := "  " + name + "   " + addr; length(one) <= w {
+		rows = append(rows, row{text: one})
+	} else {
+		indent = 2
+		rows = append(rows, row{text: place(2, name, w)}, row{text: place(2, addr, w)})
+	}
+	rows = append(rows, row{text: place(indent, fmt.Sprintf("%d open, %d total", f.Open, f.Total), w)})
+	if p := clean(f.Problem); p != "" {
+		if f.Stopped {
+			p = "stopped: " + p
+		}
+		lines := wrap(p, w-4)
+		for i, l := range lines {
+			prefix := "    "
+			if i == 0 {
+				prefix = "  ! "
+			}
+			rows = append(rows, row{text: prefix + l, warn: true})
 		}
 	}
 	return rows

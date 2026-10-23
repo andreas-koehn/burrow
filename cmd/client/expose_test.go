@@ -38,10 +38,10 @@ func TestHTTP_UsesTheStoredSignIn(t *testing.T) {
 func TestTCP_RemoteAndName(t *testing.T) {
 	h := newHarness(t)
 	h.signIn()
-	if code := h.exec("tcp", "5432", "--remote", "9000", "--name", "pg"); code != 0 {
+	if code := h.exec("tcp", "5432", "--remote", "9000", "--name", "pg", "--access", "ip"); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}
-	want := []client.TunnelSpec{{Name: "pg", Type: "tcp", LocalAddr: "127.0.0.1:5432", RemotePort: 9000}}
+	want := []client.TunnelSpec{{Name: "pg", Type: "tcp", LocalAddr: "127.0.0.1:5432", RemotePort: 9000, Access: "ip"}}
 	if r := h.oneRun(); !reflect.DeepEqual(r.tunnels, want) {
 		t.Fatalf("tunnels = %+v, want %+v", r.tunnels, want)
 	}
@@ -62,6 +62,9 @@ func TestExpose_Targets(t *testing.T) {
 				t.Fatalf("exit %d: %s", code, h.stderr.String())
 			}
 			want := []client.TunnelSpec{{Name: tc.name, Type: tc.cmd, LocalAddr: tc.local}}
+			if tc.cmd == "tcp" {
+				want[0].Access = "private" // D2: the default of a new client
+			}
 			if r := h.oneRun(); !reflect.DeepEqual(r.tunnels, want) {
 				t.Fatalf("tunnels = %+v, want %+v", r.tunnels, want)
 			}
@@ -94,7 +97,7 @@ func TestExpose_UsageErrors(t *testing.T) {
 		{"target with a path", []string{"http", "http://localhost:3000/app"}, []string{"must not contain a path", "Accepted forms:"}},
 		{"target that is no port", []string{"tcp", "nonsense"}, []string{"Accepted forms:"}},
 		{"tcp --slug", []string{"tcp", "5432", "--slug", "x"}, []string{"--slug applies to http services"}},
-		{"tcp --access", []string{"tcp", "5432", "--access", "open"}, []string{"--access applies to http services"}},
+		{"tcp --access", []string{"tcp", "5432", "--access", "login"}, []string{"--access must be one of: open, ip, private"}},
 		{"http --remote", []string{"http", "3000", "--remote", "9000"}, []string{"--remote applies to tcp services"}},
 		{"unknown access", []string{"http", "3000", "--access", "nonsense"}, []string{"open", "login", "api-key"}},
 		{"relay access name", []string{"http", "3000", "--access", "burrow_login"}, []string{"open", "login", "api-key"}},

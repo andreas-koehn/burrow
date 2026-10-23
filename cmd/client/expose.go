@@ -9,8 +9,12 @@ import (
 )
 
 const (
-	msgSlugRule   = "--slug " + client.SlugRule
-	msgAccessRule = "--access " + client.AccessRule
+	msgSlugRule      = "--slug " + client.SlugRule
+	msgAccessRule    = "--access " + client.AccessRule
+	msgTCPAccessRule = "--access " + client.TCPAccessRule
+	// defaultTCPAccess is the mode `burrow tcp` asks for without --access
+	// (D2): a new service gets no public port until its owner says so.
+	defaultTCPAccess = "private"
 )
 
 // newExposeCmd builds `burrow http <target>` (typ "http") and
@@ -28,7 +32,7 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 			"  localhost:3000          that host and port\n" +
 			"  192.168.1.20:8080       that host and port\n" +
 			"  http://localhost:3000   the same as localhost:3000\n\n" +
-			"The command runs in the foreground until interrupted and reconnects by itself.",
+			"The command runs in the foreground until interrupted and reconnects by itself." + tcpLong(typ),
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
 				return usageWithLine(cmd, "%s needs exactly one target, for example: %s 3000", cmd.CommandPath(), cmd.CommandPath())
@@ -39,10 +43,8 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 			flags := cmd.Flags()
 			// Each flag belongs to one kind of service.
 			if typ == "tcp" {
-				for _, name := range []string{"slug", "access"} {
-					if flags.Changed(name) {
-						return usageErrorf("--%s applies to http services", name)
-					}
+				if flags.Changed("slug") {
+					return usageErrorf("--slug applies to http services")
 				}
 			} else if flags.Changed("remote") {
 				return usageErrorf("--remote applies to tcp services")
@@ -57,7 +59,17 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 			slug, _ := flags.GetString("slug")
 			access, _ := flags.GetString("access")
 			mode := ""
-			if flags.Changed("access") {
+			switch {
+			case typ == "tcp":
+				mode = defaultTCPAccess
+				if flags.Changed("access") {
+					m, ok := client.TCPAccessMode(access)
+					if !ok {
+						return usageErrorf(msgTCPAccessRule)
+					}
+					mode = m
+				}
+			case flags.Changed("access"):
 				m, ok := client.AccessMode(access)
 				if !ok {
 					return usageErrorf(msgAccessRule)
@@ -72,6 +84,9 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 			remote, _ := flags.GetInt("remote")
 			if remote < 0 || remote > 65535 {
 				return usageErrorf("--remote must be a port between 1 and 65535, or 0 for any free port")
+			}
+			if typ == "tcp" && remote != 0 && mode == "private" {
+				return usageErrorf("--remote needs --access open or ip: a private service has no public port, and private is the default")
 			}
 
 			name, _ := flags.GetString("name")
@@ -104,16 +119,33 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 	f := cmd.Flags()
 	f.String("name", "", "service name (default: <hostname>-<port>)")
 	f.String("slug", "", "path under /svc/; used only when the service is created")
-	f.String("access", "", "access mode: open|login|api-key; used only when the service is created")
-	f.Int("remote", 0, "fixed public port (default: any free port)")
+	if typ == "tcp" {
+		f.String("access", defaultTCPAccess, "access mode: open|ip|private; private opens no public port (reach it with burrow forward)")
+	} else {
+		f.String("access", "", "access mode: open|login|api-key; used only when the service is created")
+	}
+	f.Int("remote", 0, "fixed public port with --access open or ip (default: any free port)")
 	// A flag of the other kind is known, so that it gets a message that says
 	// where it belongs, but it is not listed in the help.
 	hidden := []string{"remote"}
 	if typ == "tcp" {
-		hidden = []string{"slug", "access"}
+		hidden = []string{"slug"}
 	}
 	for _, name := range hidden {
 		_ = f.MarkHidden(name)
 	}
 	return cmd
+}
+
+// tcpLong is what the help of `burrow tcp` adds: the access modes.
+func tcpLong(typ string) string {
+	if typ != "tcp" {
+		return ""
+	}
+	return "\n\nAccess modes (--access):\n" +
+		"  private   the default: no public port; reach it with burrow forward <slug>\n" +
+		"  ip        a public port that takes the addresses allowed in the dashboard only\n" +
+		"  open      a public port anyone can connect to\n" +
+		"A mode set in the dashboard that is stricter than --access is kept; a looser one is not\n" +
+		"widened by the client: the relay asks to restart with that mode."
 }

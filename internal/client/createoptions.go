@@ -10,11 +10,24 @@ var accessModes = map[string]string{
 	"api-key": "api_key",
 }
 
+// The access modes of a tcp service. Their names are the relay's.
+var tcpAccessModes = map[string]bool{"open": true, "ip": true, "private": true}
+
 // The rules of the two wishes, as the messages state them.
 const (
-	SlugRule   = "must be 3 to 40 characters: lowercase letters, digits and hyphens, starting and ending with a letter or digit"
-	AccessRule = "must be one of: open, login, api-key"
+	SlugRule      = "must be 3 to 40 characters: lowercase letters, digits and hyphens, starting and ending with a letter or digit"
+	AccessRule    = "must be one of: open, login, api-key"
+	TCPAccessRule = "must be one of: open, ip, private"
 )
+
+// TCPAccessMode returns the relay's access mode of a tcp service for the
+// name a person uses: open, ip or private.
+func TCPAccessMode(name string) (mode string, ok bool) {
+	if tcpAccessModes[name] {
+		return name, true
+	}
+	return "", false
+}
 
 // slugRe is the relay's rule for a service slug (auth.ValidSlug). It is
 // repeated here so that the client does not link the relay's auth package;

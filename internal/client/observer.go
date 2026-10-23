@@ -21,14 +21,22 @@ type RegisteredTunnel struct {
 	// URL is the public address of an http tunnel; an older relay reports only
 	// a hostname, which is then what URL holds.
 	URL string
-	// RemotePort is the public port of a tcp tunnel.
+	// RemotePort is the public port of a tcp tunnel; 0 for a private one.
 	RemotePort int
+	// Slug is the global name of a tcp service, the target of
+	// `burrow forward`; "" from a relay that does not say.
+	Slug string
+	// Wished is the access mode the client asked for a tcp service
+	// (TunnelSpec.Access); "" for http.
+	// AccessMode differs from it when the dashboard keeps a tcp service
+	// stricter than the wish.
+	Wished string
 
 	// What follows is known only from a relay that reports it; an older one
 	// leaves it empty.
 	//
-	// AccessMode is the relay's access mode of an http service: open, api_key,
-	// burrow_login or mtls.
+	// AccessMode is the relay's access mode of an http service (open,
+	// api_key, burrow_login or mtls) or of a tcp service (open, ip, private).
 	AccessMode string
 	// Created says that this registration created the service.
 	Created bool

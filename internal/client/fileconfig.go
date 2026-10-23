@@ -14,6 +14,9 @@ type FileConfig struct {
 	Server  string
 	Token   string
 	Tunnels []TunnelSpec
+	// Forwards are the forwards: section (`burrow up` only). A file may hold
+	// forwards alone.
+	Forwards []ForwardSpec
 }
 
 // rawFileConfig is the intermediate struct used for YAML unmarshalling.
@@ -22,6 +25,15 @@ type rawFileConfig struct {
 	Token     string       `yaml:"token"`
 	TokenFile string       `yaml:"token_file"`
 	Services  []rawService `yaml:"services"`
+	Forwards  []rawForward `yaml:"forwards"`
+}
+
+// rawForward is one entry under "forwards:" in burrow.yaml: the local
+// listener of `burrow forward <target> [local-port] --bind`.
+type rawForward struct {
+	Target    string `yaml:"target"`
+	LocalPort int    `yaml:"local_port"`
+	Bind      string `yaml:"bind"`
 }
 
 // rawService is one entry under "services:" in burrow.yaml.
@@ -117,9 +129,20 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 		}
 	}
 
-	// Validate at least one service.
-	if len(raw.Services) == 0 {
-		return FileConfig{}, fmt.Errorf("loadfileconfig: at least one service is required")
+	// Validate at least one service. `connect --config` runs services alone
+	// and reads past forwards, as past any key it does not know.
+	var forwards []ForwardSpec
+	if !complete {
+		var err error
+		if forwards, err = forwardsFromFile(raw.Forwards); err != nil {
+			return FileConfig{}, err
+		}
+	}
+	if len(raw.Services) == 0 && len(forwards) == 0 {
+		if complete {
+			return FileConfig{}, fmt.Errorf("loadfileconfig: at least one service is required")
+		}
+		return FileConfig{}, fmt.Errorf("loadfileconfig: at least one service or forward is required")
 	}
 
 	// Build TunnelSpec slice, applying defaults and validations.
@@ -184,22 +207,25 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 			LocalAddr:  svc.Local,
 			RemotePort: remotePort,
 		}
-		// slug and access are the wishes of `burrow http --slug --access`.
-		// `connect --config` does not know them: it reads past both keys, as
-		// it does with any key it has never had.
+		// slug and access are the wishes of `burrow http --slug --access`
+		// and `burrow tcp --access`. `connect --config` does not know them:
+		// it reads past both keys, as it does with any key it has never had.
 		if !complete {
-			if typ != "http" {
-				if svc.Slug != "" {
-					return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: slug applies to http services", i, svc.Name)
-				}
-				if svc.Access != "" {
-					return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: access applies to http services", i, svc.Name)
-				}
+			if typ != "http" && svc.Slug != "" {
+				return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: slug applies to http services", i, svc.Name)
 			}
 			if svc.Slug != "" && !ValidSlug(svc.Slug) {
 				return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: slug %s", i, svc.Name, SlugRule)
 			}
-			if svc.Access != "" {
+			// A tcp service without access: asks for nothing, so that a
+			// file written before access modes serves what it served.
+			if typ == "tcp" && svc.Access != "" {
+				mode, ok := TCPAccessMode(svc.Access)
+				if !ok {
+					return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: access %s", i, svc.Name, TCPAccessRule)
+				}
+				spec.Access = mode
+			} else if svc.Access != "" {
 				mode, ok := AccessMode(svc.Access)
 				if !ok {
 					return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: access %s", i, svc.Name, AccessRule)
@@ -212,8 +238,34 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 	}
 
 	return FileConfig{
-		Server:  server,
-		Token:   token,
-		Tunnels: tunnels,
+		Server:   server,
+		Token:    token,
+		Tunnels:  tunnels,
+		Forwards: forwards,
 	}, nil
+}
+
+// forwardsFromFile checks the forwards: section and applies the defaults of
+// `burrow forward`: local port 13389 on 127.0.0.1.
+func forwardsFromFile(raw []rawForward) ([]ForwardSpec, error) {
+	out := make([]ForwardSpec, 0, len(raw))
+	at := map[string]int{}
+	for i, f := range raw {
+		if f.Target == "" {
+			return nil, fmt.Errorf("loadfileconfig: forward[%d]: target is required", i)
+		}
+		if !ValidForwardTarget(f.Target) {
+			return nil, fmt.Errorf("loadfileconfig: forward[%d] %q: target %s", i, f.Target, ForwardTargetRule)
+		}
+		addr, err := ForwardAddr(f.Bind, f.LocalPort)
+		if err != nil {
+			return nil, fmt.Errorf("loadfileconfig: forward[%d] %q: %w", i, f.Target, err)
+		}
+		if j, ok := at[addr]; ok {
+			return nil, fmt.Errorf("loadfileconfig: forward[%d] %q: %s is the address of forward[%d] already; give it another local_port", i, f.Target, addr, j)
+		}
+		at[addr] = i
+		out = append(out, ForwardSpec{Target: f.Target, Addr: addr})
+	}
+	return out, nil
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -51,6 +52,9 @@ func relayUnreachable(control string) string {
 // and ignored --access (client.AccessNotAppliedError). What the error holds
 // partly comes from the relay and from burrow.yaml.
 func accessNotApplied(e *client.AccessNotAppliedError) string {
+	if e.Type == "tcp" {
+		return tcpAccessNotApplied(e)
+	}
 	access := "a restricted mode"
 	switch e.Access {
 	case "api_key", "burrow_login":
@@ -73,6 +77,29 @@ func accessNotApplied(e *client.AccessNotAppliedError) string {
 		" was not applied to service " + plainText(e.Name) + ". " + served + "\n" +
 		"The service exists on the relay" + where + " and is open to anyone with the URL unless its access mode was set in the dashboard. " +
 		"Set the access mode there or delete the service, or " + again
+}
+
+// tcpAccessNotApplied is accessNotApplied for a tcp service (D9).
+func tcpAccessNotApplied(e *client.AccessNotAppliedError) string {
+	what := "keep a tcp service private"
+	if e.Access == "ip" {
+		what = "limit a tcp service to allowed addresses"
+	}
+	name := plainText(e.Name)
+	if e.NotSent {
+		return "This relay is too old to " + what + ": service " + name + " was not registered, and no port was opened. " +
+			"Update the relay, or run with --access open to publish the port to anyone."
+	}
+	port := "a public port"
+	if e.RemotePort > 0 {
+		port = "port " + strconv.Itoa(e.RemotePort)
+	}
+	served := "Nothing is served from this machine."
+	if e.Services > 1 {
+		served = fmt.Sprintf("None of the %d services of the file is served from this machine.", e.Services)
+	}
+	return "The relay did not confirm access mode " + e.Access + " for tcp service " + name + " and may have opened " + port +
+		" for it; the connection was closed at once. " + served + " Check the service in the dashboard."
 }
 
 // maxRelayText is how much of a text from the relay is printed.
@@ -203,6 +230,16 @@ func report(w io.Writer, err error) int {
 	var na *client.AccessNotAppliedError
 	if errors.As(err, &na) && !errors.As(err, &ee) {
 		fmt.Fprintln(w, accessNotApplied(na))
+		return exitCode(err)
+	}
+	var fu *client.ForwardUnsupportedError
+	var fr *client.ForwardRefusedError
+	switch {
+	case errors.As(err, &fu) && !errors.As(err, &ee):
+		fmt.Fprintln(w, "burrow forward: relay too old. It cannot forward to tcp services; update the relay to use burrow forward.")
+		return exitCode(err)
+	case errors.As(err, &fr) && !errors.As(err, &ee):
+		fmt.Fprintln(w, "burrow forward: "+plainText(fr.Message)+".")
 		return exitCode(err)
 	}
 	if errors.As(err, &re) && !errors.As(err, &ee) {

@@ -26,11 +26,12 @@ rejected: HTTPS upstreams are not supported.
 | `--name <name>` | both | Service name; default `<hostname>-<port>` |
 | `--slug <slug>` | `http` | Path under `/svc/`; 3 to 40 lowercase letters, digits and hyphens. Used only when the service is created |
 | `--access open\|login\|api-key` | `http` | Access mode. Used only when the service is created |
-| `--remote <port>` | `tcp` | Fixed public port; default any free port |
+| `--access open\|ip\|private` | `tcp` | Access mode; default `private` (see [TCP access modes](#tcp-access)) |
+| `--remote <port>` | `tcp` | Fixed public port with `--access open` or `ip`; default any free port |
 
 ```sh
 burrow http 3000 --name my-app --slug my-app --access login
-burrow tcp 22 --remote 9001 --name ssh
+burrow tcp 22 --access ip --remote 9001 --name ssh
 ```
 
 The default name is stable for a machine and port, so running the same command
@@ -63,6 +64,53 @@ dashboard. `--access open` works against any relay. See
 [Access control](/guide/access-control) for what each mode does.
 
 Without a [services domain](/guide/configuration#services-domain), an open `/svc/` app shares the dashboard's origin, and its scripts can call the dashboard API as the signed-in user, so expose only apps you trust (see [Apps behind a path](/guide/expose-services#apps-behind-a-path)).
+
+### TCP access modes and `burrow forward` {#tcp-access}
+
+`burrow tcp` keeps a new service **`private`** unless `--access` says
+otherwise:
+
+| `--access` | Public port | Who can connect |
+|------------|-------------|-----------------|
+| `private` (default) | none | signed-in Burrow clients that run `burrow forward`: the owner, and roles the owner allows |
+| `ip` | yes | the addresses allowed in the dashboard (CIDRs and time-limited grants) |
+| `open` | yes | anyone |
+
+```sh
+burrow tcp 3389 --name rdp          # at home: prints "burrow forward <slug> 13389"
+burrow forward <slug>               # elsewhere: listens on 127.0.0.1:13389
+```
+
+`burrow forward <target> [local-port]` takes the service's slug (shown in the
+dashboard and printed by `burrow tcp`), the name of one of your own tcp
+services, or its id. It listens on `127.0.0.1:13389` by default; `--bind`
+changes the address (anything but loopback lets other machines in without
+signing in). The local port stays open while the relay is away; connections
+made then are closed at once. It refuses to run under `--insecure` unless
+`--insecure-forward` is given, and against a relay too old to forward it stops
+with "relay too old".
+
+A mode set in the dashboard that is stricter than `--access` is kept. A looser
+one is not widened by the client: the relay refuses with "restart with
+--access <mode>". Against a relay too old for tcp access modes, `ip` and
+`private` are never sent: the service is not registered and no port opens.
+
+In `burrow.yaml`, a tcp service takes `access: open|ip|private` (without it
+nothing is asked for, as before), and a `forwards:` section runs forwards with
+`burrow up`; a file may hold forwards alone:
+
+```yaml
+forwards:
+  - target: rdp            # slug, own service name or id
+    local_port: 13389      # default 13389
+    bind: 127.0.0.1        # default 127.0.0.1
+```
+
+**Windows:** `burrow forward rdp` works in a terminal; connect with
+`mstsc /v:127.0.0.1:13389` (13389 avoids the machine's own remote desktop on
+3389). To keep it running, put it in `burrow.yaml` under `forwards:` and use
+`burrow service install`, or a scheduled task "At log on" that runs
+`burrow.exe up`.
 
 The examples below use `burrow.yaml` with `burrow connect --config`, which
 still works unchanged. The same files work with `burrow up` (which can also read

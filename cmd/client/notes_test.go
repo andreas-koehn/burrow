@@ -412,7 +412,8 @@ func TestStatusView_NoNoticeWithoutAReason(t *testing.T) {
 			ob.(client.SessionObserver).Session(client.SessionInfo{RelayVersion: relay})
 			ob.Registered(client.RegisteredTunnel{TunnelID: "t1", Name: "my-app", Type: "http", LocalAddr: "127.0.0.1:3000",
 				URL: "https://relay.example.com/svc/abc234/", AccessMode: "burrow_login"})
-			ob.Registered(client.RegisteredTunnel{TunnelID: "t2", Name: "pg", Type: "tcp", LocalAddr: "127.0.0.1:5432", RemotePort: 9000, AccessMode: "open"})
+			// A relay without tcp access modes says none: nothing to warn of.
+			ob.Registered(client.RegisteredTunnel{TunnelID: "t2", Name: "pg", Type: "tcp", LocalAddr: "127.0.0.1:5432", RemotePort: 9000})
 			return nil
 		})
 		if err := runClient(context.Background(), viewCreds, viewTunnels[:2], viewFlags); err != nil {

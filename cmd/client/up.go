@@ -62,9 +62,18 @@ func runUp(cmd *cobra.Command, d deps) error {
 	if err != nil {
 		return err
 	}
+	if len(fc.Forwards) > 0 {
+		if err := g.requireSecureForward(); err != nil {
+			return err
+		}
+	}
 	creds, err := resolveCredentials(d, userPath, &fc)
 	if err != nil {
 		return err
+	}
+	if len(fc.Forwards) > 0 {
+		warnWideForwards(fc.Forwards)
+		cmd.SetContext(withForwards(cmd.Context(), fc.Forwards))
 	}
 	return foregroundWithBridges(cmd, d, creds, fc.Tunnels, g)
 }
@@ -73,8 +82,8 @@ func runUp(cmd *cobra.Command, d deps) error {
 func newUpCmd(d deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "up",
-		Short: "Run every service in burrow.yaml",
-		Long: "Run every service in burrow.yaml.\n\n" +
+		Short: "Run every service and forward in burrow.yaml",
+		Long: "Run every service and forward in burrow.yaml.\n\n" +
 			"The file is looked for in this order: --file <path>, ./burrow.yaml, burrow.yaml in the\n" +
 			"user config directory. `server` and `token` in the file are optional; what is absent\n" +
 			"comes from the sign-in (burrow login).\n\n" +

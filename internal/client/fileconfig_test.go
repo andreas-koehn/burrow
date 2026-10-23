@@ -338,7 +338,8 @@ func TestLoadFileConfig_SlugAndAccess(t *testing.T) {
 		{"the relay's name for an access mode", "{ name: app, local: 127.0.0.1:3000, type: http, access: burrow_login }", `access must be one of: open, login, api-key`},
 		{"mtls", "{ name: app, local: 127.0.0.1:3000, type: http, access: mtls }", `access must be one of: open, login, api-key`},
 		{"slug on tcp", "{ name: db, local: 127.0.0.1:5432, type: tcp, slug: my-db }", `service[0] "db": slug applies to http services`},
-		{"access on tcp", "{ name: db, local: 127.0.0.1:5432, type: tcp, access: open }", `service[0] "db": access applies to http services`},
+		{"an http mode on tcp", "{ name: db, local: 127.0.0.1:5432, type: tcp, access: login }", `service[0] "db": access must be one of: open, ip, private`},
+		{"a tcp mode on http", "{ name: app, local: 127.0.0.1:3000, type: http, access: private }", `access must be one of: open, login, api-key`},
 		{"slug on the default type", "{ name: db, local: 127.0.0.1:5432, slug: my-db }", `service[0] "db": slug applies to http services`},
 	}
 	for _, tc := range bad {
@@ -473,5 +474,80 @@ func TestTokenFilePath(t *testing.T) {
 	}
 	if _, err := TokenFilePath(filepath.Join(dir, "missing.yaml")); err == nil {
 		t.Fatal("no error for a missing file")
+	}
+}
+
+// access: of a tcp service is open, ip or private. Without it nothing is
+// asked for, as before: an existing file keeps serving what it served.
+func TestLoadFileConfig_TCPAccess(t *testing.T) {
+	yml := filepath.Join(t.TempDir(), "burrow.yaml")
+	os.WriteFile(yml, []byte("services:\n"+
+		"  - { name: rdp, local: 127.0.0.1:3389, access: private }\n"+
+		"  - { name: ssh, local: 127.0.0.1:22, type: tcp, access: ip }\n"+
+		"  - { name: pg, local: 127.0.0.1:5432, type: tcp, access: open }\n"+
+		"  - { name: old, local: 127.0.0.1:9999, type: tcp }\n"), 0o600)
+	c, err := LoadFileConfig(yml)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, tn := range c.Tunnels {
+		got = append(got, tn.Name+"="+tn.Access)
+	}
+	if strings.Join(got, " ") != "rdp=private ssh=ip pg=open old=" {
+		t.Fatalf("access = %v", got)
+	}
+}
+
+func TestLoadFileConfig_Forwards(t *testing.T) {
+	yml := filepath.Join(t.TempDir(), "burrow.yaml")
+	// A file of forwards alone is valid.
+	os.WriteFile(yml, []byte("forwards:\n"+
+		"  - { target: rdp }\n"+
+		"  - { target: t0123456789, local_port: 2222 }\n"+
+		"  - { target: db, local_port: 15432, bind: 0.0.0.0 }\n"+
+		"  - { target: v6, bind: \"::1\" }\n"), 0o600)
+	c, err := LoadFileConfig(yml)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ForwardSpec{
+		{Target: "rdp", Addr: "127.0.0.1:13389"},
+		{Target: "t0123456789", Addr: "127.0.0.1:2222"},
+		{Target: "db", Addr: "0.0.0.0:15432"},
+		{Target: "v6", Addr: "[::1]:13389"},
+	}
+	if len(c.Tunnels) != 0 || len(c.Forwards) != len(want) {
+		t.Fatalf("tunnels %+v forwards %+v", c.Tunnels, c.Forwards)
+	}
+	for i := range want {
+		if c.Forwards[i] != want[i] {
+			t.Fatalf("forward %d = %+v, want %+v", i, c.Forwards[i], want[i])
+		}
+	}
+
+	bad := []struct{ name, forwards, want string }{
+		{"no target", "  - { local_port: 2222 }", `forward[0]: target is required`},
+		{"a space in the target", "  - { target: \"my rdp\" }", `forward[0] "my rdp": target must be 1 to 200 characters`},
+		{"a port out of range", "  - { target: rdp, local_port: 70000 }", `forward[0] "rdp": the local port must be between 1 and 65535`},
+		{"a host name to bind", "  - { target: rdp, bind: example.com }", `forward[0] "rdp": the bind address must be an IP address or localhost`},
+		{"the same address twice", "  - { target: a }\n  - { target: b }", `forward[1] "b": 127.0.0.1:13389 is the address of forward[0] already`},
+	}
+	for _, tc := range bad {
+		os.WriteFile(yml, []byte("forwards:\n"+tc.forwards+"\n"), 0o600)
+		if _, err := LoadFileConfig(yml); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want it to contain %q", tc.name, err, tc.want)
+		}
+	}
+
+	// Neither services nor forwards.
+	os.WriteFile(yml, []byte("server: relay.example.com:7000\n"), 0o600)
+	if _, err := LoadFileConfig(yml); err == nil || !strings.Contains(err.Error(), "at least one service or forward is required") {
+		t.Fatalf("empty file: %v", err)
+	}
+	// `burrow connect --config` runs services only, as it always has.
+	os.WriteFile(yml, []byte("server: relay.example.com:7000\ntoken: t\nforwards:\n  - { target: rdp }\n"), 0o600)
+	if _, err := LoadCompleteFileConfig(yml); err == nil || !strings.Contains(err.Error(), "at least one service is required") {
+		t.Fatalf("connect with forwards alone: %v", err)
 	}
 }

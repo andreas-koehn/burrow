@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -131,6 +134,121 @@ func (n *runNotes) Registered(t client.RegisteredTunnel) {
 	if n.inView && t.Type == "http" && t.AccessMode == "open" {
 		n.once(msgSharedOrigin)
 	}
+	if t.Type == "tcp" && t.AccessMode != "" {
+		if n.inView {
+			// The view shows the address and the mode itself.
+			n.once(tcpWarning(t, n.single))
+		} else {
+			n.once(tcpNote(t, relayHost(n.control), n.single))
+		}
+	}
+}
+
+// Refused implements client.RefusalObserver: one service is not served while
+// the others are. Log lines already say so; the status view, which has none,
+// shows it as a note.
+func (n *runNotes) Refused(name string, err error) {
+	if ro, ok := n.Observer.(client.RefusalObserver); ok {
+		ro.Refused(name, err)
+	}
+	if n.inView {
+		n.once(refusedNote(name, err))
+	}
+}
+
+// Forward implements client.ForwardObserver for the observer behind it.
+func (n *runNotes) Forward(s client.ForwardState) {
+	if fo, ok := n.Observer.(client.ForwardObserver); ok {
+		fo.Forward(s)
+	}
+}
+
+// refusedNote says why one service of several is not served.
+func refusedNote(name string, err error) string {
+	var re *client.RefusedError
+	var na *client.AccessNotAppliedError
+	msg := ""
+	switch {
+	case errors.As(err, &na):
+		msg = accessNotApplied(na)
+	case errors.As(err, &re):
+		if m, _, ok := refusal(re); ok {
+			msg = m
+		} else {
+			msg = plainText(re.Message)
+		}
+	default:
+		msg = plainText(err.Error())
+	}
+	return "Service " + plainText(name) + " is not served. " + msg
+}
+
+// sensitivePorts are local ports whose services are scanned for and attacked
+// within minutes of being on a public port.
+var sensitivePorts = map[string]string{
+	"3389": "remote desktop",
+	"22":   "SSH",
+	"5900": "VNC",
+	"5432": "PostgreSQL",
+}
+
+// tcpNote says how a tcp service can be reached: through burrow forward when
+// it is private, at the relay's port otherwise, with a warning for a port
+// that should not be public. What the relay says is repeated only in the form
+// it must have.
+func tcpNote(t client.RegisteredTunnel, host string, single bool) string {
+	s := subject(t, single)
+	_, port, _ := net.SplitHostPort(t.LocalAddr)
+	var b strings.Builder
+	switch t.AccessMode {
+	case "private":
+		target := t.Slug
+		if !client.ValidSlug(target) {
+			target = plainText(t.Name) // the owner's own name works too
+		}
+		hint := "burrow forward " + target
+		if p, err := strconv.Atoi(port); err == nil && p > 0 && p+10000 <= 65535 {
+			hint += " " + strconv.Itoa(p+10000)
+		}
+		b.WriteString(s + " is private: the relay opened no public port. Reach it from another machine with: " + hint)
+	case "open", "ip":
+		addr := "the relay's port"
+		if t.RemotePort > 0 {
+			addr = net.JoinHostPort(plainText(host), strconv.Itoa(t.RemotePort))
+		}
+		if t.AccessMode == "open" {
+			b.WriteString(s + " is open to anyone at " + addr + ".")
+		} else {
+			b.WriteString(s + " is reachable at " + addr + " from the addresses allowed in the dashboard.")
+		}
+	default:
+		return ""
+	}
+	if w := tcpWarning(t, single); w != "" {
+		b.WriteString(" " + strings.TrimPrefix(w, s+": "))
+	}
+	return b.String()
+}
+
+// tcpWarning is what the status view adds to a tcp service: a port that
+// should not be public, and a mode the dashboard keeps other than asked for.
+func tcpWarning(t client.RegisteredTunnel, single bool) string {
+	var parts []string
+	_, port, _ := net.SplitHostPort(t.LocalAddr)
+	if what, ok := sensitivePorts[port]; ok && (t.AccessMode == "open" || t.AccessMode == "ip") {
+		parts = append(parts, "Port "+port+" ("+what+") on a public port is scanned and attacked within minutes: "+
+			"use --access private and burrow forward, or keep it to known addresses with --access ip.")
+	}
+	if t.Wished != "" && t.Wished != t.AccessMode {
+		switch t.AccessMode {
+		case "open", "ip", "private":
+			parts = append(parts, "--access "+t.Wished+" was asked for; the dashboard keeps the service "+t.AccessMode+".")
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return subject(t, single) + ": " + strings.Join(parts, " ")
 }
 
 // Session implements client.SessionObserver.
@@ -169,7 +287,8 @@ func subject(t client.RegisteredTunnel, single bool) string {
 // only in the form it must have.
 func ignoredNote(t client.RegisteredTunnel, single bool) string {
 	if t.Type != "http" {
-		return subject(t, single) + " is a tcp service: --slug and --access apply to http services and were not applied."
+		// An older relay, asked for open: it opened the port as it always did.
+		return subject(t, single) + ": this relay does not know access modes for tcp services, so --access was not applied; the port is open to anyone."
 	}
 	var has []string
 	if slug := slugOf(t.URL); slug != "" {

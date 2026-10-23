@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,6 +31,13 @@ type TunnelSpec struct {
 	// Slug and Access (a relay access mode: open, api_key, burrow_login) are
 	// wishes for an http service that does not exist yet; the relay applies
 	// them only when it creates the service. "" = no wish, nothing is sent.
+	//
+	// For a tcp service Access is open, ip or private. The relay creates the
+	// service in that mode; for one that exists it serves the mode stored in
+	// the dashboard when that is stricter, and refuses a wish that is
+	// stricter than the stored mode (proto.CodeAccessInvalid). A relay that
+	// cannot apply it (no proto.CapTCPAccess) is never sent a tcp tunnel
+	// with ip or private: see AccessNotAppliedError.
 	Slug   string
 	Access string
 	// MCP is set for the local MCP server of `burrow mcp` or of a burrow.yaml
@@ -57,7 +65,10 @@ type Options struct {
 	// PinRefreshed is told about the replacement, to store it.
 	PinRefreshed func(pin string)
 	Tunnels      []TunnelSpec
-	Logger       *slog.Logger
+	// Forwards are the local listeners of `burrow forward` (forward.go). They
+	// are opened when Run starts and stay open across reconnects.
+	Forwards []ForwardSpec
+	Logger   *slog.Logger
 	// Observer is told what the client does, for a status view. nil = none.
 	Observer Observer
 	// RequestSummaries asks the relay for a summary of each request to an http
@@ -90,6 +101,17 @@ type Client struct {
 	lastRemotePort int
 	pingSent       time.Time       // when the ping that is still unanswered was sent
 	localReported  map[string]bool // localAddr → what the observer was last told
+
+	// The forwards (forward.go). fsess is the session local connections are
+	// forwarded on, nil while there is none; fwdLive counts the forwards that
+	// have not stopped. fwdEnd is closed when the last one stops in a run
+	// without tunnels, which then ends with fwdErr.
+	fwds    []*forwarder
+	fwdWG   sync.WaitGroup
+	fsess   *yamux.Session
+	fwdLive int
+	fwdEnd  chan struct{}
+	fwdErr  error
 }
 
 // liveTunnel is what the client knows of a tunnel of the current session.
@@ -134,9 +156,19 @@ func (c *Client) Run(ctx context.Context) error {
 	if c.events != nil {
 		defer c.events.start()()
 	}
+	if len(c.opts.Forwards) > 0 {
+		if err := c.listenForwards(); err != nil {
+			return err
+		}
+		defer c.closeForwards()
+	}
 	for {
 		c.events.emit(func(o Observer) { o.State(StateConnecting, "", 0) })
 		err := c.connectOnce(ctx)
+		if c.forwardsDone() {
+			c.registered.Store(false)
+			return c.fwdErrValue()
+		}
 		var mismatch *PinMismatchError
 		if errors.As(err, &mismatch) && ctx.Err() == nil {
 			// Trying again cannot make the certificate the pinned one.
@@ -172,9 +204,31 @@ func (c *Client) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-c.forwardsEnded():
+			return c.fwdErrValue()
 		case <-time.After(wait):
 		}
 	}
+}
+
+// forwardsDone reports whether every forward of a run without tunnels has
+// stopped.
+func (c *Client) forwardsDone() bool {
+	if c.fwdEnd == nil {
+		return false
+	}
+	select {
+	case <-c.fwdEnd:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) fwdErrValue() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.fwdErr
 }
 
 func (c *Client) connectOnce(ctx context.Context) error {
@@ -215,20 +269,50 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		return err
 	}
 	defer ysess.Close()
+	// The relay takes the first stream of a session as the control stream,
+	// also of a client that only forwards.
 	ctrl, err := ysess.OpenStream()
 	if err != nil {
 		return err
 	}
 	defer ctrl.Close()
+	if len(c.fwds) > 0 {
+		if !slices.Contains(ar.Capabilities, proto.CapForward) {
+			c.stopForwards(msgRelayTooOld, func(f *forwarder) error { return &ForwardUnsupportedError{Target: f.spec.Target} })
+		} else {
+			c.setForwardSession(ysess)
+			defer c.setForwardSession(nil)
+		}
+	}
+	tcpAccess := slices.Contains(ar.Capabilities, proto.CapTCPAccess)
 	var env proto.Envelope
 	// A refusal that will not change (see RefusedError.Final) ends its own
 	// tunnel: it is logged and skipped, and the others are served. Only a
 	// session in which every tunnel was refused so ends, with the first
 	// refusal. Any other refusal ends the session as it always has, so that
 	// the reconnect tries every tunnel again.
-	var firstFinal *RefusedError
+	var firstFinal error
 	served := 0
+	skip := func(name string, err error) {
+		if firstFinal == nil {
+			firstFinal = err
+		}
+		c.events.emit(func(o Observer) {
+			if ro, ok := o.(RefusalObserver); ok {
+				ro.Refused(name, err)
+			}
+		})
+	}
 	for _, tn := range c.opts.Tunnels {
+		// A wish for ip or private that the relay cannot apply is never
+		// sent: an older relay would open a public port for it (D9).
+		restricted := tn.Type == "tcp" && tn.Access != "" && tn.Access != "open"
+		if restricted && !tcpAccess {
+			ae := &AccessNotAppliedError{Name: tn.Name, Access: tn.Access, Type: "tcp", NotSent: true}
+			c.log.Error("tunnel not registered: the relay cannot apply its access mode", "name", tn.Name, "access", tn.Access)
+			skip(tn.Name, ae)
+			continue
+		}
 		if err := proto.WriteMessage(ctrl, proto.MsgTunnelRegister, proto.TunnelRegister{
 			Name: tn.Name, Type: tn.Type, RemotePort: tn.RemotePort, LocalAddr: tn.LocalAddr,
 			Slug: tn.Slug, Access: tn.Access,
@@ -248,15 +332,15 @@ func (c *Client) connectOnce(ctx context.Context) error {
 				return re
 			}
 			c.log.Warn("tunnel refused", "name", tn.Name, "code", re.Code, "err", re.Message)
-			if firstFinal == nil {
-				firstFinal = re
-			}
+			skip(tn.Name, re)
 			continue
 		}
-		served++
 		reg := RegisteredTunnel{
 			TunnelID: rr.TunnelID, Name: tn.Name, Type: tn.Type, LocalAddr: tn.LocalAddr,
 			AccessMode: rr.AccessMode, Created: rr.Created, DashboardURL: rr.DashboardURL, GatewayOnly: rr.GatewayOnly,
+		}
+		if tn.Type == "tcp" {
+			reg.Wished = tn.Access
 		}
 		for _, name := range rr.Ignored {
 			switch name {
@@ -266,6 +350,17 @@ func (c *Client) connectOnce(ctx context.Context) error {
 				reg.Ignored.Access = true
 			}
 		}
+		if restricted && (rr.AccessMode == "" || reg.Ignored.Access) {
+			// The relay said it applies access modes to tcp and then did not
+			// confirm this one: its port may be public. Returning closes the
+			// session before a visitor can be sent.
+			ae := &AccessNotAppliedError{Name: tn.Name, Access: tn.Access, Type: "tcp", RemotePort: rr.RemotePort}
+			if n := len(c.opts.Tunnels); n > 1 {
+				ae.Services = n
+			}
+			return ae
+		}
+		served++
 		// A relay that knows slug and access says what the access mode is,
 		// or that it ignored them. One that says neither is older: it never
 		// saw the wishes and made, or found, the service its own way.
@@ -296,8 +391,13 @@ func (c *Client) connectOnce(ctx context.Context) error {
 			c.log.Info("tunnel registered", "name", tn.Name, "tunnel_id", rr.TunnelID, "url", tunnelURL)
 			reg.URL = tunnelURL
 		} else {
-			c.log.Info("tunnel registered", "tunnel_id", rr.TunnelID, "remote_port", rr.RemotePort)
-			reg.RemotePort = rr.RemotePort
+			args := []any{"tunnel_id", rr.TunnelID, "remote_port", rr.RemotePort}
+			if rr.AccessMode != "" {
+				// A relay with tcp services (proto.CapTCPAccess) says more.
+				args = append(args, "name", tn.Name, "access_mode", rr.AccessMode, "slug", rr.Slug)
+			}
+			c.log.Info("tunnel registered", args...)
+			reg.RemotePort, reg.Slug = rr.RemotePort, rr.Slug
 		}
 		c.events.emit(func(o Observer) { o.Registered(reg) })
 		c.mu.Lock()
@@ -306,7 +406,7 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		c.lastRemotePort = rr.RemotePort
 		c.mu.Unlock()
 	}
-	if served == 0 && firstFinal != nil {
+	if served == 0 && firstFinal != nil && c.fwdLiveCount() == 0 {
 		return firstFinal
 	}
 	c.registered.Store(true)
@@ -325,7 +425,15 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		return fmt.Errorf("session closed")
 	case err := <-readErr:
 		return err
+	case <-c.forwardsEnded():
+		return c.fwdErrValue()
 	}
+}
+
+func (c *Client) fwdLiveCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.fwdLive
 }
 
 func (c *Client) pingLoop(ctx context.Context, ctrl *yamux.Stream) {

@@ -28,6 +28,9 @@ type Model struct {
 	RetryIn        time.Duration
 	RTT            time.Duration // 0 = not measured yet
 	Services       []Service
+	// Forwards are the local listeners of `burrow forward` and of the
+	// forwards: section of burrow.yaml.
+	Forwards []Forward
 	// Notes are things the person should read once, each shown as a warning
 	// below the services: what was not applied, who can reach an open app.
 	Notes  []string
@@ -52,6 +55,16 @@ type Service struct {
 	ToolsKnown bool // the bridge has reported at least once
 	MCPDown    bool // the local server does not answer; the bridge restarts it
 	MCPURL     bool // the local server is a URL: it is not restarted, only reached again
+}
+
+// Forward is one local listener that forwards to a tcp service.
+type Forward struct {
+	Target, Addr string
+	Open, Total  int
+	// Problem says why the last connection was not forwarded, or why the
+	// forward stopped.
+	Problem string
+	Stopped bool
 }
 
 // Line is one recent request or connection.
@@ -125,8 +138,30 @@ func (s *Store) Snapshot() Model {
 		sv.Recent = append([]Line(nil), sv.Recent...)
 		m.Services[i] = sv
 	}
+	m.Forwards = append([]Forward(nil), s.m.Forwards...)
 	m.Notes = append([]string(nil), s.m.Notes...)
 	return m
+}
+
+// AddForwards adds the forwards of the run, in their order.
+func (s *Store) AddForwards(fw []client.ForwardSpec) {
+	s.update(func() {
+		for _, f := range fw {
+			s.m.Forwards = append(s.m.Forwards, Forward{Target: f.Target, Addr: f.Addr})
+		}
+	})
+}
+
+// Forward implements client.ForwardObserver.
+func (s *Store) Forward(f client.ForwardState) {
+	s.update(func() {
+		if f.Index < 0 || f.Index >= len(s.m.Forwards) {
+			return
+		}
+		s.m.Forwards[f.Index] = Forward{
+			Target: f.Target, Addr: f.Addr, Open: f.Open, Total: f.Total, Problem: f.Problem, Stopped: f.Stopped,
+		}
+	})
 }
 
 // Changed is signalled after every change. The signal never blocks the one
@@ -198,6 +233,13 @@ func (s *Store) Registered(t client.RegisteredTunnel) {
 			s.m.Services[i].Public = t.URL
 		case t.RemotePort > 0:
 			s.m.Services[i].Public = net.JoinHostPort(s.m.Relay, strconv.Itoa(t.RemotePort))
+		case t.Type == "tcp" && t.AccessMode == "private":
+			// No public port: the way to reach it instead.
+			target := t.Slug
+			if !client.ValidSlug(target) {
+				target = t.Name
+			}
+			s.m.Services[i].Public = "private · burrow forward " + target
 		}
 	})
 }
