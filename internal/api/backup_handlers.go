@@ -219,7 +219,7 @@ func readManifestFromArchive(path string) (backupManifestWire, error) {
 // recomputeDBSha256 streams the archive's db.sqlite entry through a SHA-256
 // hasher and returns the lowercase hex digest. Used by POST .../verify.
 func recomputeDBSha256(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G703: path comes from resolveArchivePath, which cleans it and keeps it inside the backup directory
 	if err != nil {
 		return "", err
 	}

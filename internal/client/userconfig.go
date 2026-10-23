@@ -81,6 +81,11 @@ func LoadUserConfig(path string) (UserConfig, error) {
 		// value may be the token, so its error is not passed on.
 		return UserConfig{}, fmt.Errorf("user config %s is not valid; run `burrow login` again to rewrite it", path)
 	}
+	// A hand-edited pin may be upper case or have a prefix; an unusable one is
+	// left as it is, so that it fails loudly rather than switching pinning off.
+	if fp, ok := NormalizeFingerprint(c.ControlSHA256); ok {
+		c.ControlSHA256 = fp
+	}
 	return c, nil
 }
 

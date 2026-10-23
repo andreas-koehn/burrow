@@ -6,9 +6,12 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -147,14 +150,75 @@ func TestDialControl_NoRefreshWhenTheDashboardDisagrees(t *testing.T) {
 	}
 }
 
-func TestDialControl_RefreshFailureKeepsTheMismatch(t *testing.T) {
+// The dashboard could not be asked (network error, 5xx, 429, timeout): that
+// says nothing about the certificate, so it is an error to retry, not a verdict.
+func TestDialControl_RefreshFailureIsTransient(t *testing.T) {
 	addr, _ := pinRelay(t)
 	o := &Options{Server: addr, PinSHA256: strings.Repeat("1", 64),
 		RefreshPin: func(context.Context) (string, error) { return "", errors.New("dashboard down") }}
 	_, err := dialControl(context.Background(), o)
 	var pm *PinMismatchError
-	if !errors.As(err, &pm) {
-		t.Fatalf("err %v, want a mismatch", err)
+	var pe *PinRefreshError
+	if errors.As(err, &pm) || !errors.As(err, &pe) {
+		t.Fatalf("err %v, want a *PinRefreshError and no mismatch", err)
+	}
+}
+
+func TestRun_KeepsRetryingWhenTheRefreshFails(t *testing.T) {
+	addr, _ := pinRelay(t)
+	calls := 0
+	c := New(Options{Server: addr, PinSHA256: strings.Repeat("1", 64), Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		RefreshPin: func(context.Context) (string, error) { calls++; return "", errors.New("503") }})
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	err := c.Run(ctx)
+	var pm *PinMismatchError
+	if errors.As(err, &pm) || !errors.Is(err, context.DeadlineExceeded) || calls < 2 {
+		t.Fatalf("Run returned %v after %d refreshes, want to run until the context ended", err, calls)
+	}
+}
+
+func TestLoadUserConfig_NormalizesThePin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	raw := strings.ToUpper(strings.Repeat("ab", 32))
+	if err := os.WriteFile(path, []byte("relay: https://r\ncontrol: r:7000\ntoken: bur_x\ncontrol_sha256: \"sha256:"+raw+"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadUserConfig(path)
+	if err != nil || c.ControlSHA256 != strings.Repeat("ab", 32) {
+		t.Fatalf("%+v %v", c, err)
+	}
+}
+
+// The name sent in the hello is --server-name: an ACME relay picks its
+// certificate by it.
+func TestDialControl_PinnedDialSendsTheServerName(t *testing.T) {
+	dir := t.TempDir()
+	if err := devcert.Generate(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	cert, _ := tls.LoadX509KeyPair(filepath.Join(dir, "dev-server.pem"), filepath.Join(dir, "dev-server-key.pem"))
+	got := make(chan string, 1)
+	l, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{MinVersion: tls.VersionTLS12,
+		GetCertificate: func(h *tls.ClientHelloInfo) (*tls.Certificate, error) { got <- h.ServerName; return &cert, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		c, err := l.Accept()
+		if err == nil {
+			_, _ = c.Read(make([]byte, 1))
+			c.Close()
+		}
+	}()
+	conn, err := dialControl(context.Background(), &Options{Server: l.Addr().String(), ServerName: "relay.example.com", PinSHA256: Fingerprint(cert.Certificate[0])})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	if sn := <-got; sn != "relay.example.com" {
+		t.Fatalf("SNI %q", sn)
 	}
 }
 

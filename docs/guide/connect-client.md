@@ -359,6 +359,17 @@ Let's Encrypt (ACME), the certificate is signed by a public CA and validated by
 the client automatically: no `--insecure` flag or extra CA bundle needed.
 :::
 
+::: tip The relay's certificate is pinned at sign-in
+`burrow login` reads the SHA-256 fingerprint of the relay's control certificate
+from the relay's HTTPS dashboard and stores it. From then on the client accepts
+port `7000` only if it presents that certificate, which also works with a
+self-signed one. A pin does not look at the certificate's expiry date or host
+name: an expired certificate that matches is accepted. When the relay renews its
+certificate, the client asks the dashboard again and takes the new fingerprint
+only if the dashboard names the certificate it was just shown; if that cannot be
+confirmed, run `burrow login <relay> --force`. `--cacert` and `--insecure` skip the pin.
+:::
+
 ::: warning `--insecure` in production
 Only use `--insecure` against a local dev relay with self-signed certificates.
 Never use it against a production relay.

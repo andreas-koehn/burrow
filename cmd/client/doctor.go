@@ -647,7 +647,7 @@ func newDoctorDeps(d deps, g globalFlags, userPath string) (doctorDeps, error) {
 				// A pin stored at login replaces the chain check, as for the
 				// control connection itself.
 				if c, err := resolveCredentials(d, userPath, fc); err == nil && c.Pin != "" {
-					cfg = client.PinnedTLS(c.Pin)
+					cfg = client.PinnedTLS(c.Pin, serverName)
 				}
 			}
 			return tls.Client(conn, cfg).HandshakeContext(ctx)

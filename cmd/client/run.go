@@ -124,11 +124,14 @@ func pinRefresher(g globalFlags, creds client.Credentials, log *slog.Logger) (fu
 			return "", err
 		}
 		disc, err := client.Discover(ctx, hc, creds.Relay)
+		if errors.Is(err, client.ErrNoDiscovery) {
+			return "", nil // answered, and names no certificate: no verdict for the new one
+		}
 		if err != nil {
-			return "", err
+			return "", err // not asked (network, 5xx, 429, timeout): the client retries
 		}
 		if !client.SameEndpoint(disc.Control, creds.Control) {
-			return "", errors.New("the dashboard names another control endpoint")
+			return "", nil // answered for another endpoint
 		}
 		return disc.ControlCertSHA256, nil
 	}

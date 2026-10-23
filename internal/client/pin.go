@@ -40,6 +40,18 @@ func (e *PinMismatchError) Error() string {
 		short(e.Want), short(e.Got))
 }
 
+// PinRefreshError says the pin did not match and the dashboard could not be
+// asked whether the certificate was renewed (network error, 5xx, 429,
+// timeout). That is no verdict on the certificate, so the client retries with
+// backoff instead of stopping.
+type PinRefreshError struct{ Err error }
+
+func (e *PinRefreshError) Error() string {
+	return "the relay's control certificate does not match the pin and its dashboard could not be asked whether it was renewed: " + e.Err.Error()
+}
+
+func (e *PinRefreshError) Unwrap() error { return e.Err }
+
 func short(fp string) string {
 	if len(fp) > 16 {
 		return fp[:16] + "…"
@@ -83,8 +95,12 @@ func ForwardAllowed(insecure, insecureForward bool) error {
 
 // PinnedTLS builds the TLS config of a pinned dial. The chain and the name are
 // not checked: the pin replaces them, and it is stricter.
-func PinnedTLS(pin string) *tls.Config {
+func PinnedTLS(pin, serverName string) *tls.Config {
 	return &tls.Config{
+		// serverName is the hello's SNI (--server-name; an ACME relay picks its
+		// certificate by it). "" lets the dialer use the host of the address. It
+		// is not verified: the pin is.
+		ServerName:         serverName,
 		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: true, //nolint:gosec // the pin below replaces chain and name verification
 		// VerifyConnection, not VerifyPeerCertificate: it also runs when a
@@ -104,18 +120,23 @@ func PinnedTLS(pin string) *tls.Config {
 
 // dialPinned dials with the pin and, on a mismatch, tries the refresh once.
 func dialPinned(ctx context.Context, o *Options) (net.Conn, error) {
-	d := &tls.Dialer{Config: PinnedTLS(o.PinSHA256)}
+	d := &tls.Dialer{Config: PinnedTLS(o.PinSHA256, o.ServerName)}
 	conn, err := d.DialContext(ctx, "tcp", o.Server)
 	var pm *PinMismatchError
 	if err == nil || !errors.As(err, &pm) || o.RefreshPin == nil || pm.Got == "" {
 		return conn, wrapDial(err)
 	}
 	fresh, rerr := o.RefreshPin(ctx)
-	fresh, ok := NormalizeFingerprint(fresh)
-	if rerr != nil || !ok || fresh != pm.Got {
+	if rerr != nil {
+		return nil, wrapDial(&PinRefreshError{Err: rerr})
+	}
+	// The dashboard answered: only an answer equal to what :7000 presented
+	// replaces the pin; any other answer is the verdict.
+	if got, ok := NormalizeFingerprint(fresh); !ok || got != pm.Got {
 		return nil, wrapDial(err)
 	}
-	d = &tls.Dialer{Config: PinnedTLS(fresh)}
+	fresh = pm.Got
+	d = &tls.Dialer{Config: PinnedTLS(fresh, o.ServerName)}
 	conn, err = d.DialContext(ctx, "tcp", o.Server)
 	if err != nil {
 		return nil, wrapDial(err)

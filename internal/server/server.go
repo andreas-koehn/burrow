@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -231,6 +232,9 @@ type Options struct {
 	// Only GetCertificate is used (no TLS-ALPN NextProtos) since the control
 	// channel speaks yamux, not an ACME challenge protocol.
 	GetCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	// CertNames are the names GetCertificate manages (ACME domains). Discovery asks
+	// for the certificate of one of them, never of a name from a request.
+	CertNames []string
 	// MinClientVersion is the oldest client version let in (MAJOR.MINOR.PATCH,
 	// a leading v allowed). Empty lets every client in, and so does a client
 	// that names no version or one that cannot be compared.
@@ -300,18 +304,38 @@ func New(o Options) (*Server, error) {
 	return s, nil
 }
 
-// Addr returns the bound listen address ("" until listening).
 // ControlCertSHA256 returns the SHA-256 of the leaf certificate the control
 // port presents to a client that asks for serverName, as lower-case hex. A
 // file certificate is fixed; a GetCertificate (ACME) is asked each time, so a
 // renewed certificate shows up at once.
-func (s *Server) ControlCertSHA256(serverName string) (string, error) {
+//
+// serverName comes from a request's Host header, so it is not trusted: with
+// CertNames set, a name outside them is answered with the first managed name,
+// and nothing is ever requested for a name the relay does not manage. The
+// hello carries a stub connection (certmagic reads hello.Conn), and a panic in
+// the certificate source ends as an error.
+func (s *Server) ControlCertSHA256(serverName string) (fp string, err error) {
 	var cert *tls.Certificate
 	switch {
 	case s.tlsC.GetCertificate != nil:
-		c, err := s.tlsC.GetCertificate(&tls.ClientHelloInfo{ServerName: serverName})
-		if err != nil {
-			return "", err
+		name := serverName
+		if len(s.opts.CertNames) > 0 {
+			name = s.opts.CertNames[0]
+			for _, n := range s.opts.CertNames {
+				if strings.EqualFold(n, serverName) {
+					name = n
+					break
+				}
+			}
+		}
+		defer func() {
+			if r := recover(); r != nil {
+				fp, err = "", fmt.Errorf("control certificate lookup failed: %v", r)
+			}
+		}()
+		c, gerr := s.tlsC.GetCertificate(&tls.ClientHelloInfo{ServerName: name, Conn: stubConn{}})
+		if gerr != nil {
+			return "", gerr
 		}
 		cert = c
 	case len(s.tlsC.Certificates) > 0:
@@ -324,6 +348,13 @@ func (s *Server) ControlCertSHA256(serverName string) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// stubConn stands in for the connection of a hello that no client sent.
+type stubConn struct{ net.Conn }
+
+func (stubConn) RemoteAddr() net.Addr { return &net.TCPAddr{IP: net.IPv4zero} }
+func (stubConn) LocalAddr() net.Addr  { return &net.TCPAddr{IP: net.IPv4zero} }
+
+// Addr returns the bound listen address ("" until listening).
 func (s *Server) Addr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

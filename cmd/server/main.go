@@ -645,6 +645,7 @@ func newRootCmd() *cobra.Command {
 				// acmeGetCert returns nil when acmeMgr is nil, so the server
 				// falls back to file certs exactly as before (unchanged).
 				GetCertificate: acmeGetCert(acmeMgr),
+				CertNames:      acmeCertNames(cfg, acmeMgr),
 			})
 			if err != nil {
 				return err
@@ -1715,4 +1716,12 @@ func acmeGetCert(m *acme.Manager) func(*tls.ClientHelloInfo) (*tls.Certificate, 
 		return nil
 	}
 	return m.GetCertificate
+}
+
+// acmeCertNames are the names the ACME manager serves; nil without ACME.
+func acmeCertNames(cfg *config.ServerConfig, m *acme.Manager) []string {
+	if m == nil {
+		return nil
+	}
+	return acmeDomains(cfg.ACMEDomain, cfg.ServicesDomain)
 }
