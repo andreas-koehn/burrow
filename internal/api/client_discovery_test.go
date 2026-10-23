@@ -222,3 +222,31 @@ func TestClientDiscovery_RateLimitBodyIsJSON(t *testing.T) {
 		t.Fatalf("status %d, body %q", last.Code, last.Body.String())
 	}
 }
+
+func TestClientDiscovery_ControlCertFingerprint(t *testing.T) {
+	var asked string
+	d := Deps{ControlListen: ":7000", ControlCertSHA256: func(host string) (string, error) {
+		asked = host
+		return strings.Repeat("ab", 32), nil
+	}}
+	_, body := discoveryOf(t, d, "burrow.example.com:443")
+	if body["control_cert_sha256"] != strings.Repeat("ab", 32) {
+		t.Fatalf("control_cert_sha256 = %v", body["control_cert_sha256"])
+	}
+	if asked != "burrow.example.com" {
+		t.Fatalf("fingerprint asked for host %q, want the control host", asked)
+	}
+}
+
+// A relay that cannot name its certificate leaves the field out; the rest of
+// the document is unchanged.
+func TestClientDiscovery_FingerprintErrorOmitsTheField(t *testing.T) {
+	d := Deps{ControlListen: ":7000", ControlCertSHA256: func(string) (string, error) { return "", http.ErrAbortHandler }}
+	resp, body := discoveryOf(t, d, "burrow.example.com")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	if _, ok := body["control_cert_sha256"]; ok {
+		t.Fatal("field present")
+	}
+}

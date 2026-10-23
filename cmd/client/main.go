@@ -270,6 +270,7 @@ func newRoot(d deps) *cobra.Command {
 	pf.String("cacert", "", "PEM CA to trust (e.g. certs/dev-ca.pem)")
 	pf.String("server-name", "", "TLS SNI/verify name (default: host of the control endpoint)")
 	pf.Bool("insecure", false, "skip TLS verification (DEV ONLY)")
+	pf.Bool("insecure-forward", false, "allow `burrow forward` to run under --insecure (the relay is not verified)")
 
 	root.AddCommand(
 		newLoginCmd(d),

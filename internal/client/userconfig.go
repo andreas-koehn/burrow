@@ -23,6 +23,9 @@ type UserConfig struct {
 	Control   string `yaml:"control" json:"control"` // burrow.example.com:7000
 	Token     string `yaml:"token" json:"-"`
 	TokenName string `yaml:"token_name" json:"token_name"`
+	// ControlSHA256 pins :7000: the fingerprint of the control certificate the
+	// relay named at login (see pin.go). "" = not pinned; the system roots decide.
+	ControlSHA256 string `yaml:"control_sha256,omitempty" json:"control_sha256,omitempty"`
 }
 
 // redactToken says whether a token is there without showing any of it.

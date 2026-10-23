@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -27,6 +28,8 @@ type globalFlags struct {
 	cacert     string // PEM file of a CA to trust
 	serverName string // TLS server name; default: host of the control endpoint
 	insecure   bool
+	// insecureForward lets `burrow forward` run under --insecure (D13).
+	insecureForward bool
 	// view asks for the status view instead of log lines. Only readGlobals
 	// sets it; `connect` builds its flags itself and always logs.
 	view bool
@@ -68,9 +71,19 @@ func runClient(ctx context.Context, creds client.Credentials, tunnels []client.T
 		// its message and exit code.
 		StopOnRefusal: after || g.view,
 	}
+	if g.insecure {
+		// Said every time, on stderr, whatever the log level.
+		fmt.Fprintf(viewErr, "WARNING: --insecure is set: the relay's certificate at %s is NOT checked. "+
+			"Anyone on the network path can read or replace this traffic and steal the token. Use it for local development only.\n", creds.Control)
+	} else if creds.Pin != "" && pool == nil {
+		o.PinSHA256 = creds.Pin
+		if creds.Relay != "" {
+			o.RefreshPin, o.PinRefreshed = pinRefresher(g, creds, log)
+		}
+	}
 	if g.view {
 		if t, ok := openTerminal(); ok {
-			return runWithView(ctx, stop, o, t)
+			return pinExit(runWithView(ctx, stop, o, t), creds)
 		}
 	}
 	if after {
@@ -82,7 +95,68 @@ func runClient(ctx context.Context, creds client.Credentials, tunnels []client.T
 		}
 		o.Observer = n
 	}
-	return startClient(ctx, o)
+	return pinExit(startClient(ctx, o), creds)
+}
+
+// pinExit turns a pin mismatch into the error the command ends with: exit 5,
+// like any other certificate that is not trusted, and the way to log in again.
+func pinExit(err error, creds client.Credentials) error {
+	var pm *client.PinMismatchError
+	if !errors.As(err, &pm) {
+		return err
+	}
+	relay := strings.TrimPrefix(creds.Relay, "https://")
+	if relay == "" {
+		relay, _, _ = net.SplitHostPort(creds.Control)
+	}
+	return &exitError{code: exitUnreachable, msg: fmt.Sprintf(
+		"The control certificate of %s does not match the one pinned at login (pinned sha256:%.16s…, presented sha256:%.16s…).\n"+
+			"Someone may be intercepting the connection, so nothing was sent. If the relay's certificate was replaced on purpose, pin the new one: burrow login %s --force",
+		creds.Control, pm.Want, pm.Got, relay)}
+}
+
+// pinRefresher asks the relay's dashboard, over verified HTTPS, which control
+// certificate it presents now, and stores the answer when a pin is replaced.
+func pinRefresher(g globalFlags, creds client.Credentials, log *slog.Logger) (func(context.Context) (string, error), func(string)) {
+	refresh := func(ctx context.Context) (string, error) {
+		hc, err := relayHTTPClient(g)
+		if err != nil {
+			return "", err
+		}
+		disc, err := client.Discover(ctx, hc, creds.Relay)
+		if err != nil {
+			return "", err
+		}
+		if !client.SameEndpoint(disc.Control, creds.Control) {
+			return "", errors.New("the dashboard names another control endpoint")
+		}
+		return disc.ControlCertSHA256, nil
+	}
+	stored := func(pin string) {
+		log.Warn("the relay's control certificate changed; its dashboard vouches for the new one, so the pin was replaced", "sha256", pin)
+		if creds.ConfigPath == "" {
+			return
+		}
+		cur, err := client.LoadUserConfig(creds.ConfigPath)
+		if err != nil || !client.SameEndpoint(cur.Control, creds.Control) {
+			return
+		}
+		cur.ControlSHA256 = pin
+		if err := client.SaveUserConfig(creds.ConfigPath, cur); err != nil {
+			log.Warn("could not store the new pin; run burrow login --force to store it", "err", err)
+		}
+	}
+	return refresh, stored
+}
+
+// requireSecureForward is the check P05's `burrow forward` makes before it
+// opens a listener (D13): a client that does not verify the relay may not
+// carry a private service's traffic unless --insecure-forward is given.
+func (g globalFlags) requireSecureForward() error {
+	if err := client.ForwardAllowed(g.insecure, g.insecureForward); err != nil {
+		return usageErrorf("%s", err.Error())
+	}
+	return nil
 }
 
 // loadRootCAs reads the PEM file of --cacert; nil without one.
@@ -204,6 +278,7 @@ func readGlobals(cmd *cobra.Command, d deps) (globalFlags, error) {
 	g.cacert, _ = cmd.Flags().GetString("cacert")
 	g.serverName, _ = cmd.Flags().GetString("server-name")
 	g.insecure, _ = cmd.Flags().GetBool("insecure")
+	g.insecureForward, _ = cmd.Flags().GetBool("insecure-forward")
 	return g, nil
 }
 
@@ -251,6 +326,9 @@ func resolveCredentials(d deps, userPath string, file *client.FileConfig) (clien
 		s.User = &user
 	}
 	creds, err := client.Resolve(s)
+	if err == nil && userErr == nil {
+		creds.ConfigPath = userPath // where a refreshed pin is stored
+	}
 	if err != nil && userErr != nil && !errors.Is(userErr, os.ErrNotExist) {
 		// The stored sign-in was needed and cannot be read: say that rather
 		// than "not signed in".

@@ -3,6 +3,7 @@ package api
 import (
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/httprate"
@@ -26,6 +27,12 @@ type ClientDiscovery struct {
 	Version          string `json:"version"`
 	MinClientVersion string `json:"min_client_version"`
 	ProtocolVersion  int    `json:"protocol_version"`
+	// ControlCertSHA256 is the SHA-256 of the DER leaf certificate :7000
+	// presents, in lower-case hex. It is public information (anyone who
+	// connects sees the certificate); what makes it useful is that the client
+	// reads it over the dashboard's HTTPS, a channel it has already verified.
+	// Omitted when the relay cannot say.
+	ControlCertSHA256 string `json:"control_cert_sha256,omitempty"`
 }
 
 // controlEndpoint is the host:port a client connects to, as seen from the
@@ -83,10 +90,21 @@ func (d Deps) discoveryRateLimiter() func(http.Handler) http.Handler {
 // the control endpoint is a public port, not a secret.
 func (d Deps) GetClientDiscovery(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, ClientDiscovery{
-		Control:          d.controlEndpoint(r),
+	control := d.controlEndpoint(r)
+	doc := ClientDiscovery{
+		Control:          control,
 		Version:          version.Version,
 		MinClientVersion: d.MinClientVersion,
 		ProtocolVersion:  proto.ProtocolVersion,
-	})
+	}
+	if d.ControlCertSHA256 != nil {
+		host, _, err := net.SplitHostPort(control)
+		if err != nil {
+			host = control
+		}
+		if fp, err := d.ControlCertSHA256(strings.Trim(host, "[]")); err == nil {
+			doc.ControlCertSHA256 = fp
+		}
+	}
+	writeJSON(w, http.StatusOK, doc)
 }

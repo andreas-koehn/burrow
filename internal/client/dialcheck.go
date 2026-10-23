@@ -22,7 +22,15 @@ type AuthResult struct {
 }
 
 // dialControl opens the TLS connection to the control endpoint.
-func dialControl(ctx context.Context, o Options) (net.Conn, error) {
+//
+// Which check applies, first match: --insecure checks nothing; a CA given with
+// --cacert is checked as always (it is explicit, so it wins over a stored pin);
+// a pin from login is checked against the presented leaf; otherwise the system
+// roots and the host name decide. o is updated when a pin is refreshed.
+func dialControl(ctx context.Context, o *Options) (net.Conn, error) {
+	if !o.Insecure && o.RootCAs == nil && o.PinSHA256 != "" {
+		return dialPinned(ctx, o)
+	}
 	tlsCfg := &tls.Config{
 		InsecureSkipVerify: o.Insecure, //nolint:gosec // dev-only opt-in (spec D4)
 		RootCAs:            o.RootCAs,
@@ -64,7 +72,7 @@ func authenticate(conn net.Conn, token string, capabilities []string) (proto.Aut
 // registers no tunnel. A rejected token is an AuthResult with OK false; an
 // error means the relay could not be asked.
 func CheckAuth(ctx context.Context, o Options) (AuthResult, error) {
-	conn, err := dialControl(ctx, o)
+	conn, err := dialControl(ctx, &o)
 	if err != nil {
 		return AuthResult{}, err
 	}

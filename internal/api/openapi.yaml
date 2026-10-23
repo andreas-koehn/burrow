@@ -5667,6 +5667,13 @@ paths:
                     type: integer
                     description: Version of the control protocol the relay speaks.
                     example: 1
+                  control_cert_sha256:
+                    type: string
+                    description: >
+                      SHA-256 of the leaf certificate the control port presents, as 64 lower-case hex
+                      digits. `burrow login` reads it over the verified HTTPS dashboard and pins the
+                      control port to it. Omitted when the relay cannot say.
+                    example: "3b7a0c5e9f1d2a4b6c8e0f1a3b5d7f9021436587a9bcde0f1a2b3c4d5e6f7a8b"
         '429':
           description: Rate-limited (per source IP).
           content:

@@ -46,8 +46,18 @@ type Options struct {
 	Insecure   bool
 	RootCAs    *x509.CertPool
 	ServerName string
-	Tunnels    []TunnelSpec
-	Logger     *slog.Logger
+	// PinSHA256 is the fingerprint of the control certificate stored at login
+	// (see pin.go); "" = none, and the system roots decide. Ignored under
+	// Insecure and when RootCAs is set.
+	PinSHA256 string
+	// RefreshPin, when set, asks the relay's dashboard (over verified HTTPS)
+	// for the fingerprint it names now. It is called after a pin mismatch; the
+	// pin is replaced only when the answer equals what :7000 presented.
+	RefreshPin func(ctx context.Context) (string, error)
+	// PinRefreshed is told about the replacement, to store it.
+	PinRefreshed func(pin string)
+	Tunnels      []TunnelSpec
+	Logger       *slog.Logger
 	// Observer is told what the client does, for a status view. nil = none.
 	Observer Observer
 	// RequestSummaries asks the relay for a summary of each request to an http
@@ -127,6 +137,12 @@ func (c *Client) Run(ctx context.Context) error {
 	for {
 		c.events.emit(func(o Observer) { o.State(StateConnecting, "", 0) })
 		err := c.connectOnce(ctx)
+		var mismatch *PinMismatchError
+		if errors.As(err, &mismatch) && ctx.Err() == nil {
+			// Trying again cannot make the certificate the pinned one.
+			c.registered.Store(false)
+			return err
+		}
 		var notApplied *AccessNotAppliedError
 		if errors.As(err, &notApplied) && ctx.Err() == nil {
 			// Never tried again, whatever the caller asked for: every attempt
@@ -162,7 +178,7 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 func (c *Client) connectOnce(ctx context.Context) error {
-	conn, err := dialControl(ctx, c.opts)
+	conn, err := dialControl(ctx, &c.opts)
 	if err != nil {
 		return err
 	}

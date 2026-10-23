@@ -36,6 +36,10 @@ type Discovery struct {
 	Version          string // the relay's version
 	MinClientVersion string // "" when the relay sets no minimum
 	ProtocolVersion  int
+	// ControlCertSHA256 is the fingerprint of the leaf certificate of the
+	// control endpoint, lower-case hex; "" when the relay does not say (older)
+	// or says something that is not a SHA-256.
+	ControlCertSHA256 string
 	// Date is the relay's clock from the Date header, zero without one. It is
 	// set whenever the relay answered, also next to an error.
 	Date time.Time
@@ -143,6 +147,7 @@ func Discover(ctx context.Context, httpClient *http.Client, relayURL string) (Di
 		Version          string `json:"version"`
 		MinClientVersion string `json:"min_client_version"`
 		ProtocolVersion  int    `json:"protocol_version"`
+		CertSHA256       string `json:"control_cert_sha256"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	if err := dec.Decode(&doc); err != nil {
@@ -159,6 +164,7 @@ func Discover(ctx context.Context, httpClient *http.Client, relayURL string) (Di
 	d.Version = printable(doc.Version, 64)
 	d.MinClientVersion = printable(doc.MinClientVersion, 64)
 	d.ProtocolVersion = doc.ProtocolVersion
+	d.ControlCertSHA256, _ = NormalizeFingerprint(doc.CertSHA256)
 	return d, nil
 }
 

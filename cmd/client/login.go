@@ -147,23 +147,36 @@ func cleanToken(token, relayArg string) (string, error) {
 //
 // Two things fail either way: a certificate that is not trusted (exit 5), and
 // a relay that did answer and needs a newer client (exit 6).
-func discoverControl(ctx context.Context, d deps, g globalFlags, errOut io.Writer, relay, fallback string, controlGiven bool) (control string, older bool, err error) {
-	control, err = askDiscovery(ctx, d, g, errOut, relay, fallback, controlGiven)
+//
+// pin is the fingerprint of the control certificate to store (D13): the one
+// the relay named over the verified dashboard connection, for the endpoint it
+// named. It is "" when the relay names none (older), when --insecure left the
+// dashboard unverified, and when --control points elsewhere than the relay said.
+func discoverControl(ctx context.Context, d deps, g globalFlags, errOut io.Writer, relay, fallback string, controlGiven bool) (control string, older bool, pin string, err error) {
+	var disc client.Discovery
+	control, disc, err = askDiscovery(ctx, d, g, errOut, relay, fallback, controlGiven)
 	if errors.Is(err, client.ErrNoDiscovery) {
-		return fallback, true, nil
+		return fallback, true, "", nil
 	}
-	return control, false, err
+	if err == nil && disc.ControlCertSHA256 != "" && client.SameEndpoint(disc.Control, control) {
+		if g.insecure {
+			fmt.Fprintln(errOut, "Warning: --insecure is set, so the relay's control certificate is not pinned. Run `burrow login --force` without --insecure to pin it.")
+		} else {
+			pin = disc.ControlCertSHA256
+		}
+	}
+	return control, false, pin, err
 }
 
 // askDiscovery is discoverControl with the 404 of an older relay left as
 // client.ErrNoDiscovery.
-func askDiscovery(ctx context.Context, d deps, g globalFlags, errOut io.Writer, relay, fallback string, controlGiven bool) (string, error) {
+func askDiscovery(ctx context.Context, d deps, g globalFlags, errOut io.Writer, relay, fallback string, controlGiven bool) (string, client.Discovery, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	disc, err := d.discover(ctx, relay, g)
 	if ctx.Err() != nil && errors.Is(ctx.Err(), context.Canceled) {
-		return "", errLoginInterrupted
+		return "", disc, errLoginInterrupted
 	}
 	var se *client.DiscoveryStatusError
 	// Only an answer went through a handshake, and only then was a
@@ -174,19 +187,19 @@ func askDiscovery(ctx context.Context, d deps, g globalFlags, errOut io.Writer, 
 	}
 	// unasked ends a failed discovery: with --control it is a warning, without
 	// it an error with the two lines given.
-	unasked := func(what, hint string) (string, error) {
+	unasked := func(what, hint string) (string, client.Discovery, error) {
 		if controlGiven {
 			fmt.Fprintf(errOut, "Warning: %s; storing the sign-in for --control %s without checking the relay's versions.\n", what, fallback)
-			return fallback, nil
+			return fallback, client.Discovery{}, nil
 		}
-		return "", &exitError{code: exitUnreachable, msg: what + ".\n" + hint}
+		return "", client.Discovery{}, &exitError{code: exitUnreachable, msg: what + ".\n" + hint}
 	}
 	const orControl = "If the control endpoint is known, pass --control <host:port> to sign in without asking the relay's web address."
 	switch {
 	case err == nil:
 		me := version.Version
 		if c, ok := compareVersions(me, disc.MinClientVersion); ok && c < 0 {
-			return "", &exitError{code: exitClientTooOld, msg: fmt.Sprintf(msgClientTooOld, disc.MinClientVersion)}
+			return "", disc, &exitError{code: exitClientTooOld, msg: fmt.Sprintf(msgClientTooOld, disc.MinClientVersion)}
 		}
 		if c, ok := compareVersions(me, disc.Version); ok && c < 0 {
 			fmt.Fprintf(errOut, "The relay runs %s; this client is %s. Run: burrow update\n", disc.Version, me)
@@ -194,7 +207,7 @@ func askDiscovery(ctx context.Context, d deps, g globalFlags, errOut io.Writer, 
 			fmt.Fprintf(errOut, "The relay runs %s; this client is %s, which is newer.\n", disc.Version, me)
 		}
 		if controlGiven {
-			return fallback, nil
+			return fallback, disc, nil
 		}
 		// The token will go to the control endpoint. When the relay names one
 		// on another host than its own, that is said, not just done.
@@ -202,9 +215,9 @@ func askDiscovery(ctx context.Context, d deps, g globalFlags, errOut io.Writer, 
 			fmt.Fprintf(errOut, "Note: this relay's control endpoint is on another host: %s. The token will be sent there, not to %s.\n",
 				disc.Control, strings.TrimPrefix(relay, "https://"))
 		}
-		return disc.Control, nil
+		return disc.Control, disc, nil
 	case errors.Is(err, client.ErrNoDiscovery):
-		return "", client.ErrNoDiscovery
+		return "", disc, client.ErrNoDiscovery
 	case errors.Is(err, client.ErrNotARelay):
 		// Some web page answered. No control endpoint is guessed from that.
 		return unasked(relay+" does not look like a Burrow relay",
@@ -218,7 +231,7 @@ func askDiscovery(ctx context.Context, d deps, g globalFlags, errOut io.Writer, 
 	}
 	// A certificate that is not trusted is not a relay to be skipped past.
 	if problem, ok := certProblem(err); ok {
-		return "", &exitError{code: exitUnreachable, msg: "Cannot trust " + relay + ": " + problem + ".\n" + fixCacert}
+		return "", disc, &exitError{code: exitUnreachable, msg: "Cannot trust " + relay + ": " + problem + ".\n" + fixCacert}
 	}
 	reason := err.Error()
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -249,11 +262,11 @@ func errNoBrowserLogin(relayArg string) error {
 
 // browserSignIn is what `login` has settled before the sign-in starts.
 type browserSignIn struct {
-	relay, relayArg, control, path string
-	hostname                       string // as the machine reports it, "" when it does not
-	name                           string // the token's name when the relay reports none
-	nameGiven                      bool   // --name was given: it is suggested to the approval page
-	noBrowser                      bool
+	relay, relayArg, control, pin, path string
+	hostname                            string // as the machine reports it, "" when it does not
+	name                                string // the token's name when the relay reports none
+	nameGiven                           bool   // --name was given: it is suggested to the approval page
+	noBrowser                           bool
 }
 
 // browserLogin signs the machine in through the browser: it opens a sign-in
@@ -329,7 +342,7 @@ func browserLogin(ctx context.Context, d deps, g globalFlags, out, errOut io.Wri
 	}
 	// The config is built field by field and handed to the one function that
 	// writes it; neither it nor the token is ever printed.
-	if err := client.SaveUserConfig(p.path, client.UserConfig{Relay: p.relay, Control: p.control, Token: tok.Token, TokenName: name}); err != nil {
+	if err := client.SaveUserConfig(p.path, client.UserConfig{Relay: p.relay, Control: p.control, Token: tok.Token, TokenName: name, ControlSHA256: p.pin}); err != nil {
 		fmt.Fprintln(out)
 		// The relay gave the token once; it cannot be asked for again.
 		return &exitError{code: exitGeneral, msg: "Could not store the sign-in: " + err.Error() + "\n" +
@@ -460,7 +473,7 @@ func newLoginCmd(d deps) *cobra.Command {
 
 			// The relay says where its control endpoint is, before anything is
 			// stored. What it says is shown before the token is read.
-			control, older, err := discoverControl(ctx, d, g, errOut, relay, control, controlGiven)
+			control, older, pin, err := discoverControl(ctx, d, g, errOut, relay, control, controlGiven)
 			if err != nil {
 				return err
 			}
@@ -475,7 +488,7 @@ func newLoginCmd(d deps) *cobra.Command {
 				}
 				noBrowser, _ := flags.GetBool("no-browser")
 				return browserLogin(ctx, d, g, out, errOut, browserSignIn{
-					relay: relay, relayArg: relayArg, control: control, path: path,
+					relay: relay, relayArg: relayArg, control: control, pin: pin, path: path,
 					hostname: hostname, name: name, nameGiven: flags.Changed("name"), noBrowser: noBrowser,
 				})
 			}
@@ -513,7 +526,7 @@ func newLoginCmd(d deps) *cobra.Command {
 
 			// The config is built field by field and handed to the one function
 			// that writes it; it is never printed.
-			if err := client.SaveUserConfig(path, client.UserConfig{Relay: relay, Control: control, Token: token, TokenName: name}); err != nil {
+			if err := client.SaveUserConfig(path, client.UserConfig{Relay: relay, Control: control, Token: token, TokenName: name, ControlSHA256: pin}); err != nil {
 				return err
 			}
 			fmt.Fprintf(out, "Signed in to %s (control endpoint %s, token %q).\nStored in %s\n", relay, control, name, path)

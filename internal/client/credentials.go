@@ -22,11 +22,13 @@ const (
 //
 // Like UserConfig, it never prints its token.
 type Credentials struct {
-	Control   string `json:"control"` // host:port of the control endpoint
-	Token     string `json:"-" yaml:"-"`
-	TokenName string `json:"token_name"` // "" when the token did not come from the user config
-	Relay     string `json:"relay"`      // dashboard URL, "" when unknown
-	Source    string `json:"source"`     // "flags" | "environment" | "burrow.yaml" | "user config", for doctor and status
+	Control    string `json:"control"` // host:port of the control endpoint
+	Token      string `json:"-" yaml:"-"`
+	TokenName  string `json:"token_name"`    // "" when the token did not come from the user config
+	Relay      string `json:"relay"`         // dashboard URL, "" when unknown
+	Pin        string `json:"pin,omitempty"` // control certificate fingerprint stored at login, for this Control
+	ConfigPath string `json:"-"`             // the user config the sign-in came from, "" without one
+	Source     string `json:"source"`        // "flags" | "environment" | "burrow.yaml" | "user config", for doctor and status
 }
 
 // String renders the credentials without the token.
@@ -122,6 +124,11 @@ func Resolve(s Sources) (Credentials, error) {
 	c := Credentials{Control: controls[ci], Token: tokens[ti], Source: names[min(ci, ti)]}
 	if names[ci] == SourceUserConfig {
 		c.Relay = s.User.Relay
+	}
+	// The stored pin belongs to the stored control endpoint, however the
+	// address reached us.
+	if s.User != nil && sameEndpoint(c.Control, controls[stored]) {
+		c.Pin = strings.TrimSpace(s.User.ControlSHA256)
 	}
 	if names[ti] == SourceUserConfig {
 		c.TokenName = s.User.TokenName

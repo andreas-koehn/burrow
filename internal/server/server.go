@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -299,6 +301,29 @@ func New(o Options) (*Server, error) {
 }
 
 // Addr returns the bound listen address ("" until listening).
+// ControlCertSHA256 returns the SHA-256 of the leaf certificate the control
+// port presents to a client that asks for serverName, as lower-case hex. A
+// file certificate is fixed; a GetCertificate (ACME) is asked each time, so a
+// renewed certificate shows up at once.
+func (s *Server) ControlCertSHA256(serverName string) (string, error) {
+	var cert *tls.Certificate
+	switch {
+	case s.tlsC.GetCertificate != nil:
+		c, err := s.tlsC.GetCertificate(&tls.ClientHelloInfo{ServerName: serverName})
+		if err != nil {
+			return "", err
+		}
+		cert = c
+	case len(s.tlsC.Certificates) > 0:
+		cert = &s.tlsC.Certificates[0]
+	}
+	if cert == nil || len(cert.Certificate) == 0 {
+		return "", errors.New("no control certificate")
+	}
+	sum := sha256.Sum256(cert.Certificate[0])
+	return hex.EncodeToString(sum[:]), nil
+}
+
 func (s *Server) Addr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

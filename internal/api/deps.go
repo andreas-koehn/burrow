@@ -486,6 +486,10 @@ type Deps struct {
 	// dashboard host:port is also the control endpoint (P1-2). Falls back to
 	// the request Host header when empty.
 	ControlListen string
+	// ControlCertSHA256 returns the hex SHA-256 of the leaf certificate the
+	// control port presents for serverName; discovery reports it so a client
+	// can pin :7000. nil leaves the field out.
+	ControlCertSHA256 func(serverName string) (string, error)
 	// MinClientVersion is the oldest client version this relay accepts, as the
 	// public discovery endpoint reports it. Empty means no minimum.
 	MinClientVersion string

@@ -1102,6 +1102,8 @@ func newRootCmd() *cobra.Command {
 				// it via /clients/connect-info so the "Connect a client" wizard
 				// prints a working `burrow connect --server …` command. (P1-2)
 				ControlListen: cfg.Listen,
+				// Pinning of :7000 (D13): discovery names the leaf it presents.
+				ControlCertSHA256: srv.ControlCertSHA256,
 				// Reported by the public /client/discovery endpoint.
 				MinClientVersion: cfg.MinClientVersion,
 				// Browser-approved client sign-in (/client/login/*).

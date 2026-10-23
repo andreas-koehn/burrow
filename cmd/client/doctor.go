@@ -254,7 +254,10 @@ func certProblem(err error) (string, bool) {
 	var he x509.HostnameError
 	var ci x509.CertificateInvalidError
 	var cv *tls.CertificateVerificationError
+	var pm *client.PinMismatchError
 	switch {
+	case errors.As(err, &pm):
+		return "the certificate does not match the one pinned at login", true
 	case errors.As(err, &ua):
 		issuer := "an unknown issuer"
 		if ua.Cert != nil {
@@ -277,6 +280,15 @@ func certProblem(err error) (string, bool) {
 }
 
 const fixCacert = "If the relay uses its own CA, trust it with --cacert <ca.pem>"
+
+// fixFor is the advice that goes with a certificate problem.
+func fixFor(err error) string {
+	var pm *client.PinMismatchError
+	if errors.As(err, &pm) {
+		return "If the relay's certificate was replaced on purpose, run: burrow login <relay> --force. Otherwise someone may be intercepting the connection"
+	}
+	return fixCacert
+}
 
 func (r *doctorRun) checkDiscovery() {
 	const name = checkDiscovery
@@ -326,7 +338,7 @@ func (r *doctorRun) checkDiscovery() {
 			r.add(name, "fail", base+" answered discovery with status "+strconv.Itoa(se.Status), "Check the relay address", exitUnreachable)
 		default:
 			if msg, ok := certProblem(err); ok {
-				r.failNet(name, err, msg, fixCacert, exitUnreachable)
+				r.failNet(name, err, msg, fixFor(err), exitUnreachable)
 				return
 			}
 			detail := "cannot reach " + base + ": " + err.Error()
@@ -366,7 +378,7 @@ func (r *doctorRun) checkControl() {
 		}
 		if err := r.d.tlsHandshake(ctx, conn, sn); err != nil {
 			if msg, ok := certProblem(err); ok {
-				r.failNet(name, err, ctl+": "+msg, fixCacert, exitUnreachable)
+				r.failNet(name, err, ctl+": "+msg, fixFor(err), exitUnreachable)
 				return
 			}
 			r.failNet(name, err, ctl+": the TLS handshake failed", "Check that "+ctl+" is a Burrow relay", exitUnreachable)
@@ -389,11 +401,12 @@ func (r *doctorRun) checkToken() {
 	r.netCheck(name, func(ctx context.Context) {
 		o := r.d.authOpts
 		o.Server, o.Token = r.creds.Control, r.creds.Token
+		o.PinSHA256 = r.creds.Pin
 		res, err := r.d.checkAuth(ctx, o)
 		switch {
 		case err != nil:
 			if msg, ok := certProblem(err); ok {
-				r.failNet(name, err, msg, fixCacert, exitUnreachable)
+				r.failNet(name, err, msg, fixFor(err), exitUnreachable)
 				return
 			}
 			r.failNet(name, err, "the relay could not be asked: "+err.Error(), "Run: burrow doctor again, or check the relay", exitUnreachable)
@@ -629,7 +642,15 @@ func newDoctorDeps(d deps, g globalFlags, userPath string) (doctorDeps, error) {
 			return nd.DialContext(ctx, "tcp", addr)
 		},
 		tlsHandshake: func(ctx context.Context, conn net.Conn, serverName string) error {
-			return tls.Client(conn, tlsCfg(serverName)).HandshakeContext(ctx)
+			cfg := tlsCfg(serverName)
+			if !g.insecure && pool == nil {
+				// A pin stored at login replaces the chain check, as for the
+				// control connection itself.
+				if c, err := resolveCredentials(d, userPath, fc); err == nil && c.Pin != "" {
+					cfg = client.PinnedTLS(c.Pin)
+				}
+			}
+			return tls.Client(conn, cfg).HandshakeContext(ctx)
 		},
 		checkAuth: client.CheckAuth,
 		authOpts:  client.Options{Insecure: g.insecure, RootCAs: pool, ServerName: g.serverName},
