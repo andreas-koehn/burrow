@@ -6,9 +6,10 @@
 // web/src/components/ApiKeysPanel.tsx and the live stack):
 //   - Service detail uses the DS Tabs component (role="tab"); the keys tab is
 //     labelled "API keys" → content is <ApiKeysPanel>.
-//   - The harness service set is {ai}; there is no "tcp-echo", so we fall back
-//     to the first service (per the recipe). API keys can be minted on any
-//     service regardless of its access mode — we do NOT change the mode.
+//   - API keys belong to http services. The harness's tcp tunnels (tcp-echo,
+//     svc-a, svc-b) are tcp services since v0.13, whose page has no tabs, so
+//     the spec takes the first http service. Keys can be minted regardless of
+//     its access mode — we do NOT change the mode.
 //   - Create: a primary "New key" button opens a Dialog "Create API key"
 //     with #api-key-name + a "Create" button.
 //   - On success a Dialog "Copy your API key now" reveals the key; footer "Done".
@@ -21,7 +22,7 @@ import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
 import { ensureReauth } from "../../fixtures/reauth";
 import { adminHeaders } from "../../fixtures/api";
 
-interface ServiceRow { id: string; name: string }
+interface ServiceRow { id: string; name: string; type: string }
 interface ApiKeyRow { id: string; name: string }
 
 test.use({ storageState: AUTH_STORAGE_PATH });
@@ -29,12 +30,13 @@ test.use({ storageState: AUTH_STORAGE_PATH });
 test.beforeEach(async ({ request }) => { await ensureReauth(request); });
 
 test("41-api-key-revoke: create + revoke a service API key", async ({ page, request }) => {
-  // Resolve a service id: prefer "tcp-echo", else the first service.
+  // Resolve an http service id: a tcp service has no API keys.
   const svcResp = await request.get("/api/v1/services");
   expect(svcResp.ok()).toBeTruthy();
   const services = (await svcResp.json()) as ServiceRow[];
-  expect(services.length).toBeGreaterThan(0);
-  const svc = services.find((s) => s.name === "tcp-echo") ?? services[0];
+  const svc = services.find((s) => s.type === "http");
+  expect(svc, "an http service in the harness").toBeTruthy();
+  if (!svc) return;
   const id = svc.id;
 
   const keyName = `uikey${Date.now()}`;
