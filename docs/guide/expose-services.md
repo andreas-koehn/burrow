@@ -90,17 +90,21 @@ made then are closed at once. It refuses to run under `--insecure` unless
 `--insecure-forward` is given, and against a relay too old to forward it stops
 with "relay too old".
 
-A mode set in the dashboard that is stricter than `--access` is kept. A looser
-one is not widened by the client: the relay refuses with "restart with
---access `<mode>`". Against a relay too old for tcp access modes, `ip` and
-`private` are never sent: the service is not registered and no port opens.
+Without `--access`, `burrow tcp` asks for no mode: a service that exists is
+served in the mode stored in the dashboard, and a new one is created
+`private`. With `--access`, a mode set in the dashboard that is stricter is
+kept; a looser one is not widened by the client: the relay refuses with
+"restart with --access `<mode>`". Against a relay too old for tcp access
+modes, `ip` and `private` (asked for, or the default of a new service) are
+never sent: the service is not registered and no port opens.
 
-In `burrow.yaml`, a tcp service takes `access: open|ip|private`. **A tcp entry
-without `access:` asks for nothing and keeps the mode stored on the relay; a new
-service created that way is `open`, on a public port anyone can reach.** Write
-`access: private` for remote desktop, SSH, VNC and databases (3389, 22, 5900,
-5432) unless other machines must connect directly; then use `access: ip`.
-`access: private` together with `remote:` is refused. A `forwards:` section runs
+In `burrow.yaml`, a tcp service takes `access: open|ip|private`. A tcp entry
+without `access:` works like `burrow tcp` without `--access`: an existing
+service keeps its stored mode, and a new one is created `private`. An entry
+with `remote:` and no `access:` is created `open`, as before, because a fixed
+public port is what it asks for. Clients older than v0.13.0 create every new
+tcp service `open`. Use `access: ip` when other machines must connect
+directly. `access: private` together with `remote:` is refused. A `forwards:` section runs
 forwards with `burrow up`; a file may hold forwards alone:
 
 ```yaml

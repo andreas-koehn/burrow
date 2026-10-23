@@ -68,8 +68,12 @@ func (r *tcpResolver) ResolveTCP(_ context.Context, userID, name string, o Resol
 	if !ok {
 		id = "svc-" + name
 		r.ids[name] = id
-		if o.Access != "" && o.Access != "open" {
-			r.modes[id] = o.Access
+		want := o.Access
+		if want == "" {
+			want = o.AccessDefault
+		}
+		if want != "" && want != "open" {
+			r.modes[id] = want
 		}
 	}
 	_, served := r.seen[id]

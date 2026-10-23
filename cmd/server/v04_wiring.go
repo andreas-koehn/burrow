@@ -249,7 +249,7 @@ func buildV04Stack(
 	// and the proxy hand it their events.
 	obs := newObserver(observerParts{
 		Recorder: metricsRec, Events: dispatcher, Audit: auditLogger,
-		Cost: costEngine, Chain: aiChain, Log: log,
+		Cost: costEngine, Chain: aiChain, Log: log, Names: wrapped,
 	})
 	aiChain.Observer = obs
 

@@ -251,7 +251,7 @@ func TestHTTP_TokenStoreFails_500(t *testing.T) {
 func TestHTTP_MinterDemoted_TokenNarrowsAtOnce(t *testing.T) {
 	env := newTestEnv(t, []string{"audit:read", "services:configure:own"}, "admin")
 	cs := connectMCP(t, env.url, testBearer, "2026-07-28")
-	const asAdmin = "audit_events_list,connection_logs_list,me_get,service_get,service_slug_update,services_list"
+	const asAdmin = "audit_events_list,connection_logs_list,me_get,service_get,services_list"
 	if got := sortedNames(listedTools(t, cs)); got != asAdmin {
 		t.Fatalf("as admin: %s", got)
 	}
@@ -260,7 +260,7 @@ func TestHTTP_MinterDemoted_TokenNarrowsAtOnce(t *testing.T) {
 	u.Role = "user"
 	env.users.users[testUserID] = u
 
-	if got := sortedNames(listedTools(t, cs)); got != "me_get,service_get,service_slug_update,services_list" {
+	if got := sortedNames(listedTools(t, cs)); got != "me_get,service_get,services_list" {
 		t.Errorf("after the demotion: %s", got)
 	}
 	_, err := callTool(t, cs, "audit_events_list", nil)
@@ -532,7 +532,7 @@ func (a agentTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 func TestHTTP_AuditContext_ReachesTheAPIAndTheRow(t *testing.T) {
 	for _, rev := range testRevisions {
 		t.Run(rev, func(t *testing.T) {
-			env := newTestEnv(t, []string{"services:configure:own"}, "admin")
+			env := newTestEnv(t, []string{"budgets:manage"}, "admin")
 			env.api.status = http.StatusNoContent
 			// Behind the request-id middleware, as on the API router.
 			hs := httptest.NewServer(middleware.RequestID(env.srv))
@@ -567,11 +567,11 @@ func TestHTTP_AuditContext_ReachesTheAPIAndTheRow(t *testing.T) {
 				}
 			}
 
-			for _, id := range []string{"svc1", "svc2"} {
-				if res, err := callTool(t, cs, "service_slug_update", map[string]any{
-					"serviceID": id, "body": map[string]any{"slug": "new-slug"},
+			for _, usd := range []float64{1, 2} {
+				if res, err := callTool(t, cs, "budget_create", map[string]any{
+					"body": map[string]any{"scope": "global", "daily_usd": usd, "action_on_exceed": "throttle_zero"},
 				}); err != nil || res.IsError {
-					t.Fatalf("service_slug_update: %v %+v", err, res)
+					t.Fatalf("budget_create: %v %+v", err, res)
 				}
 			}
 			_, _ = callTool(t, cs, "audit_events_list", nil) // not this token's tool
@@ -585,7 +585,7 @@ func TestHTTP_AuditContext_ReachesTheAPIAndTheRow(t *testing.T) {
 					SourceIP: r.SourceIP, UserAgent: r.UserAgent, RequestID: r.RequestID,
 				})
 			}
-			if want := "service_slug_update=ok,service_slug_update=ok,audit_events_list=denied"; strings.Join(got, ",") != want {
+			if want := "budget_create=ok,budget_create=ok,audit_events_list=denied"; strings.Join(got, ",") != want {
 				t.Fatalf("audit rows %v, want %s", got, want)
 			}
 			// Each call is a request of its own.
@@ -634,10 +634,10 @@ func TestHTTP_AuditRow_WithoutRequestID(t *testing.T) {
 // result the model can read, nothing is sent, and the value reaches neither
 // the answer nor the log.
 func TestHTTP_RefusedArguments_ValueStaysOut(t *testing.T) {
-	env := newTestEnv(t, []string{"services:configure:own"}, "admin")
+	env := newTestEnv(t, []string{"budgets:manage"}, "admin")
 	cs := connectMCP(t, env.url, testBearer, "2025-11-25")
-	res, err := callTool(t, cs, "service_slug_update", map[string]any{
-		"serviceID": "svc1", "body": map[string]any{"slug": "new-slug"}, "extra": "MARKERVALUE",
+	res, err := callTool(t, cs, "budget_create", map[string]any{
+		"body": map[string]any{"scope": "global", "daily_usd": 1, "action_on_exceed": "throttle_zero"}, "extra": "MARKERVALUE",
 	})
 	if err != nil || !res.IsError {
 		t.Fatalf("err=%v result=%+v", err, res)
@@ -649,7 +649,7 @@ func TestHTTP_RefusedArguments_ValueStaysOut(t *testing.T) {
 		t.Errorf("refused arguments reached the API %d times", env.api.calls())
 	}
 	logs := env.logs.String()
-	if !strings.Contains(logs, "service_slug_update") || strings.Contains(logs, "MARKERVALUE") {
+	if !strings.Contains(logs, "budget_create") || strings.Contains(logs, "MARKERVALUE") {
 		t.Errorf("log: %s", logs)
 	}
 	if rows := env.audit.all(); len(rows) != 1 || rows[0].Result != "error" {

@@ -12,8 +12,9 @@ const (
 	msgSlugRule      = "--slug " + client.SlugRule
 	msgAccessRule    = "--access " + client.AccessRule
 	msgTCPAccessRule = "--access " + client.TCPAccessRule
-	// defaultTCPAccess is the mode `burrow tcp` asks for without --access
-	// (D2): a new service gets no public port until its owner says so.
+	// defaultTCPAccess is the mode a new service of `burrow tcp` without
+	// --access is created in (D2): it gets no public port until its owner
+	// says so. It is sent as TunnelSpec.AccessDefault, no wish.
 	defaultTCPAccess = "private"
 )
 
@@ -58,16 +59,18 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 			// The relay checks both again; this is for a quick answer.
 			slug, _ := flags.GetString("slug")
 			access, _ := flags.GetString("access")
-			mode := ""
+			mode, accessDefault := "", ""
 			switch {
 			case typ == "tcp":
-				mode = defaultTCPAccess
+				// Without --access nothing is wished: a service that exists is
+				// served in its stored mode, and a new one is created private.
+				accessDefault = defaultTCPAccess
 				if flags.Changed("access") {
 					m, ok := client.TCPAccessMode(access)
 					if !ok {
 						return usageErrorf(msgTCPAccessRule)
 					}
-					mode = m
+					mode, accessDefault = m, ""
 				}
 			case flags.Changed("access"):
 				m, ok := client.AccessMode(access)
@@ -85,7 +88,7 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 			if remote < 0 || remote > 65535 {
 				return usageErrorf("--remote must be a port between 1 and 65535, or 0 for any free port")
 			}
-			if typ == "tcp" && remote != 0 && mode == "private" {
+			if typ == "tcp" && remote != 0 && (mode == "private" || accessDefault == "private") {
 				return usageErrorf("--remote needs --access open or ip: a private service has no public port, and private is the default")
 			}
 
@@ -112,7 +115,7 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 				return err
 			}
 
-			spec := client.TunnelSpec{Name: name, Type: typ, LocalAddr: local, RemotePort: remote, Slug: slug, Access: mode}
+			spec := client.TunnelSpec{Name: name, Type: typ, LocalAddr: local, RemotePort: remote, Slug: slug, Access: mode, AccessDefault: accessDefault}
 			return foreground(cmd, d, creds, []client.TunnelSpec{spec}, g)
 		},
 	}
@@ -146,6 +149,7 @@ func tcpLong(typ string) string {
 		"  private   the default: no public port; reach it with burrow forward <slug>\n" +
 		"  ip        a public port that takes the addresses allowed in the dashboard only\n" +
 		"  open      a public port anyone can connect to\n" +
-		"A mode set in the dashboard that is stricter than --access is kept; a looser one is not\n" +
+		"Without --access a service that exists is served in the mode set in the dashboard.\n" +
+		"With --access, a mode set in the dashboard that is stricter is kept; a looser one is not\n" +
 		"widened by the client: the relay asks to restart with that mode."
 }

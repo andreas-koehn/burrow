@@ -275,7 +275,7 @@ code 2).
 | `--name <name>` | both | Service name (default: `<hostname>-<port>`) |
 | `--slug <slug>` | `http` | Path under `/svc/`; used only when the service is created |
 | `--access open\|login\|api-key` | `http` | Access mode; used only when the service is created. `login` is the relay's `burrow_login`, `api-key` is `api_key` and creates no key |
-| `--access open\|ip\|private` | `tcp` | Access mode, default `private`: no public port, reached with `burrow forward`. `ip` and `open` open a public port. A dashboard mode stricter than the flag is kept; a looser one makes the relay refuse with "restart with --access `<mode>`". Against a relay too old for tcp modes, `ip` and `private` register nothing |
+| `--access open\|ip\|private` | `tcp` | Access mode. Without the flag a service that exists is served in its stored mode, and a new one is created `private`: no public port, reached with `burrow forward`. `ip` and `open` open a public port. A dashboard mode stricter than the flag is kept; a looser one makes the relay refuse with "restart with --access `<mode>`". Against a relay too old for tcp modes, `ip` and `private` register nothing |
 | `--remote <port>` | `tcp` | Fixed public port (default: any free port). Needs `--access open` or `ip`; with `private` it is a usage error |
 
 The command runs in the foreground until interrupted and reconnects by itself.
@@ -463,7 +463,7 @@ forwards:                         # optional; a file may hold forwards alone
 | `services[].local` | Yes | Local address to expose, e.g. `127.0.0.1:3000` |
 | `services[].type` | No (default `tcp`) | `tcp` or `http` |
 | `services[].remote` | No (default `0`) | Fixed TCP port on the relay; `0` = auto. Ignored for HTTP tunnels. Refused with `access: private` |
-| `services[].access` | No | `http`: `open`, `login` or `api-key`. `tcp`: `open`, `ip` or `private`. A tcp entry without it keeps the stored mode (a new service is `open`) |
+| `services[].access` | No | `http`: `open`, `login` or `api-key`. `tcp`: `open`, `ip` or `private`. A tcp entry without it keeps the stored mode (a new service is `private`, or `open` with `remote`) |
 | `forwards[].target` | Yes, per forward | Slug, own service name or id of a tcp service |
 | `forwards[].local_port` | No (default `13389`) | Local port to listen on |
 | `forwards[].bind` | No (default `127.0.0.1`) | Local address to listen on |

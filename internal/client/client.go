@@ -40,6 +40,12 @@ type TunnelSpec struct {
 	// with ip or private: see AccessNotAppliedError.
 	Slug   string
 	Access string
+	// AccessDefault (tcp only) is the mode a new service gets when Access is
+	// empty: `burrow tcp` without --access and a burrow.yaml entry without
+	// access: send "private". It is no wish: a service that exists is served
+	// in its stored mode. It counts as the wish against a relay that cannot
+	// apply it (see AccessNotAppliedError).
+	AccessDefault string
 	// MCP is set for the local MCP server of `burrow mcp` or of a burrow.yaml
 	// service of type mcp. Such a tunnel is an ordinary http tunnel: the
 	// command that runs it starts a bridge (internal/client/mcpbridge) and
@@ -306,16 +312,26 @@ func (c *Client) connectOnce(ctx context.Context) error {
 	for _, tn := range c.opts.Tunnels {
 		// A wish for ip or private that the relay cannot apply is never
 		// sent: an older relay would open a public port for it (D9).
-		restricted := tn.Type == "tcp" && tn.Access != "" && tn.Access != "open"
+		// The default for a new service counts here as a wish: an older
+		// relay would create the service open.
+		want := tn.Access
+		var accessDefault string
+		if tn.Type == "tcp" {
+			accessDefault = tn.AccessDefault
+			if want == "" {
+				want = accessDefault
+			}
+		}
+		restricted := tn.Type == "tcp" && want != "" && want != "open"
 		if restricted && !tcpAccess {
-			ae := &AccessNotAppliedError{Name: tn.Name, Access: tn.Access, Type: "tcp", NotSent: true}
-			c.log.Error("tunnel not registered: the relay cannot apply its access mode", "name", tn.Name, "access", tn.Access)
+			ae := &AccessNotAppliedError{Name: tn.Name, Access: want, Type: "tcp", NotSent: true}
+			c.log.Error("tunnel not registered: the relay cannot apply its access mode", "name", tn.Name, "access", want)
 			skip(tn.Name, ae)
 			continue
 		}
 		if err := proto.WriteMessage(ctrl, proto.MsgTunnelRegister, proto.TunnelRegister{
 			Name: tn.Name, Type: tn.Type, RemotePort: tn.RemotePort, LocalAddr: tn.LocalAddr,
-			Slug: tn.Slug, Access: tn.Access,
+			Slug: tn.Slug, Access: tn.Access, AccessDefault: accessDefault,
 		}); err != nil {
 			return err
 		}
@@ -350,11 +366,17 @@ func (c *Client) connectOnce(ctx context.Context) error {
 				reg.Ignored.Access = true
 			}
 		}
-		if restricted && (rr.AccessMode == "" || reg.Ignored.Access) {
+		// A mode less strict than the wish, or than the default of a service
+		// the relay says it created, is a relay that did not do as asked (it
+		// serves the stricter of wish and stored mode, or refuses).
+		looser := tn.Type == "tcp" && rr.AccessMode != "" &&
+			((tn.Access != "" && tcpAccessRank(rr.AccessMode) < tcpAccessRank(tn.Access)) ||
+				(tn.Access == "" && rr.Created && accessDefault != "" && tcpAccessRank(rr.AccessMode) < tcpAccessRank(accessDefault)))
+		if (restricted && (rr.AccessMode == "" || reg.Ignored.Access)) || looser {
 			// The relay said it applies access modes to tcp and then did not
 			// confirm this one: its port may be public. Returning closes the
 			// session before a visitor can be sent.
-			ae := &AccessNotAppliedError{Name: tn.Name, Access: tn.Access, Type: "tcp", RemotePort: rr.RemotePort}
+			ae := &AccessNotAppliedError{Name: tn.Name, Access: want, Type: "tcp", RemotePort: rr.RemotePort}
 			if n := len(c.opts.Tunnels); n > 1 {
 				ae.Services = n
 			}

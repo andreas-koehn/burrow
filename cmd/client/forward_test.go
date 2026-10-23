@@ -152,13 +152,16 @@ func TestRunClient_PassesTheForwards(t *testing.T) {
 	}
 }
 
-// D2: `burrow tcp` keeps a new service private unless --access says other.
+// D2: `burrow tcp` creates a new service private unless --access says other.
 func TestTCP_AccessModes(t *testing.T) {
 	cases := []struct {
 		args []string
 		want client.TunnelSpec
 	}{
-		{[]string{"tcp", "3389"}, client.TunnelSpec{Name: "kohns-laptop-3389", Type: "tcp", LocalAddr: "127.0.0.1:3389", Access: "private"}},
+		// Without --access: no wish, so a service that exists is served in
+		// its stored mode; a new one is created private.
+		{[]string{"tcp", "3389"}, client.TunnelSpec{Name: "kohns-laptop-3389", Type: "tcp", LocalAddr: "127.0.0.1:3389", AccessDefault: "private"}},
+		{[]string{"tcp", "3389", "--access", "private"}, client.TunnelSpec{Name: "kohns-laptop-3389", Type: "tcp", LocalAddr: "127.0.0.1:3389", Access: "private"}},
 		{[]string{"tcp", "3389", "--access", "ip"}, client.TunnelSpec{Name: "kohns-laptop-3389", Type: "tcp", LocalAddr: "127.0.0.1:3389", Access: "ip"}},
 		{[]string{"tcp", "5432", "--access", "open", "--remote", "9000", "--name", "pg"}, client.TunnelSpec{Name: "pg", Type: "tcp", LocalAddr: "127.0.0.1:5432", RemotePort: 9000, Access: "open"}},
 	}

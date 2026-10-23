@@ -113,6 +113,54 @@ go build ./cmd/client
 
 Then restart `burrowd` with the new binary.
 
+### Upgrading to v0.13.0 {#upgrade-v0-13-0}
+
+v0.13.0 makes TCP services first-class: access modes `open`, `ip` and
+`private`, and `burrow forward`. See
+[Remote desktop and other TCP services](/guide/remote-desktop-and-tcp).
+
+- **Sign in once more on every client.** Run `burrow login --force <relay>`
+  once on each machine. It stores the SHA-256 fingerprint of the relay's
+  control certificate, and from then on the client accepts port 7000 only with
+  that certificate. `burrow forward` refuses `--insecure` (unless
+  `--insecure-forward` is given), so a client that used `--insecure` against a
+  relay with `--dev-certs` needs the stored fingerprint.
+- **At most 10 public TCP ports per user.** A TCP service keeps its port across
+  reconnects, also while it is offline, and one user's services may hold 10.
+  Beyond that a new service is refused with "port limit reached" until a
+  service is deleted. Raise the cap with `BURROW_TCP_PORTS_PER_USER` (`0` = no
+  limit); administrators and roles with `services:configure:any` have none.
+  `private` services hold no port. See
+  [Configuration](/guide/configuration).
+- **TCP names that clash with HTTP services are refused.** A TCP service is now
+  a service like an HTTP one. A `burrow tcp` or `burrow.yaml` tcp entry whose
+  name is already used by one of your HTTP services gets `name_in_use`.
+  Rename one of them.
+- **New TCP services are private.** A v0.13.0 client creates a new TCP service
+  `private` when no access mode is given. Services that exist keep their
+  mode; services created by older clients are `open`.
+- **Do not roll back** to an older image once a TCP service uses `ip` or
+  `private`. An older relay does not know these modes and would serve those
+  services `open`, on a public port. Set them to `open` first, or restore a
+  backup taken before the upgrade.
+- **Coolify.** The comment about `--dev-certs` in
+  `deploy/coolify/docker-compose.yml` describes the old way (`--insecure` or
+  `--cacert`). Replace it with:
+
+  ```yaml
+  # `--dev-certs` secures :7000 with a self-signed certificate generated into
+  # /data/certs. `burrow login` reads its SHA-256 fingerprint over the HTTPS
+  # dashboard (Traefik serves that with a real certificate) and pins it, so
+  # clients need neither --insecure nor --cacert/--server-name. Do not use
+  # --insecure: it also turns the pin off, and `burrow forward` refuses it.
+  #
+  # TCP services: `private` ones (the default of `burrow tcp`) need no port here.
+  # For `open` or `ip` services, publish each data port under `ports:` below
+  # (for example "9001:9001") and open it in the host firewall. Behind Docker's
+  # userland proxy the relay may see the Docker gateway instead of the visitor,
+  # so do not rely on `ip` mode before the connection log shows real addresses.
+  ```
+
 ### Upgrading to v0.12.1 {#upgrade-v0-12-1}
 
 - **Dashboard cookies.** With Secure cookies the dashboard writes

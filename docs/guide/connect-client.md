@@ -287,7 +287,7 @@ or `private`) and `forwards:` lists the services to reach with `burrow forward`.
 | `services[].type` | No | `http` or `tcp`; defaults to `tcp` |
 | `services[].remote` | No | Fixed public TCP port; TCP services only; `0` = auto-assigned |
 | `services[].slug` | No | `http` only; path under `/svc/`; applied only when the service is created |
-| `services[].access` | No | `http`: `open`, `login` or `api-key`, applied only when the service is created. `tcp`: `open`, `ip` or `private`; without it the stored mode is kept (a new service is `open`) |
+| `services[].access` | No | `http`: `open`, `login` or `api-key`, applied only when the service is created. `tcp`: `open`, `ip` or `private`; without it the stored mode is kept (a new service is `private`, or `open` with `remote`) |
 | `forwards[].target` | Yes, per forward | Slug, own service name or id of a tcp service; see [Remote desktop and other TCP services](/guide/remote-desktop-and-tcp) |
 | `forwards[].local_port` | No | Local port, default `13389` |
 | `forwards[].bind` | No | Local address, default `127.0.0.1` |

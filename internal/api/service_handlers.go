@@ -791,6 +791,9 @@ func (d Deps) SetAccessPolicy(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// The policy is the forward policy of a tcp service: a role taken out
+	// of it ends that role's live forwards.
+	d.recheckServiceForwards(r.Context(), serviceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

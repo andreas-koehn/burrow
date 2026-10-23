@@ -54,3 +54,15 @@ func AccessName(mode string) string {
 	}
 	return mode
 }
+
+// tcpAccessRank orders the tcp modes by strictness: open < ip < private. An
+// unknown mode ranks as open, the least strict.
+func tcpAccessRank(mode string) int {
+	switch mode {
+	case "ip":
+		return 1
+	case "private":
+		return 2
+	}
+	return 0
+}

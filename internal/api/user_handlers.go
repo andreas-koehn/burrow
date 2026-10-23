@@ -294,6 +294,9 @@ func (d Deps) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A role or status the user's live forwards no longer qualify for ends
+	// them (a suspension also ends the user's sessions, above).
+	d.recheckUserForwards(r.Context(), targetID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

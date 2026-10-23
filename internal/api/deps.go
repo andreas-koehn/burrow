@@ -667,6 +667,10 @@ type Deps struct {
 	// Connections are the live connections of tcp services (the relay):
 	// GET and DELETE /services/{id}/connections. nil: none are listed.
 	Connections ServiceConnections
+	// Forwards are asked to authorize the live forward streams again after
+	// a right changed: a service's access policy, a user's role or status
+	// (*server.Server). nil: a change applies to the next forward only.
+	Forwards ForwardRechecker
 	// TCPServices is told when the access of a tcp service changed (its
 	// mode, ip lists, grants or cap), so that its live tunnel applies it
 	// (*server.Server). nil: a change applies when the tunnel registers

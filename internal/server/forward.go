@@ -8,7 +8,8 @@ package server
 // owner and the roles it allows skip the ip policy, never the tunnel's cap).
 //
 // Every open is authorized again (ForwardAuthorizer): a role taken out of the
-// service's policy stops the next stream. A user who is suspended, or whose
+// service's policy stops the next stream, and the API has the live ones
+// checked again (RecheckForwards, RecheckUserForwards). A user who is suspended, or whose
 // token is revoked or expires, loses the session itself (CloseByToken), and
 // with it every forward stream of the session.
 //
@@ -87,6 +88,15 @@ const TrafficTCPForward = observe.TrafficTCPForward
 // caller may not reach.
 const ConnLogReasonForbidden = "forbidden"
 
+// The reasons in the row of a live connection the relay ended: a Disconnect
+// in the dashboard, a forward the user may no longer make, and the end of
+// the forwarder's or the serving client's session.
+const (
+	ConnLogReasonClosedByDashboard = "closed_by_dashboard"
+	ConnLogReasonAccessRevoked     = "access_revoked"
+	ConnLogReasonSessionClosed     = "session_closed"
+)
+
 // forwardLimits are the limits of one session's forward streams.
 type forwardLimits struct {
 	mu     sync.Mutex
@@ -151,11 +161,35 @@ type liveConn struct {
 	service   string // the service's name (forward)
 	started   time.Time
 	in, out   atomic.Uint64
+	owner     bool // forward: the user owns the service
 	closeOnce sync.Once
 	closeFn   func()
+	reason    atomic.Pointer[string] // why the relay ended it; nil when a side did
 }
 
 func (c *liveConn) close() { c.closeOnce.Do(c.closeFn) }
+
+// closeWith ends the connection and keeps the first reason it was given for
+// its row.
+func (c *liveConn) closeWith(reason string) {
+	c.reason.CompareAndSwap(nil, &reason)
+	c.close()
+}
+
+// endReason is the reason for the row of a connection that has ended: the
+// one the relay gave when it ended it, else session_closed when one of the
+// sessions it ran on is gone, else none (a side closed it).
+func (c *liveConn) endReason(sessions ...*ClientSession) string {
+	if r := c.reason.Load(); r != nil {
+		return *r
+	}
+	for _, cs := range sessions {
+		if cs != nil && cs.Yamux != nil && cs.Yamux.IsClosed() {
+			return ConnLogReasonSessionClosed
+		}
+	}
+	return ""
+}
 
 // ConnView is a live connection of a tcp service as the API shows it.
 type ConnView struct {
@@ -275,7 +309,7 @@ func (s *Server) CloseServiceConnection(serviceID, connID string) bool {
 	if c == nil {
 		return false
 	}
-	c.close()
+	c.closeWith(ConnLogReasonClosedByDashboard)
 	return true
 }
 
@@ -363,7 +397,7 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 	c := &liveConn{
 		id: uuid.NewString(), kind: ConnKindForward, sourceIP: hostOf(cs.RemoteAddr),
 		userID: cs.UserID, tokenName: cs.TokenName, sessionID: cs.SessionID,
-		serviceID: target.ServiceID, service: target.Name, started: started,
+		serviceID: target.ServiceID, service: target.Name, started: started, owner: target.Owner,
 	}
 	if err != nil {
 		s.log.Warn("client did not open stream for a forward", "tunnel_id", tn.ID, "err", err)
@@ -402,7 +436,7 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 	}, &in, &out)
 	tn.dropConn(c.id)
 	cs.dropForward(c.id)
-	s.forwardTraffic(tn, c, observe.OutcomeClean, "")
+	s.forwardTraffic(tn, c, observe.OutcomeClean, c.endReason(cs, tn.sess))
 	s.forwardsChanged(cs, tn)
 }
 
@@ -455,4 +489,63 @@ func (s *Server) refuseForward(cs *ClientSession, serviceID, reason string) {
 		SourceIP: ip, TokenName: cs.TokenName, StartedAt: now, EndedAt: now,
 		Status: observe.OutcomeRejected, Reason: reason,
 	})
+}
+
+// RecheckForwards authorizes again every live forward to the service of a
+// user who does not own it, and ends those the authorizer refuses now (a
+// role taken out of the policy, a user suspended or gone). The API calls it
+// after the service's access policy changed. A forward it could not check (a
+// store failure) is left open; the next open is checked again. It returns
+// how many it ended.
+func (s *Server) RecheckForwards(ctx context.Context, serviceID string) int {
+	if !s.forwarding() {
+		return 0
+	}
+	tn, ok := s.LookupTunnelByServiceID(serviceID)
+	if !ok || tn.IsHTTP {
+		return 0
+	}
+	return s.recheck(ctx, tn.liveConns())
+}
+
+// RecheckUserForwards is RecheckForwards for every live forward of one user,
+// whatever the service: the API calls it after the user's role or status
+// changed.
+func (s *Server) RecheckUserForwards(ctx context.Context, userID string) int {
+	if !s.forwarding() || userID == "" {
+		return 0
+	}
+	var conns []*liveConn
+	for _, cs := range s.reg.Sessions() {
+		if cs.UserID != userID {
+			continue
+		}
+		cs.mu.Lock()
+		for _, c := range cs.forwards {
+			conns = append(conns, c)
+		}
+		cs.mu.Unlock()
+	}
+	return s.recheck(ctx, conns)
+}
+
+func (s *Server) recheck(ctx context.Context, conns []*liveConn) int {
+	n := 0
+	for _, c := range conns {
+		if c.kind != ConnKindForward || c.owner {
+			continue
+		}
+		actx, cancel := context.WithTimeout(ctx, forwardAuthTimeout)
+		_, err := s.opts.Forwards.AuthorizeForward(actx, c.userID, c.serviceID)
+		cancel()
+		switch {
+		case errors.Is(err, ErrForwardDenied), errors.Is(err, ErrForwardNotFound):
+			s.log.Info("forward ended: no longer allowed", "service_id", c.serviceID, "user_id", c.userID, "session_id", c.sessionID)
+			c.closeWith(ConnLogReasonAccessRevoked)
+			n++
+		case err != nil:
+			s.log.Warn("forward recheck failed; the forward stays", "service_id", c.serviceID, "user_id", c.userID, "err", err)
+		}
+	}
+	return n
 }

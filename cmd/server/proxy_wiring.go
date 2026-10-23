@@ -281,7 +281,8 @@ func (a serviceResolverAdapter) create(ctx context.Context, userID, name, typ st
 }
 
 // ResolveTCP implements server.TCPServiceResolver: the user's tcp service of
-// that name, created in mode o.Access (open when empty) when there is none.
+// that name, created in mode o.Access, else o.AccessDefault, else open, when
+// there is none.
 // An access that is no tcp mode is refused with proto.CodeAccessInvalid; an
 // existing service is returned with the mode it has (the relay serves the
 // stricter of the two, or refuses a wish stricter than it). As for http, any
@@ -295,7 +296,12 @@ func (a serviceResolverAdapter) create(ctx context.Context, userID, name, typ st
 // set when a registration succeeds), so a registration that created the row
 // and then failed for want of a port does not use up the announcement.
 func (a serviceResolverAdapter) ResolveTCP(ctx context.Context, userID, name string, o server.ResolveOptions) (server.Resolved, error) {
+	// A wish, else the default a new client sends for a service it creates
+	// (applied only below, on create), else open, as old clients got.
 	mode := o.Access
+	if mode == "" {
+		mode = o.AccessDefault
+	}
 	if mode == "" {
 		mode = server.TCPAccessOpen
 	}

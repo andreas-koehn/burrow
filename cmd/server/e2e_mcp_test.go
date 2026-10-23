@@ -399,10 +399,12 @@ func TestE2EMCP_WritesLeaveTheAuditTrailOfTheAPI(t *testing.T) {
 	mcpURL := e.serve(t, "burrow.example.com") + mcpserv.EndpointPath
 	const agent = "burrow-e2e-agent/1"
 	// The access policy and the ip rules are no tools (they widen access);
-	// the slug is one, and the API writes its audit row.
+	// the slug is reached through the generic tool, and the API writes its
+	// audit row.
 	setSlug := func(cs *mcp.ClientSession, wantError bool, body map[string]any) string {
 		t.Helper()
-		return mcpCall(t, cs, wantError, "service_slug_update", map[string]any{"serviceID": serviceID, "body": body})
+		return mcpCall(t, cs, wantError, "burrow_call_operation", map[string]any{"operation_id": "serviceSlugUpdate",
+			"arguments": map[string]any{"serviceID": serviceID, "body": body}})
 	}
 	slug := func() string {
 		t.Helper()

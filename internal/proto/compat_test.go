@@ -63,6 +63,8 @@ func TestWithoutTheAdditionsTheBytesAreUnchanged(t *testing.T) {
 		{"auth response, no capabilities", AuthResponse{OK: true, SessionID: "s1", Capabilities: []string{}}, `{"ok":true,"session_id":"s1"}`},
 		{"tcp register without access", TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "127.0.0.1:3389"},
 			`{"name":"rdp","type":"tcp","remote_port":0,"local_addr":"127.0.0.1:3389"}`},
+		{"tcp register with a default", TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "127.0.0.1:3389", AccessDefault: "private"},
+			`{"name":"rdp","type":"tcp","remote_port":0,"local_addr":"127.0.0.1:3389","access_default":"private"}`},
 		{"auth refusal", AuthResponse{Error: "invalid token"}, `{"ok":false,"error":"invalid token"}`},
 		{"register", TunnelRegister{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000"},
 			`{"name":"web","type":"http","remote_port":0,"local_addr":"127.0.0.1:3000"}`},
@@ -133,6 +135,13 @@ func TestOlderPeerReadsNewMessages(t *testing.T) {
 	if tcpReg != (oldTunnelRegister{"rdp", "tcp", 0, "127.0.0.1:3389"}) {
 		t.Errorf("tcp register: %+v", tcpReg)
 	}
+	// An older relay ignores the default for a new service; it creates the
+	// service open, as it always has (the client guards against that).
+	var tcpDefault oldTunnelRegister
+	decode(TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "127.0.0.1:3389", AccessDefault: "private"}, &tcpDefault)
+	if tcpDefault != (oldTunnelRegister{"rdp", "tcp", 0, "127.0.0.1:3389"}) {
+		t.Errorf("tcp register with a default: %+v", tcpDefault)
+	}
 	var e oldError
 	decode(Error{Message: "boom", Code: CodeInternal}, &e)
 	if e != (oldError{"boom"}) {
@@ -149,6 +158,14 @@ func TestNewPeerReadsOlderMessages(t *testing.T) {
 	want := TunnelRegisterResponse{OK: true, TunnelID: "t1", URL: "https://b.example/svc/abc234/"}
 	if !reflect.DeepEqual(rr, want) {
 		t.Errorf("register response: %+v", rr)
+	}
+	// An older client sends no default for a new service.
+	var reg TunnelRegister
+	if err := DecodePayload(Envelope{Payload: json.RawMessage(`{"name":"rdp","type":"tcp","remote_port":0,"local_addr":"127.0.0.1:3389"}`)}, &reg); err != nil {
+		t.Fatal(err)
+	}
+	if reg != (TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "127.0.0.1:3389"}) {
+		t.Errorf("register of an older client: %+v", reg)
 	}
 	var ar AuthResponse
 	if err := DecodePayload(Envelope{Payload: json.RawMessage(`{"ok":false,"error":"invalid token"}`)}, &ar); err != nil {

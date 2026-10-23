@@ -28,8 +28,9 @@ var curatedTools = []curatedTool{
 	{ID: "auditEventsList"},
 	{ID: "connectionLogsList"},
 	// Write. The access policy and the ip rules of a service widen access
-	// and are no tools; the slug is the service write that stays.
-	{ID: "serviceSlugUpdate"},
+	// and are no tools. The slug is no curated tool either: a new slug moves
+	// a service's address (and a tcp service's forward target); it stays a
+	// generic tool.
 	{ID: "providerModelsSync"},
 	{ID: "budgetCreate"},
 	// Delete

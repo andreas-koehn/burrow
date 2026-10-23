@@ -658,6 +658,30 @@ func TestTCPAccess_UnnamedOpenIsNotIgnored(t *testing.T) {
 	}
 }
 
+// AccessDefault reaches the resolver and is no wish: a new service is
+// created private, an existing open one is served open, with nothing refused
+// or ignored; an invalid default is refused.
+func TestTCPAccess_TheDefaultAppliesOnlyToANewService(t *testing.T) {
+	a := newAccessRelay(t, 19540, 19540, nil)
+	rr := a.c.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x", AccessDefault: "private"})
+	if !rr.OK || rr.AccessMode != "private" || rr.RemotePort != 0 || !rr.Created || len(rr.Ignored) != 0 {
+		t.Fatalf("new service: %+v", rr)
+	}
+	a.res.setMode("ssh", "open")
+	rr = a.c.register(t, proto.TunnelRegister{Name: "ssh", Type: "tcp", LocalAddr: "x", AccessDefault: "private"})
+	if !rr.OK || rr.AccessMode != "open" || rr.RemotePort == 0 || len(rr.Ignored) != 0 {
+		t.Fatalf("existing open service: %+v", rr)
+	}
+	rr = a.c.register(t, proto.TunnelRegister{Name: "x", Type: "tcp", LocalAddr: "x", AccessDefault: "api_key"})
+	if rr.OK || rr.Code != proto.CodeAccessInvalid {
+		t.Fatalf("invalid default: %+v", rr)
+	}
+	rr = a.c.register(t, proto.TunnelRegister{Type: "tcp", LocalAddr: "x", AccessDefault: "private"})
+	if rr.OK || rr.Code != proto.CodeAccessInvalid {
+		t.Fatalf("unnamed with a private default: %+v", rr)
+	}
+}
+
 // The client's --access wish against the mode in the dashboard (open < ip <
 // private): a wish less strict than the stored mode is served in the stored
 // mode, and the answer says which; an equal wish is served; a stricter wish

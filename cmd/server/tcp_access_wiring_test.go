@@ -70,6 +70,36 @@ func TestResolveTCP_AccessModes(t *testing.T) {
 	}
 }
 
+// AccessDefault is applied only when the service is created and no access is
+// asked for: a new service of a new client is private, an existing open one
+// stays open, and an old client (no default) still creates an open one.
+func TestResolveTCP_AccessDefaultOnlyWhenCreated(t *testing.T) {
+	x, uid := optionsDB(t)
+	a := serviceResolverAdapter{db: x}
+	ctx := context.Background()
+	old, err := a.ResolveTCP(ctx, uid, "ssh", server.ResolveOptions{})
+	if err != nil || old.AccessMode != "open" {
+		t.Fatalf("old client: %+v %v", old, err)
+	}
+	kept, err := a.ResolveTCP(ctx, uid, "ssh", server.ResolveOptions{AccessDefault: "private"})
+	if err != nil || kept.AccessMode != "open" || servicesOf(t, x, uid)["ssh"].AccessMode != "open" {
+		t.Fatalf("existing open service: %+v %v", kept, err)
+	}
+	r, err := a.ResolveTCP(ctx, uid, "rdp", server.ResolveOptions{AccessDefault: "private"})
+	if err != nil || !r.Created || r.AccessMode != "private" || servicesOf(t, x, uid)["rdp"].AccessMode != "private" {
+		t.Fatalf("new service: %+v %v", r, err)
+	}
+	wish, err := a.ResolveTCP(ctx, uid, "jump", server.ResolveOptions{Access: "ip", AccessDefault: "private"})
+	if err != nil || wish.AccessMode != "ip" {
+		t.Fatalf("a wish wins over the default: %+v %v", wish, err)
+	}
+	_, err = a.ResolveTCP(ctx, uid, "web2", server.ResolveOptions{AccessDefault: "api_key"})
+	var re *server.RefusalError
+	if !errors.As(err, &re) || re.Code != proto.CodeAccessInvalid {
+		t.Fatalf("api_key default: %v", err)
+	}
+}
+
 // The loader reads the mode and the cap, and for mode ip the CIDR lists and
 // the grants that have not expired.
 func TestTCPAccessAdapter(t *testing.T) {

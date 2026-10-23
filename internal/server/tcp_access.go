@@ -497,8 +497,9 @@ func (r *refusalSampler) flushLocked() {
 
 // authFailures limits the failed auth_requests on the control port per
 // source: a bucket of authFailBurst failures that refills by one every
-// authFailRefill. While it is empty a client from that source is refused
-// with proto.CodeRateLimited before its token is looked at.
+// authFailRefill. While it is empty a token from that source that is not
+// valid is answered with proto.CodeRateLimited instead of invalid_token; every
+// token is still checked, and a valid one gets in. It is a signal, not a gate.
 type authFailures struct {
 	mu      sync.Mutex
 	sources map[string]*authBucket

@@ -53,8 +53,8 @@ export function TcpAccessPanel({ service }: { service: Service }) {
   // The relay checks both on every write; the page does not offer what would be refused.
   const canConfigure = useCan([P.servicesConfigureOwn, P.servicesConfigureAny]);
   const canAddresses = useCan([P.ipgeoManageOwn, P.ipgeoManageAny]);
-  // The relay applies a stricter mode when the client re-registers; a looser one it only
-  // applies to a client that asked for it, and a client started with a stricter --access stops.
+  // A new mode closes the serving client's session and it registers again. A client started
+  // without --access serves the new mode; one started with a stricter --access stops.
   const stricter = restrictiveness(selected) > restrictiveness(saved);
 
   return (
@@ -87,12 +87,14 @@ export function TcpAccessPanel({ service }: { service: Service }) {
             )}
           </ErrorNotice>
         )}
-        {selected !== saved && (
-          <p className="muted small">
-            {stricter
-              ? "A stricter mode applies when the client reconnects, which it does by itself."
-              : `A more open mode needs the client to be restarted with --access ${selected}. A client started with a stricter --access stops rather than serve a more open mode.`}
-          </p>
+        {selected !== saved && stricter && (
+          <p className="muted small">A stricter mode applies when the client reconnects, which it does by itself.</p>
+        )}
+        {selected !== saved && !stricter && (
+          <ErrorNotice role="status" title="This makes the service more open">
+            Clients started without --access serve {selected} when they reconnect, which they do by
+            themselves. A client started with a stricter --access stops rather than serve a more open mode.
+          </ErrorNotice>
         )}
         {err && <p role="alert" className="notice-inline">{err}</p>}
         <div className="panel-actions">

@@ -42,9 +42,11 @@ type ServiceResolver interface {
 	Resolve(ctx context.Context, userID, name, typ string) (serviceID, subdomain string, err error)
 }
 
-// ResolveOptions are what a client wishes for an http service that does not
-// exist yet. Both are optional; Access is a relay access mode.
-type ResolveOptions struct{ Slug, Access string }
+// ResolveOptions are what a client wishes for a service that does not exist
+// yet. All are optional; Access is a relay access mode. AccessDefault (tcp
+// only) is the mode a service created without Access gets; a service that
+// exists keeps its stored mode.
+type ResolveOptions struct{ Slug, Access, AccessDefault string }
 
 // Resolved is the service an http tunnel was bound to.
 type Resolved struct {
@@ -509,8 +511,8 @@ func (s *Server) forwarding() bool {
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	sid := uuid.NewString()
-	// Failed sign-ins are counted per source; a source that used them up is
-	// answered rate_limited without a token lookup until its bucket refills.
+	// Failed sign-ins are counted per source; an invalid token from a source
+	// that used them up is answered rate_limited until its bucket refills.
 	source := sourceKey(visitorAddr(conn))
 	cs, err := HandleHandshakeWith(conn, s.opts.Auth, sid, HandshakeOptions{
 		MinClientVersion: s.opts.MinClientVersion, Capabilities: s.Capabilities(),

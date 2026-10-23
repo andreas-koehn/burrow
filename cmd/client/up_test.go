@@ -108,7 +108,7 @@ func TestUp_FileWithoutServerAndTokenUsesTheSignIn(t *testing.T) {
 	}
 	// services without `type` are tcp, as before
 	want := []client.TunnelSpec{
-		{Name: "app", Type: "tcp", LocalAddr: "127.0.0.1:3000"},
+		{Name: "app", Type: "tcp", LocalAddr: "127.0.0.1:3000", AccessDefault: "private"}, // created private when new
 		{Name: "web", Type: "http", LocalAddr: "127.0.0.1:8080"},
 	}
 	if !reflect.DeepEqual(r.tunnels, want) {

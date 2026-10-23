@@ -42,6 +42,9 @@ func (r *svcRelay) ResolveTCP(_ context.Context, _, name string, o server.Resolv
 	if !ok {
 		mode = o.Access
 		if mode == "" {
+			mode = o.AccessDefault
+		}
+		if mode == "" {
 			mode = "open"
 		}
 		r.modes[name] = mode
@@ -642,6 +645,88 @@ func TestTCPAccess_ALooserWishIsServedInTheStoredMode(t *testing.T) {
 	obs.mu.Unlock()
 	if reg.AccessMode != "private" || reg.RemotePort != 0 || reg.Slug != "s-rdp" || reg.Wished != "open" {
 		t.Fatalf("registered %+v", reg)
+	}
+}
+
+// A default (burrow tcp without --access, a burrow.yaml entry without
+// access:) is sent and applied by the relay only to a new service: an
+// existing open service is served open and not refused.
+func TestTCPAccess_TheDefaultIsAppliedOnlyToANewService(t *testing.T) {
+	r := startForwardRelay(t, true)
+	r.svcs.set("ssh", "open")
+	obs := &forwardObserver{}
+	o := r.options("",
+		TunnelSpec{Name: "rdp", Type: "tcp", LocalAddr: greetingEcho(t), AccessDefault: "private"},
+		TunnelSpec{Name: "ssh", Type: "tcp", LocalAddr: greetingEcho(t), AccessDefault: "private"},
+	)
+	o.Observer = obs
+	c, _ := start(t, o)
+	if !waitTrue(c.Registered, 3*time.Second) {
+		t.Fatal("never registered")
+	}
+	if !waitTrue(func() bool { obs.mu.Lock(); defer obs.mu.Unlock(); return len(obs.regs) == 2 }, 2*time.Second) {
+		t.Fatalf("registered %v, refused %v", obs.regs, obs.refs)
+	}
+	obs.mu.Lock()
+	defer obs.mu.Unlock()
+	modes := map[string]string{}
+	for _, reg := range obs.regs {
+		modes[reg.Name] = reg.AccessMode
+		if reg.Wished != "" {
+			t.Errorf("%s: a default is no wish: %+v", reg.Name, reg)
+		}
+	}
+	if modes["rdp"] != "private" || modes["ssh"] != "open" {
+		t.Fatalf("modes %v", modes)
+	}
+}
+
+// A private default facing an old relay is never sent: the relay would
+// create the service open.
+func TestTCPAccess_APrivateDefaultFacingAnOldRelayIsNotSent(t *testing.T) {
+	r := startRawRelay(t, oldAuthOK, func(proto.TunnelRegister) string {
+		return `{"ok":true,"tunnel_id":"t1","remote_port":9001}`
+	})
+	o := r.options(TunnelSpec{Name: "rdp", Type: "tcp", LocalAddr: "127.0.0.1:3389", AccessDefault: "private"})
+	err, ended := runFor(t, o, 3*time.Second)
+	var na *AccessNotAppliedError
+	if !ended || !errors.As(err, &na) || !na.NotSent || na.Access != "private" {
+		t.Fatalf("error = %v, ended %v", err, ended)
+	}
+	if _, regs := r.sent(); len(regs) != 0 {
+		t.Fatalf("registrations sent to an old relay: %v", regs)
+	}
+}
+
+// Defence in depth: a relay that answers a mode less strict than the wish,
+// or than the default of a service it says it created, is not served.
+func TestTCPAccess_AModeLessStrictThanAskedForStops(t *testing.T) {
+	const auth = `{"ok":true,"session_id":"s1","capabilities":["tcp_access"]}`
+	for _, tc := range []struct {
+		name   string
+		spec   TunnelSpec
+		answer string
+		stop   bool
+	}{
+		{"wish private, open", TunnelSpec{Access: "private"}, `{"ok":true,"tunnel_id":"t1","remote_port":9001,"access_mode":"open"}`, true},
+		{"wish private, ip", TunnelSpec{Access: "private"}, `{"ok":true,"tunnel_id":"t1","remote_port":9001,"access_mode":"ip"}`, true},
+		{"wish ip, open", TunnelSpec{Access: "ip"}, `{"ok":true,"tunnel_id":"t1","remote_port":9001,"access_mode":"open"}`, true},
+		{"default private, created open", TunnelSpec{AccessDefault: "private"}, `{"ok":true,"tunnel_id":"t1","remote_port":9001,"access_mode":"open","created":true}`, true},
+		{"default private, existing open", TunnelSpec{AccessDefault: "private"}, `{"ok":true,"tunnel_id":"t1","remote_port":9001,"access_mode":"open"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := startRawRelay(t, auth, func(proto.TunnelRegister) string { return tc.answer })
+			spec := tc.spec
+			spec.Name, spec.Type, spec.LocalAddr = "rdp", "tcp", "127.0.0.1:3389"
+			err, ended := runFor(t, r.options(spec), 2*time.Second)
+			var na *AccessNotAppliedError
+			if tc.stop && (!ended || !errors.As(err, &na) || na.Type != "tcp") {
+				t.Fatalf("error = %v, ended %v", err, ended)
+			}
+			if !tc.stop && ended {
+				t.Fatalf("the run ended: %v", err)
+			}
+		})
 	}
 }
 

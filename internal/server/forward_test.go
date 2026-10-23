@@ -62,11 +62,17 @@ func (f *fakeForwards) AuthorizeForward(_ context.Context, userID, target string
 	}
 	f.res.mu.Lock()
 	id, ok := f.res.ids[target]
+	name := target
+	for n, i := range f.res.ids {
+		if !ok && i == target { // a service id
+			id, name, ok = i, n, true
+		}
+	}
 	f.res.mu.Unlock()
 	if !ok {
 		return ForwardTarget{}, ErrForwardNotFound
 	}
-	t := ForwardTarget{ServiceID: id, Name: target, Owner: userID == "u1"}
+	t := ForwardTarget{ServiceID: id, Name: name, Owner: userID == "u1"}
 	if userID != "u1" && !f.allowed[userID] {
 		return t, ErrForwardDenied
 	}
@@ -652,6 +658,193 @@ func TestForward_APairingTimeoutReleasesTheLimits(t *testing.T) {
 	for _, cs := range r.srv.reg.Sessions() {
 		if l := cs.forwardLimits(); l.activeCount() != 0 {
 			t.Fatalf("session %s still counts %d", cs.SessionID, l.activeCount())
+		}
+	}
+}
+
+// ended reports whether the stream ends within d.
+func ended(st *yamux.Stream, d time.Duration) bool {
+	_ = st.SetReadDeadline(time.Now().Add(d))
+	_, err := st.Read(make([]byte, 1))
+	return err != nil && !errors.Is(err, yamux.ErrTimeout)
+}
+
+// echoes reports whether the forward stream still carries bytes.
+func echoes(t *testing.T, st *yamux.Stream) bool {
+	t.Helper()
+	if _, err := st.Write([]byte("ping")); err != nil {
+		return false
+	}
+	_ = st.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 4)
+	_, err := io.ReadFull(st, buf)
+	_ = st.SetReadDeadline(time.Time{})
+	return err == nil && string(buf) == "ping"
+}
+
+// rowOf waits for the forward row of user and returns it.
+func (r *forwardRelay) rowOf(user string) ConnLogEntry {
+	r.t.Helper()
+	var row ConnLogEntry
+	r.waitFor("the row of "+user, func() bool {
+		for _, e := range r.rows(TrafficTCPForward) {
+			if e.UserID == user && e.Status == observe.OutcomeClean {
+				row = e
+				return true
+			}
+		}
+		return false
+	})
+	return row
+}
+
+// A right taken away ends the live forwards it allowed: after the service's
+// policy changed, RecheckForwards authorizes every live forward of another
+// user again and ends the refused ones; the owner's forward stays.
+func TestForward_ARevokedPolicyEndsTheLiveForward(t *testing.T) {
+	r := newForwardRelay(t, 19560, nil)
+	if rr := r.home.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x", Access: "private"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	r.fwd.allow("u3")
+	friendSt, resp, _ := r.forwarder("friend").open(t, "rdp")
+	if !resp.OK {
+		t.Fatalf("friend: %+v", resp)
+	}
+	readN(t, friendSt, 3)
+	ownerSt, resp, _ := r.forwarder("secret").open(t, "rdp")
+	if !resp.OK {
+		t.Fatalf("owner: %+v", resp)
+	}
+	readN(t, ownerSt, 3)
+
+	// Still allowed: nothing ends.
+	if n := r.srv.RecheckForwards(context.Background(), "svc-rdp"); n != 0 || !echoes(t, friendSt) {
+		t.Fatalf("closed %d while still allowed", n)
+	}
+	r.fwd.mu.Lock()
+	delete(r.fwd.allowed, "u3")
+	r.fwd.mu.Unlock()
+	if n := r.srv.RecheckForwards(context.Background(), "svc-rdp"); n != 1 {
+		t.Fatalf("closed %d; want the friend's forward", n)
+	}
+	if !ended(friendSt, 5*time.Second) {
+		t.Fatal("the revoked forward still runs")
+	}
+	if !echoes(t, ownerSt) {
+		t.Fatal("the owner's forward ended")
+	}
+	if row := r.rowOf("u3"); row.Reason != ConnLogReasonAccessRevoked {
+		t.Fatalf("row %+v", row)
+	}
+}
+
+// A user whose role changed: RecheckUserForwards ends the forwards the new
+// role no longer allows, and leaves the owner's.
+func TestForward_ADemotedUserLosesTheLiveForward(t *testing.T) {
+	r := newForwardRelay(t, 19561, nil)
+	if rr := r.home.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x", Access: "private"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	r.fwd.allow("u3")
+	friendSt, resp, _ := r.forwarder("friend").open(t, "rdp")
+	if !resp.OK {
+		t.Fatalf("friend: %+v", resp)
+	}
+	readN(t, friendSt, 3)
+	ownerSt, resp, _ := r.forwarder("secret").open(t, "rdp")
+	if !resp.OK {
+		t.Fatalf("owner: %+v", resp)
+	}
+	readN(t, ownerSt, 3)
+	r.fwd.mu.Lock()
+	delete(r.fwd.allowed, "u3")
+	r.fwd.mu.Unlock()
+	if n := r.srv.RecheckUserForwards(context.Background(), "u1"); n != 0 {
+		t.Fatalf("the owner lost %d forwards", n)
+	}
+	if n := r.srv.RecheckUserForwards(context.Background(), "u3"); n != 1 {
+		t.Fatalf("closed %d; want the friend's forward", n)
+	}
+	if !ended(friendSt, 5*time.Second) {
+		t.Fatal("the demoted user's forward still runs")
+	}
+	if !echoes(t, ownerSt) {
+		t.Fatal("the owner's forward ended")
+	}
+}
+
+// The reason a live connection ended is in its row: closed_by_dashboard for
+// a Disconnect, session_closed when the forwarder's session or the serving
+// client's session went away, nothing when a side closed it.
+func TestForward_TheRowSaysWhyItEnded(t *testing.T) {
+	r := newForwardRelay(t, 19562, nil)
+	if rr := r.home.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x", Access: "private"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	r.fwd.allow("u2")
+	r.fwd.allow("u3")
+	// Disconnect from the dashboard.
+	st, resp, _ := r.forwarder("secret").open(t, "rdp")
+	if !resp.OK {
+		t.Fatalf("open: %+v", resp)
+	}
+	readN(t, st, 3)
+	conns := r.srv.ServiceConnections("svc-rdp")
+	if len(conns) != 1 || !r.srv.CloseServiceConnection("svc-rdp", conns[0].ID) {
+		t.Fatalf("conns %+v", conns)
+	}
+	if row := r.rowOf("u1"); row.Reason != ConnLogReasonClosedByDashboard {
+		t.Fatalf("disconnect row %+v", row)
+	}
+	// The forwarder's session ends.
+	other := r.forwarder("other")
+	st, resp, _ = other.open(t, "rdp")
+	if !resp.OK {
+		t.Fatalf("open: %+v", resp)
+	}
+	readN(t, st, 3)
+	_ = other.sess.Close()
+	if row := r.rowOf("u2"); row.Reason != ConnLogReasonSessionClosed {
+		t.Fatalf("session row %+v", row)
+	}
+	// The forwarder closes the stream itself: no reason.
+	friend := r.forwarder("friend")
+	st, resp, _ = friend.open(t, "rdp")
+	if !resp.OK {
+		t.Fatalf("open: %+v", resp)
+	}
+	readN(t, st, 3)
+	_ = st.Close()
+	if row := r.rowOf("u3"); row.Reason != "" {
+		t.Fatalf("closed by the forwarder: %+v", row)
+	}
+}
+
+// A visitor of a public port whose serving session ends: session_closed.
+func TestVisitor_TheRowSaysTheSessionClosed(t *testing.T) {
+	r := newForwardRelay(t, 19563, nil)
+	if rr := r.home.register(t, proto.TunnelRegister{Name: "db", Type: "tcp", LocalAddr: "x"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	visitor, err := net.Dial("tcp", "127.0.0.1:19563")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer visitor.Close()
+	readN(t, visitor, 3)
+	_ = r.home.conn.Close()
+	r.waitFor("the visitor row", func() bool {
+		for _, e := range r.log.all() {
+			if e.Kind == observe.TrafficTCP && e.Status == observe.OutcomeClean {
+				return true
+			}
+		}
+		return false
+	})
+	for _, e := range r.log.all() {
+		if e.Kind == observe.TrafficTCP && e.Status == observe.OutcomeClean && e.Reason != ConnLogReasonSessionClosed {
+			t.Fatalf("visitor row %+v", e)
 		}
 	}
 }

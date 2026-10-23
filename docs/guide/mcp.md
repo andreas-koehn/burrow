@@ -209,7 +209,7 @@ its connected apps.
 
 ## Tools {#tools}
 
-Two kinds of tool: 26 **curated tools** for the common tasks, and three
+Two kinds of tool: 20 **curated tools** for the common tasks, and three
 **generic tools** that reach every other operation of the API. A token lists
 only the curated tools its permissions open; the generic tools are listed for
 every token.
@@ -233,12 +233,15 @@ every token.
 | `budgets_list` | List budgets | read |
 | `audit_events_list` | Query audit events | read |
 | `connection_logs_list` | List per-tunnel connection log entries, newest first | read |
-| `service_slug_update` | Change a service's slug | write |
 | `provider_models_sync` | Read the model list from a direct provider's upstream | delete (needs `confirm`) |
 | `budget_create` | Create a budget | write |
 | `provider_delete` | Delete a provider | delete |
 | `ai_model_delete` | Delete a synthetic model | delete |
 | `gateway_key_delete` | Revoke a gateway key | delete |
+
+A service's slug is changed through the generic tools (`serviceSlugUpdate`),
+not a curated tool: a new slug moves the service's address, and for a TCP
+service the target of `burrow forward`.
 
 The kind is sent to the client as MCP tool annotations (`readOnlyHint`,
 `destructiveHint`, `idempotentHint`), so a client can ask before it runs a tool

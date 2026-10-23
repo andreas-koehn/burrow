@@ -5,6 +5,7 @@ package api
 // signed-in clients, with their bytes so far, and closing one of them.
 
 import (
+	"context"
 	"net/http"
 	"slices"
 	"time"
@@ -22,6 +23,36 @@ import (
 type ServiceConnections interface {
 	ServiceConnections(serviceID string) []server.ConnView
 	CloseServiceConnection(serviceID, connID string) bool
+}
+
+// ForwardRechecker is the relay as the API asks it to authorize the live
+// forward streams again: of a service's other users, or of one user. Each
+// ends the forwards the authorizer refuses now. *server.Server satisfies it.
+type ForwardRechecker interface {
+	RecheckForwards(ctx context.Context, serviceID string) int
+	RecheckUserForwards(ctx context.Context, userID string) int
+}
+
+// recheckServiceForwards ends the live forwards to the service that its
+// policy no longer allows.
+func (d Deps) recheckServiceForwards(ctx context.Context, serviceID string) {
+	if d.Forwards == nil {
+		return
+	}
+	if n := d.Forwards.RecheckForwards(context.WithoutCancel(ctx), serviceID); n > 0 {
+		d.Log.Info("forwards ended: no longer allowed", "service_id", serviceID, "forwards", n)
+	}
+}
+
+// recheckUserForwards ends the live forwards of the user that their role or
+// status no longer allows.
+func (d Deps) recheckUserForwards(ctx context.Context, userID string) {
+	if d.Forwards == nil {
+		return
+	}
+	if n := d.Forwards.RecheckUserForwards(context.WithoutCancel(ctx), userID); n > 0 {
+		d.Log.Info("forwards ended: no longer allowed", "user_id", userID, "forwards", n)
+	}
 }
 
 // serviceConnectionResp is one live connection of a tcp service. kind is

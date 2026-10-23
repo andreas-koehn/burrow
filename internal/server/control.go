@@ -264,7 +264,7 @@ func (s *Server) resolveTCP(cs *ClientSession, tr proto.TunnelRegister) (tcpServ
 	var res Resolved
 	if tr.Name != "" {
 		var err error
-		if res, err = tcp.ResolveTCP(ctx, cs.UserID, tr.Name, ResolveOptions{Access: tr.Access}); err != nil {
+		if res, err = tcp.ResolveTCP(ctx, cs.UserID, tr.Name, ResolveOptions{Access: tr.Access, AccessDefault: tr.AccessDefault}); err != nil {
 			return tcpService{}, err
 		}
 	} else if s.unnamedWarned.CompareAndSwap(false, true) {
@@ -346,12 +346,17 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 		_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: msg, Code: code})
 		s.refused(reg, cs, tr, code)
 	}
-	if tr.Access != "" && !ValidTCPAccessMode(tr.Access) {
+	// The mode a new service would get: the wish, else the client's default.
+	want := tr.Access
+	if want == "" {
+		want = tr.AccessDefault
+	}
+	if (tr.Access != "" && !ValidTCPAccessMode(tr.Access)) || (tr.AccessDefault != "" && !ValidTCPAccessMode(tr.AccessDefault)) {
 		refuseWith(proto.CodeAccessInvalid, "access for a tcp service must be one of: open, ip, private")
 		return
 	}
 	_, keepsServices := s.opts.Services.(TCPServiceResolver)
-	if tr.Access != "" && tr.Access != TCPAccessOpen && (!keepsServices || tr.Name == "") {
+	if want != "" && want != TCPAccessOpen && (!keepsServices || tr.Name == "") {
 		msg := "this relay cannot apply an access mode to a tcp tunnel; nothing was opened"
 		if keepsServices {
 			msg = "a tcp tunnel needs a name to have an access mode; nothing was opened"

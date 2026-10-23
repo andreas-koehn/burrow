@@ -320,7 +320,7 @@ func TestLoadFileConfig_SlugAndAccess(t *testing.T) {
 		{Name: "api", Type: "http", LocalAddr: "127.0.0.1:3001", Access: "api_key"},
 		{Name: "pub", Type: "http", LocalAddr: "127.0.0.1:3002", Slug: "pub", Access: "open"},
 		{Name: "plain", Type: "http", LocalAddr: "127.0.0.1:3003"},
-		{Name: "db", Type: "tcp", LocalAddr: "127.0.0.1:5432"},
+		{Name: "db", Type: "tcp", LocalAddr: "127.0.0.1:5432", AccessDefault: "private"},
 	}
 	if len(c.Tunnels) != len(want) {
 		t.Fatalf("tunnels: %+v", c.Tunnels)
@@ -485,16 +485,20 @@ func TestLoadFileConfig_TCPAccess(t *testing.T) {
 		"  - { name: rdp, local: 127.0.0.1:3389, access: private }\n"+
 		"  - { name: ssh, local: 127.0.0.1:22, type: tcp, access: ip }\n"+
 		"  - { name: pg, local: 127.0.0.1:5432, type: tcp, access: open }\n"+
-		"  - { name: old, local: 127.0.0.1:9999, type: tcp }\n"), 0o600)
+		"  - { name: old, local: 127.0.0.1:9999, type: tcp }\n"+
+		"  - { name: fixed, local: 127.0.0.1:9001, type: tcp, remote: 9001 }\n"), 0o600)
 	c, err := LoadFileConfig(yml)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Without access: no wish (an existing service keeps its stored mode),
+	// and a new service is created private; with remote: the port asked for
+	// is the choice of a public port, as before.
 	var got []string
 	for _, tn := range c.Tunnels {
-		got = append(got, tn.Name+"="+tn.Access)
+		got = append(got, tn.Name+"="+tn.Access+"/"+tn.AccessDefault)
 	}
-	if strings.Join(got, " ") != "rdp=private ssh=ip pg=open old=" {
+	if strings.Join(got, " ") != "rdp=private/ ssh=ip/ pg=open/ old=/private fixed=/" {
 		t.Fatalf("access = %v", got)
 	}
 }

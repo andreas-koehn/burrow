@@ -56,6 +56,16 @@ type observerParts struct {
 	// a promotion. main sets the tier on the chain after this is built.
 	Chain *aigw.Chain
 	Log   *slog.Logger
+	// Names names the actor and the subject of the tcp audit rows (*db.DB);
+	// nil leaves them unnamed.
+	Names auditNames
+}
+
+// auditNames reads the email of a user and the name of a service for an
+// audit row.
+type auditNames interface {
+	GetUserByID(ctx context.Context, id string) (db.User, error)
+	GetServiceByID(ctx context.Context, id string) (db.Service, error)
 }
 
 const (
@@ -223,6 +233,7 @@ func (o *observer) tcpPortReclaimed(e observe.Session) {
 		}),
 	}
 	o.enqueue(func(ctx context.Context) {
+		o.name(ctx, &ev)
 		if err := o.Audit.Append(ctx, ev); err != nil {
 			o.log.Warn("observer: audit write failed", "action", audit.ActionServiceTCPPortReclaimed, "err", err)
 		}
@@ -246,10 +257,30 @@ func (o *observer) forwardOpened(e observe.Session) {
 		}),
 	}
 	o.enqueue(func(ctx context.Context) {
+		o.name(ctx, &ev)
 		if err := o.Audit.Append(ctx, ev); err != nil {
 			o.log.Warn("observer: audit write failed", "action", audit.ActionTCPForwardOpen, "err", err)
 		}
 	})
+}
+
+// name fills the actor's email and the subject service's name into an
+// audit row, on the observer's worker (the session's goroutine never waits
+// for the database). What cannot be read stays empty; the row is written.
+func (o *observer) name(ctx context.Context, ev *audit.Event) {
+	if o.Names == nil {
+		return
+	}
+	if ev.ActorID != "" {
+		if u, err := o.Names.GetUserByID(ctx, ev.ActorID); err == nil {
+			ev.ActorEmail = u.Email
+		}
+	}
+	if ev.SubjectID != "" {
+		if svc, err := o.Names.GetServiceByID(ctx, ev.SubjectID); err == nil {
+			ev.SubjectLabel = svc.Name
+		}
+	}
 }
 
 // sessionOpened counts one more open session of the user and remembers the

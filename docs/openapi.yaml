@@ -1244,8 +1244,10 @@ components:
             in only the allow list and just-in-time grants) and private (no
             public port; reached through burrow forward). Another mode for
             the type is a 409. A new mode of a tcp service closes the session
-            of the client that serves it, which registers again under the new
-            mode; it is audited as service.tcp_access.update.
+            of the client that serves it, which registers again: a client
+            started without --access serves the new mode, and one started
+            with an --access stricter than the new mode stops
+            (access_invalid). It is audited as service.tcp_access.update.
         api_key_header:
           type: string
           description: >
@@ -3807,7 +3809,9 @@ paths:
       summary: Replace the role allowlist
       description: |
         The roles that may reach a burrow_login service (and, for a private
-        tcp service, forward to it).
+        tcp service, forward to it). For a tcp service the live forwards of
+        users the new list no longer allows end at once (connection-log
+        reason access_revoked); the owner's stay.
 
         Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]

@@ -219,7 +219,12 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 				return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: slug %s", i, svc.Name, SlugRule)
 			}
 			// A tcp service without access: asks for nothing, so that a
-			// file written before access modes serves what it served.
+			// file written before access modes serves what it served; a new
+			// service is created private (AccessDefault). With remote: the
+			// port asked for is the choice of a public port, as before.
+			if typ == "tcp" && svc.Access == "" && svc.RemotePort == 0 {
+				spec.AccessDefault = "private"
+			}
 			if typ == "tcp" && svc.Access != "" {
 				mode, ok := TCPAccessMode(svc.Access)
 				if !ok {

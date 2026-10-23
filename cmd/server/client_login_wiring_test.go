@@ -131,7 +131,7 @@ const (
 // assertMCPKnowsTheAuthDomain checks, on the relay `serve` started with an
 // auth domain, that the MCP server replays its calls through the relay's own
 // router (main.go's SetAPIHandler): a write made with
-// service_slug_update is what service_get then reads, while a
+// serviceSlugUpdate (a generic tool call) is what service_get then reads, while a
 // server without the router answers "the relay is starting". (The access
 // mode, which needed the auth domain, is no management tool any more.)
 // Everything is done as an operator does it:
@@ -193,10 +193,10 @@ func assertMCPKnowsTheAuthDomain(t *testing.T, base string) {
 	}
 
 	cs := mcpConnect(t, base+"/mcp/burrow", bearer, "2026-07-28")
-	if got := mcpCall(t, cs, false, "service_slug_update", map[string]any{
+	if got := mcpCall(t, cs, false, "burrow_call_operation", map[string]any{"operation_id": "serviceSlugUpdate", "arguments": map[string]any{
 		"serviceID": serviceID, "body": map[string]any{"slug": "mcp-wired"},
-	}); !strings.Contains(got, `"slug":"mcp-wired"`) {
-		t.Fatalf("service_slug_update through the relay's router: %s", got)
+	}}); !strings.Contains(got, `"slug":"mcp-wired"`) {
+		t.Fatalf("serviceSlugUpdate through the relay's router: %s", got)
 	}
 	var svc struct {
 		Slug string `json:"slug"`

@@ -34,7 +34,7 @@ const allCuratedTools = "ai_model_delete,ai_models_list,ai_requests_list," +
 	"audit_events_list,budget_create,budgets_list,connection_logs_list,cost_summary_get," +
 	"gateway_key_delete,gateway_keys_list,inspector_request_get,known_clients_list,me_get," +
 	"provider_delete,provider_get,provider_metrics_get,provider_models_sync," +
-	"providers_list,service_get,service_slug_update,services_list"
+	"providers_list,service_get,services_list"
 
 // ---------- fakes ----------------------------------------------------------
 
@@ -408,7 +408,7 @@ func TestMCP_ListShowsOnlyWhatTheTokenMayCall(t *testing.T) {
 		// only the :own permissions of a standard user.
 		{"minter demoted to user", presetPerms(authz.PresetFull), "user",
 			"ai_models_list,ai_requests_list,gateway_key_delete,gateway_keys_list,inspector_request_get,me_get," +
-				"provider_get,provider_metrics_get,providers_list,service_get,service_slug_update,services_list"},
+				"provider_get,provider_metrics_get,providers_list,service_get,services_list"},
 		{"tunnels of anyone", []string{"tunnels:read:any"}, "admin", "known_clients_list,me_get"},
 		{"no tool permission", []string{"webhooks:manage"}, "admin", "me_get"},
 		// A token that declares nothing still reads who it acts for.

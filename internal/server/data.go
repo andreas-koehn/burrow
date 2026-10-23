@@ -357,7 +357,7 @@ func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn, source string) {
 		in:   &c.in, out: &c.out,
 	}, &in, &out)
 	tun.dropConn(c.id)
-	s.tcpTraffic(tun, visitor, started, c.in.Load(), c.out.Load(), observe.OutcomeClean, "")
+	s.tcpTraffic(tun, visitor, started, c.in.Load(), c.out.Load(), observe.OutcomeClean, c.endReason(tun.sess))
 }
 
 // The first frame of a client-opened stream (stream_open or forward_open) is

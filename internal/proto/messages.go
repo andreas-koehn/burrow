@@ -99,6 +99,12 @@ type TunnelRegister struct {
 	// ignores it for tcp and reports it in Ignored). Optional.
 	Slug   string `json:"slug,omitempty"`
 	Access string `json:"access,omitempty"`
+	// AccessDefault is the mode a tcp service gets when this registration
+	// creates it and Access is empty: a new client sends "private" when the
+	// user asked for no mode. Unlike Access it is no wish: a service that
+	// exists keeps its stored mode and nothing is refused or ignored. A relay
+	// without it creates the service open. Optional.
+	AccessDefault string `json:"access_default,omitempty"`
 }
 
 // TunnelRegisterResponse is the server's reply to a TunnelRegister message.

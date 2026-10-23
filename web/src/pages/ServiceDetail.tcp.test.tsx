@@ -77,13 +77,24 @@ describe("ServiceDetail of a tcp service", () => {
     expect(screen.queryByText(/restarted/i)).toBeNull();
   });
 
-  it("says a more open mode needs the client restarted with the matching --access", async () => {
+  it("confirms in red what a more open mode does to the running clients", async () => {
     addTcp();
     mount();
     await userEvent.click(await screen.findByRole("radio", { name: "IP allowlist" }));
-    expect(screen.getByText(/needs the client to be restarted with --access ip/i)).toBeInTheDocument();
-    expect(screen.getByText(/stops rather than serve a more open mode/i)).toBeInTheDocument();
-    expect(screen.queryByText(/connects again by itself/i)).toBeNull();
+    const notice = within(screen.getByRole("region", { name: "Access mode" })).getByRole("status");
+    expect(notice).toHaveClass("notice-inline");
+    expect(notice).toHaveAttribute("data-variant", "error");
+    expect(notice).toHaveTextContent(/more open/i);
+    expect(notice).toHaveTextContent(/clients started without --access serve ip when they reconnect/i);
+    expect(notice).toHaveTextContent(/a client started with a stricter --access stops/i);
+    expect(screen.queryByText(/restarted/i)).toBeNull();
+  });
+
+  it("no red confirmation for a stricter mode", async () => {
+    addTcp({ access_mode: "open", remote_port: 9005 });
+    mount();
+    await userEvent.click(await screen.findByRole("radio", { name: "Private" }));
+    expect(within(screen.getByRole("region", { name: "Access mode" })).queryByRole("status")).toBeNull();
   });
 
   it("saves the mode", async () => {

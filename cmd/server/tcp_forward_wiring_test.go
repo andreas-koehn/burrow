@@ -479,6 +479,52 @@ func TestObserver_ForwardOpenedIsAuditedOncePerMinute(t *testing.T) {
 	}
 }
 
+// auditNamesFake names users and services for the observer's audit rows.
+type auditNamesFake struct{}
+
+func (auditNamesFake) GetUserByID(_ context.Context, id string) (db.User, error) {
+	if id == "u-1" {
+		return db.User{ID: id, Email: "alice@x.com"}, nil
+	}
+	return db.User{}, db.ErrNotFound
+}
+
+func (auditNamesFake) GetServiceByID(_ context.Context, id string) (db.Service, error) {
+	if id == "svc-rdp" || id == "svc-away" {
+		return db.Service{ID: id, Name: strings.TrimPrefix(id, "svc-")}, nil
+	}
+	return db.Service{}, db.ErrNotFound
+}
+
+// The audit rows of a forward and of a reclaimed port name the actor by
+// email and the subject by the service's name; an actor or a service that
+// cannot be read leaves them empty and the row is still written.
+func TestObserver_TCPAuditRowsNameTheActorAndTheService(t *testing.T) {
+	au := &recAudit{}
+	o := newObserver(observerParts{Audit: au, Names: auditNamesFake{}})
+	t.Cleanup(o.stop)
+	o.ObserveSession(observe.Session{Kind: observe.ForwardOpened, UserID: "u-1", ServiceID: "svc-rdp", SessionID: "s-1"})
+	o.ObserveSession(observe.Session{Kind: observe.TCPPortReclaimed, UserID: "u-1", ServiceID: "svc-fixed", FromServiceID: "svc-away", Port: 9010})
+	o.ObserveSession(observe.Session{Kind: observe.ForwardOpened, UserID: "u-gone", ServiceID: "svc-gone", SessionID: "s-2"})
+	if err := o.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	au.mu.Lock()
+	defer au.mu.Unlock()
+	if len(au.got) != 3 {
+		t.Fatalf("audit %+v", au.got)
+	}
+	if e := au.got[0]; e.Action != audit.ActionTCPForwardOpen || e.ActorEmail != "alice@x.com" || e.SubjectLabel != "rdp" {
+		t.Fatalf("forward %+v", e)
+	}
+	if e := au.got[1]; e.Action != audit.ActionServiceTCPPortReclaimed || e.ActorEmail != "alice@x.com" || e.SubjectLabel != "away" {
+		t.Fatalf("reclaimed %+v", e)
+	}
+	if e := au.got[2]; e.ActorEmail != "" || e.SubjectLabel != "" || e.ActorID != "u-gone" {
+		t.Fatalf("unknown %+v", e)
+	}
+}
+
 // policyCounter is a forwardDB that counts the policy reads.
 type policyCounter struct {
 	forwardDB
@@ -628,5 +674,111 @@ func TestServe_TCPForwardEndsWithItsCredentials(t *testing.T) {
 	r.mustAdmin(http.MethodPatch, "/api/v1/users/"+bob.ID, map[string]string{"status": "suspended"}, http.StatusNoContent, nil)
 	if !ended(bst) {
 		t.Fatal("the forward outlived its suspended user")
+	}
+}
+
+// A right taken away ends the live forwards it allowed, on the whole relay:
+// a role taken out of the service's policy ends that user's forward, and a
+// user demoted to a role the policy does not hold loses theirs; the owner's
+// forward stays throughout.
+func TestServe_TCPForwardEndsWhenTheRightIsTaken(t *testing.T) {
+	r := bootObsRelay(t)
+	echo, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = echo.Close() })
+	go func() {
+		for {
+			c, err := echo.Accept()
+			if err != nil {
+				return
+			}
+			go func() { defer c.Close(); _, _ = io.Copy(c, c) }()
+		}
+	}()
+	var tok struct {
+		Token string `json:"token"`
+	}
+	r.mustAdmin(http.MethodPost, "/api/v1/tokens", map[string]string{"name": "home"}, http.StatusCreated, &tok)
+	homeTok := tok.Token
+	r.mustAdmin(http.MethodPost, "/api/v1/tokens", map[string]string{"name": "laptop"}, http.StatusCreated, &tok)
+	laptopTok := tok.Token
+	stop := r.connectWith(homeTok, client.TunnelSpec{Name: "rdp", Type: "tcp", LocalAddr: echo.Addr().String(), Access: "private"})
+	defer stop()
+	alive := func(st *yamux.Stream) bool {
+		_ = st.SetDeadline(time.Now().Add(5 * time.Second))
+		if _, err := st.Write([]byte("x")); err != nil {
+			return false
+		}
+		_, err := io.ReadFull(st, make([]byte, 1))
+		return err == nil
+	}
+	ended := func(st *yamux.Stream) bool {
+		_ = st.SetReadDeadline(time.Now().Add(10 * time.Second))
+		_, err := st.Read(make([]byte, 1))
+		return err != nil && !errors.Is(err, yamux.ErrTimeout)
+	}
+	var serviceID string
+	var rows []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	r.mustAdmin(http.MethodGet, "/api/v1/services", nil, http.StatusOK, &rows)
+	for _, s := range rows {
+		if s.Name == "rdp" {
+			serviceID = s.ID
+		}
+	}
+	policy := func(roles ...string) {
+		r.mustAdmin(http.MethodPut, "/api/v1/services/"+serviceID+"/access-policy", map[string]any{"roles": roles}, http.StatusNoContent, nil)
+	}
+	// user signs up a user of role and returns their id and a client token.
+	user := func(email, role string) (string, string) {
+		var u struct {
+			ID string `json:"id"`
+		}
+		r.mustAdmin(http.MethodPost, "/api/v1/users", map[string]string{"email": email, "password": "password-" + email, "role": role}, http.StatusCreated, &u)
+		hc, csrf := signIn(t, r.base, email, "password-"+email)
+		confirmPassword(t, hc, r.base, csrf, "password-"+email)
+		req, _ := http.NewRequest(http.MethodPost, r.base+"/api/v1/tokens", strings.NewReader(`{"name":"laptop"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-CSRF-Token", csrf)
+		hr, err := hc.Do(req)
+		if err != nil || hr.StatusCode != http.StatusCreated {
+			t.Fatalf("token of %s: %v %v", email, hr, err)
+		}
+		defer hr.Body.Close()
+		var ut struct {
+			Token string `json:"token"`
+		}
+		_ = json.NewDecoder(hr.Body).Decode(&ut)
+		return u.ID, ut.Token
+	}
+	policy("admin", "user")
+	_, carolTok := user("carol@x.com", "user")
+	bobID, bobTok := user("bob@x.com", "admin")
+
+	owner, oresp := dialForwarder(t, r, laptopTok).open(t, "rdp")
+	carol, cresp := dialForwarder(t, r, carolTok).open(t, serviceID)
+	bob, bresp := dialForwarder(t, r, bobTok).open(t, serviceID)
+	if !oresp.OK || !cresp.OK || !bresp.OK || !alive(owner) || !alive(carol) || !alive(bob) {
+		t.Fatalf("open: %+v %+v %+v", oresp, cresp, bresp)
+	}
+
+	policy("admin")
+	if !ended(carol) {
+		t.Fatal("the forward outlived the role taken out of the policy")
+	}
+	if !alive(bob) || !alive(owner) {
+		t.Fatal("a forward the policy still allows ended")
+	}
+
+	r.mustAdmin(http.MethodPatch, "/api/v1/users/"+bobID, map[string]string{"role": "user"}, http.StatusNoContent, nil)
+	if !ended(bob) {
+		t.Fatal("the forward outlived its user's demotion")
+	}
+	if !alive(owner) {
+		t.Fatal("the owner's forward ended")
 	}
 }

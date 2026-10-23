@@ -495,7 +495,7 @@ services:
 | `services[].type` | No | `tcp` | `http` or `tcp`. HTTP tunnels get a slug and a `/svc/<slug>/` URL; TCP tunnels get a port. |
 | `services[].remote` | No | `0` | TCP only. Requested public port. `0` = auto-assigned from `PORT_MIN`–`PORT_MAX`. |
 | `services[].slug` | No | — | `http` only. Path under `/svc/`. Used only when the service is created (`burrow up`). |
-| `services[].access` | No | none | `http`: `open`, `login` or `api-key`, used only when the service is created. `tcp`: `open`, `ip` or `private`. **A tcp entry without `access` asks for nothing and keeps the stored mode; a new service created that way is `open`.** |
+| `services[].access` | No | none | `http`: `open`, `login` or `api-key`, used only when the service is created. `tcp`: `open`, `ip` or `private`. A tcp entry without `access` asks for nothing and keeps the stored mode; a new service created that way is `private` (`open` with `remote:`, and with clients older than v0.13.0). |
 | `forwards[].target` | Yes, per forward | — | Slug, own service name or id of a tcp service to reach with `burrow forward`. A file may hold `forwards` and no `services`. |
 | `forwards[].local_port` | No | `13389` | Local port to listen on. |
 | `forwards[].bind` | No | `127.0.0.1` | Local address to listen on. Anything but loopback lets other machines use the forward without signing in. |

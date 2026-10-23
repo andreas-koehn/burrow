@@ -1072,6 +1072,7 @@ func newRootCmd() *cobra.Command {
 				TCPServices: srv,
 				IPGrants:    db.Wrap(database),
 				Connections: srv,
+				Forwards:    srv,
 				OnServiceDeleted: func(serviceID string) {
 					v04.InspectorMgr.Remove(serviceID)
 					_ = v05.SemanticCache.ClearService(context.Background(), serviceID)

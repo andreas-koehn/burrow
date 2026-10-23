@@ -101,27 +101,45 @@ and a TCP tunnel is **not** open by default when a current client creates it:
 | `ip` | yes | Permanent CIDRs plus time-limited grants; everyone else is closed without a byte |
 | `open` | yes | Everyone, with connection limits |
 
-`burrow tcp` creates `private` services. A tcp service from an old client, or
-from a `burrow.yaml` entry without `access:`, is `open`. The mode of an existing
-service is set on its page in the dashboard, or with
-`PUT /api/v1/services/{id}/access-mode`. A change closes the tunnel and the
-client registers again. The full guide is
+A current client (`burrow tcp`, or a `burrow.yaml` entry) creates a new
+service `private` when no mode is asked for; a `burrow.yaml` entry with
+`remote:` and no `access:` is created `open`. A tcp service from a client older
+than v0.13.0 is `open`. The mode of an existing service is set on its page in
+the dashboard, or with `PUT /api/v1/services/{id}/access-mode`. A change closes
+the tunnel and the client registers again: a client started without `--access`
+serves the new mode, and one started with a stricter `--access` stops. The full guide is
 [Remote desktop and other TCP services](/guide/remote-desktop-and-tcp).
 
 **Forward policy.** Who may run `burrow forward` to a TCP service is the
 service's access policy (`PUT /api/v1/services/{id}/access-policy`): the owner
 always, and any user whose role is on the list. An empty list means the owner
-only. The list is read on every forward.
+only. The list is read on every forward, and a change ends the live forwards
+of the users it no longer allows, as does a change of a user's role or a
+suspension. The owner's forwards are never ended this way.
 
 **IP grants.** In `ip` mode, `POST /api/v1/services/{id}/ip-grants` allows an
 address for 1 to 168 hours (the dashboard offers 1, 8 and 24); `GET` lists the
 active grants and `DELETE /api/v1/services/{id}/ip-grants/{grantID}` revokes
 one. Permanent CIDRs are the IP/geo allow list of the service; for a TCP
 service no entry may be wider than a `/8` (IPv4) or `/32` (IPv6), and countries
-do not apply. Adding a grant and disconnecting a live connection ask for a
-recent password confirmation. These routes and the writes of the access mode,
-the access policy and the IP/geo lists are not tools of the management MCP
-server: an agent cannot widen access to a service.
+do not apply.
+
+**Password confirmation.** Changing the access mode, the access policy or the
+IP/geo lists, adding a grant and disconnecting a live connection ask a
+dashboard session for a recent password confirmation, while no services
+domain is set. Requests with an automation token (`bua_…`) skip it: they carry
+no cookie that a page could ride on. So such a token, with
+`services:configure` or `ipgeo:manage`, can widen access to a service on its
+own; keep those permissions off tokens that do not need them. These routes
+are not tools of the management MCP server, whatever token it runs with: an
+agent cannot widen access to a service.
+
+**Failed sign-ins on port 7000.** After 10 failed sign-ins from one address,
+the relay answers further invalid tokens from it with `rate_limited` instead
+of `invalid_token`, until one more is allowed every 30 seconds. Every token is
+still checked, and a valid token is accepted at once. It is a signal to the
+client and in the logs, not a gate: it does not slow down guessing, which the
+length of a random token rules out.
 
 **Permissions.** No new permission exists. The mode, the forward policy, the
 connection cap and the live connections use `services:configure:own` or `:any`;

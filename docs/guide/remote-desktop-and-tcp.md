@@ -65,16 +65,19 @@ burrow login burrow.insingo.com
 burrow tcp 3389 --name rdp
 ```
 
-`burrow tcp` is private by default, so this is the same as
-`burrow tcp 3389 --name rdp --access private`. The command stays in the
-foreground and prints the way in:
+`burrow tcp` creates a new service private. Unlike
+`burrow tcp 3389 --name rdp --access private`, the command without `--access`
+asks for no mode, so it keeps serving if you later change the mode in the
+dashboard. The command stays in the foreground and prints the way in:
 
 ```
-This service is private: the relay opened no public port. Reach it from another machine with: burrow forward t3f9a1c07be 13389
+This service is private: the relay opened no public port. Reach it from another machine with: burrow forward k7p2qx 13389
 ```
 
 The word after `forward` is the service's **slug**. The relay makes it for
-you. It is also shown on the service's page in the dashboard.
+you: six letters and digits, like `k7p2qx`. A tcp service that existed before
+v0.13.0 got a longer one, `t` and ten hex digits (for example `t3f9a1c07be`),
+and keeps it. The slug is also shown on the service's page in the dashboard.
 
 ::: tip The home client connects to 127.0.0.1
 Burrow reaches the desktop on `127.0.0.1:3389` of the same machine. You can
@@ -95,11 +98,16 @@ services:
     access: private
 ```
 
-`access: private` is worth writing out. **An entry without `access:` asks the
-relay for nothing and keeps the stored mode. A service created that way is
-`open`, on a public port.** Do not leave `access:` out for RDP, SSH, VNC or
-databases. `access: private` together with `remote:` is refused, because a
-private service has no port.
+An entry without `access:` asks the relay for nothing: a service that exists
+keeps the mode stored in the dashboard, and a new one is created `private`.
+Older clients and older relays create it `open`; against a relay too old for
+tcp access modes, this client does not register the entry at all (add
+`access: open` if you want a public port there). Writing `access: private`
+makes the wish explicit: the client then stops when the dashboard says
+something more open. `access: private` together with `remote:` is refused,
+because a private service has no port. An entry with `remote:` and no
+`access:` is created `open`, as before: a fixed public port is what it asks
+for.
 
 #### Run it as a service
 
@@ -122,10 +130,10 @@ token; it is made when you sign in.
 
 ```powershell
 burrow login burrow.insingo.com
-burrow forward t3f9a1c07be 13389
+burrow forward k7p2qx 13389
 ```
 
-Replace `t3f9a1c07be` with your service's slug. Leave the window open. The
+Replace `k7p2qx` with your service's slug. Leave the window open. The
 command listens on `127.0.0.1:13389` and sends every connection to the relay,
 which sends it on to your home machine. Port 13389 is the default. It keeps
 the machine's own remote desktop on 3389 free.
@@ -153,14 +161,14 @@ you are done.
 To start it when you sign in to Windows, make a scheduled task:
 
 ```bat
-schtasks /Create /TN "Burrow forward rdp" /SC ONLOGON /RL LIMITED /TR "\"%LOCALAPPDATA%\Programs\burrow\burrow.exe\" forward t3f9a1c07be 13389"
+schtasks /Create /TN "Burrow forward rdp" /SC ONLOGON /RL LIMITED /TR "\"%LOCALAPPDATA%\Programs\burrow\burrow.exe\" forward k7p2qx 13389"
 ```
 
 Or list the forward in a `burrow.yaml` and run `burrow up`:
 
 ```yaml
 forwards:
-  - target: t3f9a1c07be   # slug, own service name or id
+  - target: k7p2qx   # slug, own service name or id
     local_port: 13389     # default 13389
     bind: 127.0.0.1       # default 127.0.0.1
 ```
@@ -179,7 +187,7 @@ The forward is the same on every system:
 
 ```sh
 burrow login burrow.insingo.com
-burrow forward t3f9a1c07be 13389
+burrow forward k7p2qx 13389
 ```
 
 Then connect to `localhost:13389`:
@@ -228,10 +236,12 @@ Changing it closes the tunnel and the home client registers again.
 
 - **Stricter** (open to ip to private): applies when the client reconnects,
   which happens by itself.
-- **More open** (private to ip or open): the client has to be restarted with
-  `--access <mode>`. A client that was started with a stricter `--access` stops
-  with `service is <mode> in the dashboard; restart with --access <mode> to
-  serve it`.
+- **More open** (private to ip or open): a client started without `--access`
+  (or a `burrow.yaml` entry without `access:`) serves the new mode when it
+  reconnects, by itself. A client that was started with a stricter `--access`
+  stops with `service is <mode> in the dashboard; restart with --access <mode>
+  to serve it`. The dashboard asks you to confirm, in red, before it makes a
+  service more open.
 
 The rule behind this: the client never widens access on its own, and the
 dashboard can always tighten it. If you start `burrow tcp` with `--access
@@ -359,9 +369,11 @@ let in.
 (`0` means the default of 32). It is a service setting, not a flag of
 `burrow tcp`. Changing it is audited as `service.max_connections.update`.
 
-On port 7000, each source address may fail 10 sign-ins and then gets one more
-chance every 30 seconds. A valid token is still accepted from a limited
-address.
+On port 7000, after 10 failed sign-ins from one address the relay answers
+further invalid tokens from it with `rate_limited` instead of `invalid_token`,
+and allows one more failure every 30 seconds. Every token is still checked,
+and a valid token is accepted at once: this is a signal, not a gate (see
+[Access control](/guide/access-control#access-modes-of-tcp-services)).
 
 ### Ports
 
@@ -417,7 +429,10 @@ this off:
 
 **Revoking a token ends its forwards.** Revoking a client token, suspending
 the user or deleting the user closes the live forwards of that token at once.
-The next connection fails until the user has a valid token again.
+The next connection fails until the user has a valid token again. Taking a
+role out of the service's access policy, or giving a user a role the policy
+does not name, ends that user's live forwards to the service too. The owner's
+forwards are not ended this way.
 
 **The dashboard can disconnect.** The service's page lists live connections,
 visitors and forwards, with the address or the user and token name, the time
@@ -450,6 +465,11 @@ The connection log has every connection:
   forward the user may not make) and `user_limit`. They are **sampled**: one
   row per service, reason and address per minute, so a scan does not fill the
   log. The metric `burrow_connections_total` counts all of them.
+- A connection the relay ended says why in its reason: `closed_by_dashboard`
+  (someone pressed Disconnect), `access_revoked` (a forward the user may no
+  longer make, after a change of the access policy, the user's role or
+  status) or `session_closed` (the forwarder's or the home client's session
+  ended). A connection that one side closed has no reason.
 
 The webhook event `access.denied` is sent for TCP refusals too, at most one
 per service and reason per minute. See [Operations](/guide/operations).
@@ -526,7 +546,7 @@ five seconds and then tries again. Look at the connection log for the reason.
 
 **`access_invalid`, "restart with --access".** The dashboard has a mode that is
 more open than the one your client asked for. Restart the client with
-`--access <mode>`, or set the dashboard back. See
+`--access <mode>` or without `--access`, or set the dashboard back. See
 [Changing the mode](#changing-the-mode). Other `access_invalid` texts say that
 the relay cannot apply a mode: "a tcp tunnel needs a name to have an access
 mode", or "this relay cannot apply an access mode to a tcp tunnel".

@@ -63,7 +63,7 @@ func TestExpose_Targets(t *testing.T) {
 			}
 			want := []client.TunnelSpec{{Name: tc.name, Type: tc.cmd, LocalAddr: tc.local}}
 			if tc.cmd == "tcp" {
-				want[0].Access = "private" // D2: the default of a new client
+				want[0].AccessDefault = "private" // D2: the default of a new client
 			}
 			if r := h.oneRun(); !reflect.DeepEqual(r.tunnels, want) {
 				t.Fatalf("tunnels = %+v, want %+v", r.tunnels, want)
