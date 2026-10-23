@@ -79,6 +79,14 @@ func (f *fakeServiceDB) GetUserByID(context.Context, string) (db.User, error) {
 	return db.User{Role: "user"}, nil
 }
 
+func (f *fakeServiceDB) SetServiceTCPPort(context.Context, string, int) error {
+	return errors.New("fakeServiceDB: SetServiceTCPPort is not supported")
+}
+
+func (f *fakeServiceDB) ListTCPPortReservations(context.Context) (map[int]string, error) {
+	return nil, errors.New("fakeServiceDB: ListTCPPortReservations is not supported")
+}
+
 func (f *fakeServiceDB) SetServiceSubdomain(_ context.Context, id, sub string) error {
 	f.callCount++
 	if f.subdomainFails > 0 {
@@ -442,7 +450,7 @@ type fakeHTTPTunnelLister struct {
 	tunnels []*server.Tunnel
 }
 
-func (f *fakeHTTPTunnelLister) HTTPTunnels() []*server.Tunnel { return f.tunnels }
+func (f *fakeHTTPTunnelLister) Tunnels() []*server.Tunnel { return f.tunnels }
 func (f *fakeHTTPTunnelLister) SnapshotSessions() []server.SessionSnapshot {
 	return nil
 }
@@ -536,7 +544,7 @@ type fakeHTTPTunnelListerWithSessions struct {
 	sessions []server.SessionSnapshot
 }
 
-func (f *fakeHTTPTunnelListerWithSessions) HTTPTunnels() []*server.Tunnel {
+func (f *fakeHTTPTunnelListerWithSessions) Tunnels() []*server.Tunnel {
 	return f.tunnels
 }
 func (f *fakeHTTPTunnelListerWithSessions) SnapshotSessions() []server.SessionSnapshot {

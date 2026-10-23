@@ -35,13 +35,14 @@ func (e *RefusedError) Error() string {
 
 // Final reports whether trying again cannot change the refusal: the token is
 // not accepted, the client is too old, or what was asked for a service is not
-// possible. Everything else (a taken port, a relay in trouble, a reason this
-// client does not know) may pass.
+// possible (a name that a service of another type has is one). Everything
+// else (a taken port, a relay in trouble, a reason this client does not know)
+// may pass.
 func (e *RefusedError) Final() bool {
 	switch e.Code {
 	case proto.CodeInvalidToken, proto.CodeClientTooOld,
 		proto.CodeSlugInvalid, proto.CodeSlugTaken, proto.CodeAccessInvalid,
-		proto.CodeForbidden:
+		proto.CodeForbidden, proto.CodeNameInUse:
 		return true
 	}
 	return false

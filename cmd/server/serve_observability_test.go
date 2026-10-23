@@ -1246,8 +1246,8 @@ func TestServe_SamplesSayWhatHappened(t *testing.T) {
 	r := bootObsRelay(t)
 	r.obsTraffic()
 	tns := r.tunnels() // the tunnels of the reconnected client; their services are the same
-	web, llm := tns["obs-web"].ServiceID, tns["obs-llm"].ServiceID
-	if web == "" || llm == "" {
+	web, llm, raw := tns["obs-web"].ServiceID, tns["obs-llm"].ServiceID, tns["obs-raw"].ServiceID
+	if web == "" || llm == "" || raw == "" {
 		t.Fatalf("service ids: %+v", tns)
 	}
 	want := []string{
@@ -1255,8 +1255,9 @@ func TestServe_SamplesSayWhatHappened(t *testing.T) {
 		`burrow_http_requests_total{service="` + web + `",method="POST",status="2xx"}`,
 		`burrow_http_requests_total{service="` + llm + `",method="GET",status="4xx"}`,
 		`burrow_connections_total{service="` + llm + `",kind="http_proxy",status="rejected"}`,
-		// The tcp round trip, and the client's two sessions (the first ended).
-		`burrow_connections_total{service="",kind="tcp_proxy",status="closed_clean"}`,
+		// The tcp round trip (a tcp tunnel is a service), and the client's
+		// two sessions (the first ended).
+		`burrow_connections_total{service="` + raw + `",kind="tcp_proxy",status="closed_clean"}`,
 		`burrow_connections_total{service="",kind="control",status="closed_clean"}`,
 		// The model requests: tokens, a cache hit and misses, one failover
 		// from the first provider to the second, one failed upstream.

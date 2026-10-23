@@ -1,0 +1,308 @@
+package main
+
+// Native tcp, P01: a tcp tunnel is a service. The resolver creates and reuses
+// tcp service rows and keeps their ports; a name has one type; the live
+// lookups of the API see tcp tunnels; tcp visitors reach the connection log.
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/ankoehn/burrow/internal/client"
+	"github.com/ankoehn/burrow/internal/connlog"
+	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/proto"
+	"github.com/ankoehn/burrow/internal/server"
+)
+
+// The resolver is a TCPServiceResolver.
+var _ server.TCPServiceResolver = serviceResolverAdapter{}
+
+// A tcp registration creates a tcp service in mode open, without a slug, and
+// the next one finds it. The port it holds comes back with it.
+func TestResolveTCP_CreatesAndReuses(t *testing.T) {
+	x, uid := optionsDB(t)
+	a := serviceResolverAdapter{db: x, authDomain: "burrow.example.com"}
+	ctx := context.Background()
+	r, err := a.ResolveTCP(ctx, uid, "rdp", server.ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Created || r.ServiceID == "" || r.AccessMode != "open" || r.Slug != "" || r.TCPPort != 0 {
+		t.Fatalf("created: %+v", r)
+	}
+	row := servicesOf(t, x, uid)["rdp"]
+	if row.ID != r.ServiceID || row.Type != "tcp" || row.AccessMode != "open" || row.Subdomain != "" {
+		t.Fatalf("row %+v", row)
+	}
+	if err := a.SetServiceTCPPort(ctx, r.ServiceID, 9005); err != nil {
+		t.Fatal(err)
+	}
+	r2, err := a.ResolveTCP(ctx, uid, "rdp", server.ResolveOptions{})
+	if err != nil || r2.Created || r2.ServiceID != r.ServiceID || r2.TCPPort != 9005 || r2.AccessMode != "open" {
+		t.Fatalf("again: %+v %v", r2, err)
+	}
+	held, err := a.TCPPortReservations(ctx)
+	if err != nil || held[9005] != r.ServiceID {
+		t.Fatalf("reservations %v %v", held, err)
+	}
+}
+
+// One registration of many at the same moment creates the service.
+func TestResolveTCP_ConcurrentCreation(t *testing.T) {
+	x, uid := optionsDB(t)
+	a := serviceResolverAdapter{db: x}
+	type out struct {
+		r   server.Resolved
+		err error
+	}
+	res := make(chan out, 8)
+	for i := 0; i < 8; i++ {
+		go func() {
+			r, err := a.ResolveTCP(context.Background(), uid, "ssh", server.ResolveOptions{})
+			res <- out{r, err}
+		}()
+	}
+	created, id := 0, ""
+	for i := 0; i < 8; i++ {
+		o := <-res
+		if o.err != nil {
+			t.Fatalf("registration %d: %v", i, o.err)
+		}
+		if id == "" {
+			id = o.r.ServiceID
+		}
+		if o.r.ServiceID != id {
+			t.Fatalf("two services: %q and %q", id, o.r.ServiceID)
+		}
+		if o.r.Created {
+			created++
+		}
+	}
+	if created != 1 {
+		t.Fatalf("created %d times", created)
+	}
+}
+
+// A name has one type: a tcp registration of an http service's name is
+// refused with name_in_use, and so is an http registration of a tcp
+// service's name, through every path of the resolver. Nothing is created.
+func TestResolve_NameInUseAcrossTypes(t *testing.T) {
+	x, uid := optionsDB(t)
+	a := serviceResolverAdapter{db: x, authDomain: "burrow.example.com"}
+	ctx := context.Background()
+	if _, err := a.ResolveWithOptions(ctx, uid, "web", "http", server.ResolveOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ResolveTCP(ctx, uid, "rdp", server.ResolveOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.CreateService(ctx, db.Service{ID: "direct-1", UserID: uid, Name: "llm", Type: "direct", AccessMode: "api_key"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := a.ResolveTCP(ctx, uid, "web", server.ResolveOptions{})
+	if msg := refusal(t, err, proto.CodeNameInUse); msg != `the name "web" belongs to an http service; choose another name` {
+		t.Fatalf("tcp on an http name: %q", msg)
+	}
+	_, err = a.ResolveTCP(ctx, uid, "llm", server.ResolveOptions{})
+	if msg := refusal(t, err, proto.CodeNameInUse); msg != `the name "llm" belongs to an AI provider; choose another name` {
+		t.Fatalf("tcp on a provider name: %q", msg)
+	}
+	for _, o := range []server.ResolveOptions{{}, {Slug: "my-rdp", Access: "api_key"}} {
+		_, err = a.ResolveWithOptions(ctx, uid, "rdp", "http", o)
+		if msg := refusal(t, err, proto.CodeNameInUse); msg != `the name "rdp" belongs to a tcp service; choose another name` {
+			t.Fatalf("http on a tcp name (%+v): %q", o, msg)
+		}
+	}
+	_, _, err = a.Resolve(ctx, uid, "rdp", "http")
+	refusal(t, err, proto.CodeNameInUse)
+
+	rows := servicesOf(t, x, uid)
+	if len(rows) != 3 || rows["web"].Type != "http" || rows["rdp"].Type != "tcp" || rows["rdp"].Subdomain != "" {
+		t.Fatalf("rows %+v", rows)
+	}
+}
+
+// fakeTunnelSource is a registryTunnelSource over a fixed set of tunnels.
+type fakeTunnelSource struct {
+	tunnels  []*server.Tunnel
+	sessions []server.SessionSnapshot
+}
+
+func (f *fakeTunnelSource) Tunnels() []*server.Tunnel                  { return f.tunnels }
+func (f *fakeTunnelSource) SnapshotSessions() []server.SessionSnapshot { return f.sessions }
+func (f *fakeTunnelSource) LookupSessionByTunnelID(id string) (string, string, bool) {
+	for _, ss := range f.sessions {
+		for _, tv := range ss.Tunnels {
+			if tv.ID == id {
+				return ss.SessionID, ss.UserID, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// The API's live lookups see a tcp tunnel: by service (with its port, which
+// is what makes a delete of a connected tcp service a 409) and by tunnel.
+func TestLiveTunnelLookupAdapter_TCP(t *testing.T) {
+	tn := &server.Tunnel{ID: "tn-tcp", ServiceID: "svc-rdp", LocalAddr: "127.0.0.1:3389", RemotePort: 9007}
+	a := liveTunnelLookupAdapter{srv: &fakeTunnelSource{
+		tunnels:  []*server.Tunnel{tn},
+		sessions: []server.SessionSnapshot{{SessionID: "sess-1", UserID: "u-1", Tunnels: []server.TunnelView{{ID: "tn-tcp"}}}},
+	}}
+	snap, ok := a.LookupByServiceID("svc-rdp")
+	if !ok || !snap.Connected || snap.RemotePort != 9007 || snap.LocalAddr != "127.0.0.1:3389" || snap.SessionID != "sess-1" {
+		t.Fatalf("by service: %+v %v", snap, ok)
+	}
+	loc, ok := a.LookupByTunnelID("tn-tcp")
+	if !ok || loc.ServiceID != "svc-rdp" || loc.UserID != "u-1" {
+		t.Fatalf("by tunnel: %+v %v", loc, ok)
+	}
+}
+
+// The control server's connection-log entries become connection_logs rows.
+func TestServerConnLogAdapter_WritesRows(t *testing.T) {
+	x, uid := optionsDB(t)
+	ctx := context.Background()
+	if err := x.CreateService(ctx, db.Service{ID: "svc-rdp", UserID: uid, Name: "rdp", Type: "tcp", AccessMode: "open"}); err != nil {
+		t.Fatal(err)
+	}
+	a := serverConnLogAdapter{sink: connlog.NewSQLSink(x, slog.New(slog.NewTextHandler(io.Discard, nil)))}
+	start := time.Now().UTC().Add(-2 * time.Second).Truncate(time.Millisecond)
+	a.RecordConnection(ctx, server.ConnLogEntry{
+		Kind: "tcp_proxy", ServiceID: "svc-rdp", TunnelID: "tn-1", UserID: uid, ClientSessionID: "sess-1",
+		SourceIP: "203.0.113.9", StartedAt: start, EndedAt: start.Add(1500 * time.Millisecond),
+		BytesIn: 11, BytesOut: 22, Status: "closed_clean",
+	})
+	var rows []db.ConnectionLog
+	deadline := time.Now().Add(5 * time.Second)
+	for len(rows) == 0 && time.Now().Before(deadline) {
+		var err error
+		rows, err = connlog.ListConnectionLogs(ctx, x, connlog.ConnLogQuery{Kind: "tcp_proxy"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("%d rows", len(rows))
+	}
+	r := rows[0]
+	if r.ServiceID != "svc-rdp" || r.TunnelID != "tn-1" || r.UserID != uid || r.ClientSessionID != "sess-1" ||
+		r.SourceIP != "203.0.113.9" || r.BytesIn != 11 || r.BytesOut != 22 || r.Status != "closed_clean" || r.DurationMs != 1500 {
+		t.Fatalf("row %+v", r)
+	}
+}
+
+// The whole relay: a tcp tunnel is listed as a service with its port, a
+// delete is refused while it is served, its visitor's bytes are on the tunnel
+// while the connection is open and in a connection-log row afterwards, and
+// the service can be deleted once the client is gone.
+func TestServe_TCPTunnelIsAService(t *testing.T) {
+	r := bootObsRelay(t)
+	echo, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = echo.Close() })
+	go func() {
+		for {
+			c, err := echo.Accept()
+			if err != nil {
+				return
+			}
+			go func() { defer c.Close(); _, _ = io.Copy(c, c) }()
+		}
+	}()
+	var token struct {
+		Token string `json:"token"`
+	}
+	r.mustAdmin(http.MethodPost, "/api/v1/tokens", map[string]string{"name": "tcp-client"}, http.StatusCreated, &token)
+	// No port asked for, as an old client sends it.
+	stop := r.connectWith(token.Token, client.TunnelSpec{Name: "rdp", Type: "tcp", LocalAddr: echo.Addr().String()})
+
+	type svc struct {
+		ID         string `json:"id"`
+		Name       string `json:"name"`
+		Type       string `json:"type"`
+		URL        string `json:"url"`
+		AccessMode string `json:"access_mode"`
+		Connected  bool   `json:"connected"`
+		RemotePort int    `json:"remote_port"`
+		Status     string `json:"status"`
+	}
+	find := func() (svc, bool) {
+		var rows []svc
+		r.mustAdmin(http.MethodGet, "/api/v1/services", nil, http.StatusOK, &rows)
+		for _, s := range rows {
+			if s.Name == "rdp" {
+				return s, true
+			}
+		}
+		return svc{}, false
+	}
+	s, ok := find()
+	if !ok || s.Type != "tcp" || s.AccessMode != "open" || !s.Connected || s.RemotePort != r.tcpPort || s.URL != "" || s.Status != "online" {
+		t.Fatalf("GET /services: %+v %v", s, ok)
+	}
+	if tn := r.tunnels()["rdp"]; tn.ServiceID != s.ID {
+		t.Fatalf("GET /tunnels names service %q, want %q", tn.ServiceID, s.ID)
+	}
+	if code, body := r.admin(http.MethodDelete, "/api/v1/services/"+s.ID, nil); code != http.StatusConflict {
+		t.Fatalf("delete while served: %d %s", code, body)
+	}
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(r.tcpPort)), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := conn.Write([]byte("ping\n")); err != nil {
+		t.Fatal(err)
+	}
+	if line, err := bufio.NewReader(conn).ReadString('\n'); err != nil || line != "ping\n" {
+		t.Fatalf("echo %q %v", line, err)
+	}
+	// Live: on the tunnel before the connection ends.
+	r.eventually("live bytes on the tunnel", func() bool {
+		tn := r.tunnels()["rdp"]
+		return tn.BytesIn == 5 && tn.BytesOut == 5
+	})
+	_ = conn.Close()
+
+	type logRow struct {
+		Kind      string `json:"kind"`
+		ServiceID string `json:"service_id"`
+		SourceIP  string `json:"source_ip"`
+		BytesIn   int64  `json:"bytes_in"`
+		BytesOut  int64  `json:"bytes_out"`
+		Status    string `json:"status"`
+	}
+	var rows []logRow
+	r.eventually("a tcp_proxy row for the service", func() bool {
+		r.mustAdmin(http.MethodGet, fmt.Sprintf("/api/v1/connection-logs?kind=tcp_proxy&service_id=%s", s.ID), nil, http.StatusOK, &rows)
+		return len(rows) == 1
+	})
+	if g := rows[0]; g.SourceIP != "127.0.0.1" || g.BytesIn != 5 || g.BytesOut != 5 || g.Status != "closed_clean" {
+		t.Fatalf("row %+v", g)
+	}
+
+	stop()
+	r.eventually("the relay lists no tunnel", func() bool { return len(r.tunnels()) == 0 })
+	if s, ok := find(); !ok || s.Connected || s.Status != "offline" {
+		t.Fatalf("after the client left: %+v %v", s, ok)
+	}
+	r.mustAdmin(http.MethodDelete, "/api/v1/services/"+s.ID, nil, http.StatusNoContent, nil)
+	if _, ok := find(); ok {
+		t.Fatal("the service is still listed")
+	}
+}

@@ -160,6 +160,10 @@ const (
 	CodePortUnavailable = "port_unavailable"
 	// CodeBadRequest: a message that could not be read or was not expected.
 	CodeBadRequest = "bad_request"
+	// CodeNameInUse: the token's owner has a service of that name with
+	// another type (an http service where a tcp tunnel was asked, or the
+	// other way round).
+	CodeNameInUse = "name_in_use"
 )
 
 // StreamHeader is the first frame the client writes on a new data stream,

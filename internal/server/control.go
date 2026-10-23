@@ -194,6 +194,102 @@ func (s *Server) resolveHTTP(cs *ClientSession, tr proto.TunnelRegister) (Resolv
 	return Resolved{ServiceID: serviceID, Slug: slug, Ignored: ignoredOptions(tr)}, nil
 }
 
+// refusalResponse is the answer to a registration that err refused: a
+// *RefusalError is for the client to read; any other failure keeps the text
+// it has always had, after prefix.
+func refusalResponse(prefix string, err error) proto.TunnelRegisterResponse {
+	refused := proto.TunnelRegisterResponse{OK: false, Error: prefix + err.Error(), Code: proto.CodeInternal}
+	var re *RefusalError
+	if errors.As(err, &re) {
+		refused.Error, refused.Code = re.Message, re.Code
+	}
+	return refused
+}
+
+// tcpService is what a tcp registration knows about its service before it
+// takes a port.
+type tcpService struct {
+	res  Resolved
+	held map[int]string // the ports services hold
+	tcp  TCPServiceResolver
+}
+
+// resolveTCP binds a tcp tunnel to its service when the relay keeps tcp
+// services (see TCPServiceResolver). Without one, the tunnel has no service
+// and the zero tcpService is returned. The client's access and slug wishes
+// are not passed on: a tcp service has neither yet.
+func (s *Server) resolveTCP(cs *ClientSession, tr proto.TunnelRegister) (tcpService, error) {
+	tcp, ok := s.opts.Services.(TCPServiceResolver)
+	if !ok {
+		return tcpService{}, nil
+	}
+	ctx := context.Background()
+	res, err := tcp.ResolveTCP(ctx, cs.UserID, tr.Name, ResolveOptions{})
+	if err != nil {
+		return tcpService{}, err
+	}
+	// Without them a port of another service could be handed out.
+	held, err := tcp.TCPPortReservations(ctx)
+	if err != nil {
+		return tcpService{}, fmt.Errorf("tcp port reservations: %w", err)
+	}
+	return tcpService{res: res, held: held, tcp: tcp}, nil
+}
+
+// registerTCP registers a tcp tunnel: its service, its public port and its
+// listener, and answers the client.
+func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRegister) {
+	svc, rerr := s.resolveTCP(cs, tr)
+	if rerr != nil {
+		refused := refusalResponse("resolve service: ", rerr)
+		_ = cs.SendControl(proto.MsgTunnelRegisterResp, refused)
+		s.refused(reg, cs, tr, refused.Code)
+		return
+	}
+	port, perr := s.ports.allocateTCP(tr.RemotePort, svc.res.ServiceID, svc.res.TCPPort, svc.held)
+	if perr != nil {
+		_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: perr.Error(), Code: proto.CodePortUnavailable})
+		s.refused(reg, cs, tr, proto.CodePortUnavailable)
+		return
+	}
+	tn := &Tunnel{
+		ID: uuid.NewString(), Name: tr.Name, Type: tr.Type, RemotePort: port, LocalAddr: tr.LocalAddr, sess: cs,
+		ServiceID: svc.res.ServiceID, accessMode: svc.res.AccessMode, created: svc.res.Created,
+	}
+	if lerr := s.startPublicListener(tn); lerr != nil {
+		s.ports.Release(port)
+		_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: lerr.Error(), Code: proto.CodePortUnavailable})
+		s.refused(reg, cs, tr, proto.CodePortUnavailable)
+		return
+	}
+	// The service keeps the port for its next registration. A failure costs
+	// only that: the tunnel is up.
+	if svc.tcp != nil && port != svc.res.TCPPort {
+		ctx, cancel := context.WithTimeout(context.Background(), sessionRecordTimeout)
+		if err := svc.tcp.SetServiceTCPPort(ctx, tn.ServiceID, port); err != nil {
+			s.log.Warn("keep tcp port failed", "service_id", tn.ServiceID, "remote_port", port, "err", err)
+		}
+		cancel()
+	}
+	reg.AddTunnel(cs, tn)
+	// Best-effort persist. RunControlLoop is serial (ping/pong/register/
+	// unregister on one goroutine), so any TunnelStore wired here MUST be
+	// fast and non-blocking — a slow store would stall heartbeat handling
+	// for this client. (Task 8 wires local sqlite; offload if ever remote.)
+	if err := s.opts.Tunnels.SaveTunnel(context.Background(), cs.UserID, tn); err != nil {
+		s.log.Warn("persist tunnel failed", "tunnel_id", tn.ID, "err", err)
+	}
+	s.recordSession(reg, cs)
+	s.stampService(cs, tn)
+	s.opts.Events.PublishTunnelsChanged(cs.UserID)
+	s.log.Info("tunnel registered", "tunnel_id", tn.ID, "remote_port", port, "service_id", tn.ServiceID, "session_id", cs.SessionID)
+	_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{
+		OK: true, TunnelID: tn.ID, RemotePort: port,
+		// A tcp service has neither a slug nor an access mode yet.
+		Ignored: ignoredOptions(tr),
+	})
+}
+
 // RunControlLoop processes control-stream messages until the stream closes.
 func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *ClientSession) {
 	defer stream.Close()
@@ -218,13 +314,7 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 				}
 				res, rerr := s.resolveHTTP(cs, tr)
 				if rerr != nil {
-					// A refusal is for the client to read; any other failure
-					// keeps the text it has always had.
-					refused := proto.TunnelRegisterResponse{OK: false, Error: "resolve service: " + rerr.Error(), Code: proto.CodeInternal}
-					var re *RefusalError
-					if errors.As(rerr, &re) {
-						refused.Error, refused.Code = re.Message, re.Code
-					}
+					refused := refusalResponse("resolve service: ", rerr)
 					_ = cs.SendControl(proto.MsgTunnelRegisterResp, refused)
 					s.refused(reg, cs, tr, refused.Code)
 					continue
@@ -260,36 +350,7 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 					GatewayOnly: res.GatewayOnly,
 				})
 			case "", "tcp":
-				port, perr := s.ports.Allocate(tr.RemotePort)
-				if perr != nil {
-					_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: perr.Error(), Code: proto.CodePortUnavailable})
-					s.refused(reg, cs, tr, proto.CodePortUnavailable)
-					continue
-				}
-				tn := &Tunnel{ID: uuid.NewString(), Name: tr.Name, Type: tr.Type, RemotePort: port, LocalAddr: tr.LocalAddr, sess: cs}
-				if lerr := s.startPublicListener(tn); lerr != nil {
-					s.ports.Release(port)
-					_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: lerr.Error(), Code: proto.CodePortUnavailable})
-					s.refused(reg, cs, tr, proto.CodePortUnavailable)
-					continue
-				}
-				reg.AddTunnel(cs, tn)
-				// Best-effort persist. RunControlLoop is serial (ping/pong/register/
-				// unregister on one goroutine), so any TunnelStore wired here MUST be
-				// fast and non-blocking — a slow store would stall heartbeat handling
-				// for this client. (Task 8 wires local sqlite; offload if ever remote.)
-				if err := s.opts.Tunnels.SaveTunnel(context.Background(), cs.UserID, tn); err != nil {
-					s.log.Warn("persist tunnel failed", "tunnel_id", tn.ID, "err", err)
-				}
-				s.recordSession(reg, cs)
-				s.stampService(cs, tn)
-				s.opts.Events.PublishTunnelsChanged(cs.UserID)
-				s.log.Info("tunnel registered", "tunnel_id", tn.ID, "remote_port", port, "session_id", cs.SessionID)
-				_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{
-					OK: true, TunnelID: tn.ID, RemotePort: port,
-					// A tcp service has neither a slug nor an access mode.
-					Ignored: ignoredOptions(tr),
-				})
+				s.registerTCP(reg, cs, tr)
 			default:
 				_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: "unknown tunnel type \"" + tr.Type + "\"", Code: proto.CodeUnknownTunnelType})
 				s.refused(reg, cs, tr, proto.CodeUnknownTunnelType)

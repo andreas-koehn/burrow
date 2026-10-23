@@ -64,6 +64,7 @@ func testResetHandler(d Deps) http.HandlerFunc {
 			"service_ai_config",
 			"service_upstream_credentials",
 			"service_ip_geo",
+			"service_ip_grants",
 			"rate_limits",
 			"model_aliases",
 			"budget_alerts",

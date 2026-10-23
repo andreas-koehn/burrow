@@ -88,7 +88,7 @@ const (
 // tunnel.
 type Traffic struct {
 	Kind      string // TrafficHTTP or TrafficTCP
-	ServiceID string // "" for a tcp tunnel, which has no service
+	ServiceID string // "" for a tcp tunnel the relay has no service for
 	TunnelID  string
 	UserID    string // the owner of the client that served it
 	SessionID string

@@ -48,6 +48,9 @@ type Resolved struct {
 	// Ignored lists, sorted, which of "access" and "slug" were asked for and
 	// not applied because the service existed with other values.
 	Ignored []string
+	// TCPPort is the public port a tcp service holds (TCPServiceResolver);
+	// 0 when it holds none.
+	TCPPort int
 }
 
 // OptionsResolver is a ServiceResolver that can create a service with a
@@ -58,6 +61,23 @@ type Resolved struct {
 // *RefusalError.
 type OptionsResolver interface {
 	ResolveWithOptions(ctx context.Context, userID, name, typ string, o ResolveOptions) (Resolved, error)
+}
+
+// TCPServiceResolver binds tcp tunnels to durable services and keeps the
+// public port of each. When Options.Services is one, a tcp registration
+// resolves (or creates) the service of its name, and a reconnect that asks
+// for no port gets the port the service held; without it a tcp tunnel has no
+// service, as before.
+type TCPServiceResolver interface {
+	// ResolveTCP returns the tcp service of the name, creating it when there
+	// is none. A name that belongs to a service of another type is a
+	// *RefusalError with proto.CodeNameInUse. Resolved.TCPPort is the port the
+	// service holds.
+	ResolveTCP(ctx context.Context, userID, name string, o ResolveOptions) (Resolved, error)
+	// TCPPortReservations maps every port a service holds to the service id.
+	TCPPortReservations(ctx context.Context) (map[int]string, error)
+	// SetServiceTCPPort makes port the one the service holds.
+	SetServiceTCPPort(ctx context.Context, serviceID string, port int) error
 }
 
 // RefusalError is a refusal with one of the proto.Code… values. Message is
@@ -109,9 +129,9 @@ type TunnelView struct {
 	BytesIn    uint64
 	BytesOut   uint64
 	Connected  bool
-	// ServiceID is the stable durable-service identity for http tunnels
-	// (empty for tcp tunnels). HTTP tunnels are auto-promoted to a persisted
-	// services row; the UI needs that ID — not the per-session tunnel.ID —
+	// ServiceID is the stable durable-service identity of the tunnel (empty
+	// for a tcp tunnel of a relay without tcp services). Tunnels are
+	// auto-promoted to a persisted services row; the UI needs that ID — not the per-session tunnel.ID —
 	// for per-service routes (/services/{id}/access-mode, /api-keys, etc.).
 	ServiceID string
 	// Hostname is the routable FQDN for http tunnels (subdomain.AuthDomain),
@@ -126,17 +146,36 @@ type TunnelView struct {
 	AccessMode string
 }
 
-// ControlSessionSink is the interface the server uses to record a
-// kind=control connection-log entry on yamux session close. The concrete
-// *connlog.SQLSink satisfies it via a thin cmd/server adapter. Declared here
-// (not in internal/connlog) to keep the server package import-free of
-// connlog on the data-plane path.
-//
-// Full instrumentation is wired by Task 17 (cmd/server). In v0.5.0 Task 8
-// this field is declared in Options so Task 17 can inject the sink without
-// changes to this file.
-type ControlSessionSink interface {
-	RecordControl(ctx context.Context, sessionID, userID, remoteAddr string, startedAt, endedAt time.Time)
+// ConnLogEntry is one connection-log row of a connection the control server
+// carries itself: a visitor of a tcp tunnel. Kind and Status are the
+// observe.Traffic… and observe.Outcome… values, which are the kinds and
+// statuses of the connection log.
+type ConnLogEntry struct {
+	Kind            string
+	ServiceID       string
+	TunnelID        string
+	UserID          string
+	ClientSessionID string
+	SourceIP        string
+	StartedAt       time.Time
+	EndedAt         time.Time
+	BytesIn         int64
+	BytesOut        int64
+	Status          string
+	Reason          string
+}
+
+// ConnLogReasonNoStream is the reason of a visitor whose client did not open
+// the stream for it in time.
+const ConnLogReasonNoStream = "no_stream"
+
+// ConnLogSink receives one entry per finished connection. It is called on the
+// goroutine of the connection and must not wait for the database; a
+// cmd/server adapter hands entries to *connlog.SQLSink, which writes in the
+// background. Declared here to keep the server package import-free of
+// connlog.
+type ConnLogSink interface {
+	RecordConnection(ctx context.Context, e ConnLogEntry)
 }
 
 // SessionRecorder remembers the last session of every client token, so that
@@ -182,10 +221,9 @@ type Options struct {
 	// of an http tunnel is https://<ServicesDomain>/svc/<slug>/ instead of
 	// one on AuthDomain. The dashboard link stays on AuthDomain.
 	ServicesDomain string
-	// ConnLog is the optional connection-log sink for control sessions.
-	// When non-nil, handleConn emits a kind=control entry on yamux session
-	// close. Wired by Task 17 (cmd/server); nil means no logging.
-	ConnLog ControlSessionSink
+	// ConnLog, when non-nil, gets one connection-log entry for every visitor
+	// of a tcp tunnel when its connection ends. nil: nothing is logged.
+	ConnLog ConnLogSink
 	// GetCertificate, when non-nil, supplies the control-channel certificate
 	// (e.g. from the ACME manager) instead of loading TLSCert/TLSKey files.
 	// Only GetCertificate is used (no TLS-ALPN NextProtos) since the control
@@ -510,7 +548,7 @@ func (s *Server) recordSession(reg *Registry, cs *ClientSession) {
 // serving it, or just stopped: when the tunnel is registered, when it is
 // unregistered and for every tunnel still open when the session ends. A
 // failure is logged and never fails the tunnel. Nothing is written without a
-// recorder or for a tunnel that has no durable service (a tcp tunnel).
+// recorder or for a tunnel that has no durable service.
 func (s *Server) stampService(cs *ClientSession, tn *Tunnel) {
 	if s.opts.ServiceRecorder == nil || tn == nil || tn.ServiceID == "" {
 		return
@@ -638,6 +676,33 @@ func (s *Server) LookupHTTPTunnelByServiceID(serviceID string) (*Tunnel, bool) {
 	for _, cs := range s.reg.Sessions() {
 		for _, tn := range s.reg.snapshotTunnels(cs) {
 			if tn.IsHTTP && tn.ServiceID == serviceID {
+				return tn, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// Tunnels returns a snapshot slice of the live tunnels of every type across
+// all sessions.
+func (s *Server) Tunnels() []*Tunnel {
+	var out []*Tunnel
+	for _, cs := range s.reg.Sessions() {
+		out = append(out, s.reg.snapshotTunnels(cs)...)
+	}
+	return out
+}
+
+// LookupTunnelByServiceID finds a live tunnel of any type that serves the
+// service. The proxy must not use it: only LookupHTTPTunnelByServiceID finds
+// what may be reached over HTTP.
+func (s *Server) LookupTunnelByServiceID(serviceID string) (*Tunnel, bool) {
+	if serviceID == "" {
+		return nil, false
+	}
+	for _, cs := range s.reg.Sessions() {
+		for _, tn := range s.reg.snapshotTunnels(cs) {
+			if tn.ServiceID == serviceID {
 				return tn, true
 			}
 		}

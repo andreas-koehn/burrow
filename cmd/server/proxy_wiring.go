@@ -15,9 +15,9 @@ package main
 //     the live tunnel is not connected. DialTunnelStream opens a per-request
 //     yamux stream using server.Server.OpenTunnelStream.
 //
-//  3. liveTunnelLookupAdapter: wraps the httpTunnelSource (a narrow interface
+//  3. liveTunnelLookupAdapter: wraps the registryTunnelSource (a narrow interface
 //     satisfied by *server.Server) to satisfy api.LiveTunnelLookup.
-//     Scans HTTPTunnels() for service-ID and SnapshotSessions() for user-ID.
+//     Scans Tunnels() for service-ID and SnapshotSessions() for user-ID.
 
 import (
 	"context"
@@ -52,6 +52,9 @@ type serviceDB interface {
 	CreateService(ctx context.Context, s db.Service) error
 	GetServiceBySubdomain(ctx context.Context, sub string) (db.Service, error)
 	GetUserByID(ctx context.Context, id string) (db.User, error)
+	// For the tcp services (server.TCPServiceResolver).
+	SetServiceTCPPort(ctx context.Context, id string, port int) error
+	ListTCPPortReservations(ctx context.Context) (map[int]string, error)
 }
 
 // serviceResolverAdapter adapts the db layer to server.ServiceResolver and
@@ -77,6 +80,9 @@ func (a serviceResolverAdapter) Resolve(ctx context.Context, userID, name, typ s
 	svc, err := a.db.GetOrCreateService(ctx, userID, name, typ)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve service: get-or-create: %w", err)
+	}
+	if svc.Type != typ {
+		return "", "", nameInUse(name, svc.Type)
 	}
 	if svc.Subdomain != "" {
 		return svc.ID, svc.Subdomain, nil
@@ -105,9 +111,13 @@ func refuse(code, msg string) error { return &server.RefusalError{Code: code, Me
 // among them: it needs a CA, which is configured in the dashboard.
 const accessModesOnCreate = "open, api_key, burrow_login"
 
-// findService returns the user's service of that name. A row that backs a
-// direct AI provider is never handed out (see db.GetOrCreateService).
-func (a serviceResolverAdapter) findService(ctx context.Context, userID, name string) (db.Service, bool, error) {
+// findService returns the user's service of that name, which must be of
+// type typ: a name belongs to one service, whatever its type, and a
+// registration of another type is refused with proto.CodeNameInUse rather
+// than bound to it. A row that backs a direct AI provider is never handed
+// out (see db.GetOrCreateService); an http registration gets the text it has
+// always got for it.
+func (a serviceResolverAdapter) findService(ctx context.Context, userID, name, typ string) (db.Service, bool, error) {
 	rows, err := a.db.ListServicesByUser(ctx, userID)
 	if err != nil {
 		return db.Service{}, false, fmt.Errorf("resolve service: list: %w", err)
@@ -116,13 +126,29 @@ func (a serviceResolverAdapter) findService(ctx context.Context, userID, name st
 		if r.Name != name {
 			continue
 		}
-		if r.Type == "direct" {
+		if r.Type == "direct" && typ == "http" {
 			// The text Resolve has always given for such a name.
 			return db.Service{}, false, fmt.Errorf("resolve service: get-or-create: %w", db.ErrServiceNameReserved)
+		}
+		if r.Type != typ {
+			return db.Service{}, false, nameInUse(name, r.Type)
 		}
 		return r, true, nil
 	}
 	return db.Service{}, false, nil
+}
+
+// nameInUse is the refusal of a registration whose name belongs to a service
+// of type other.
+func nameInUse(name, other string) error {
+	what := "a " + other + " service"
+	switch other {
+	case "http":
+		what = "an http service"
+	case "direct":
+		what = "an AI provider"
+	}
+	return refuse(proto.CodeNameInUse, fmt.Sprintf("the name %q belongs to %s; choose another name", name, what))
 }
 
 // ResolveWithOptions implements server.OptionsResolver. The options are
@@ -150,7 +176,7 @@ func (a serviceResolverAdapter) ResolveWithOptions(ctx context.Context, userID, 
 	// Two rounds: when another registration creates the service between the
 	// lookup and the insert, the second round finds it.
 	for round := 0; round < 2; round++ {
-		svc, found, err := a.findService(ctx, userID, name)
+		svc, found, err := a.findService(ctx, userID, name, typ)
 		if err != nil {
 			return server.Resolved{}, err
 		}
@@ -216,7 +242,7 @@ func (a serviceResolverAdapter) create(ctx context.Context, userID, name, typ st
 			return false, fmt.Errorf("resolve service: create: %w", err)
 		}
 		// Either the name or the slug is in use.
-		_, found, ferr := a.findService(ctx, userID, name)
+		_, found, ferr := a.findService(ctx, userID, name, typ)
 		if ferr != nil {
 			return false, ferr
 		}
@@ -246,6 +272,44 @@ func (a serviceResolverAdapter) create(ctx context.Context, userID, name, typ st
 		}
 	}
 	return res, false, fmt.Errorf("resolve service: exhausted %d subdomain attempts (all collided)", subdomainRetries)
+}
+
+// ResolveTCP implements server.TCPServiceResolver: the user's tcp service of
+// that name, created in mode open when there is none. A tcp service has no
+// slug, and o is not applied: there is nothing to choose for one yet. As for
+// http, any client token's owner may create one: a tcp tunnel has always
+// been open to every token.
+func (a serviceResolverAdapter) ResolveTCP(ctx context.Context, userID, name string, _ server.ResolveOptions) (server.Resolved, error) {
+	// Two rounds: when another registration creates the service between the
+	// lookup and the insert, the second round finds it.
+	for round := 0; round < 2; round++ {
+		svc, found, err := a.findService(ctx, userID, name, "tcp")
+		if err != nil {
+			return server.Resolved{}, err
+		}
+		if found {
+			return server.Resolved{ServiceID: svc.ID, AccessMode: svc.AccessMode, TCPPort: svc.TCPPort}, nil
+		}
+		id := uuid.NewString()
+		err = a.db.CreateService(ctx, db.Service{ID: id, UserID: userID, Name: name, Type: "tcp", AccessMode: "open"})
+		if err == nil {
+			return server.Resolved{ServiceID: id, AccessMode: "open", Created: true}, nil
+		}
+		if !errors.Is(err, db.ErrDuplicateService) {
+			return server.Resolved{}, fmt.Errorf("resolve service: create: %w", err)
+		}
+	}
+	return server.Resolved{}, fmt.Errorf("resolve service: %q was created and removed while registering", name)
+}
+
+// TCPPortReservations implements server.TCPServiceResolver.
+func (a serviceResolverAdapter) TCPPortReservations(ctx context.Context) (map[int]string, error) {
+	return a.db.ListTCPPortReservations(ctx)
+}
+
+// SetServiceTCPPort implements server.TCPServiceResolver.
+func (a serviceResolverAdapter) SetServiceTCPPort(ctx context.Context, serviceID string, port int) error {
+	return a.db.SetServiceTCPPort(ctx, serviceID, port)
 }
 
 // freeSlug returns a generated slug that no service uses right now.
@@ -508,27 +572,31 @@ func (a proxyDialerAdapter) DialTunnelStreamByServiceID(ctx context.Context, ser
 // liveTunnelLookupAdapter (api.LiveTunnelLookup)
 // ---------------------------------------------------------------------------
 
-// httpTunnelSource is the narrow interface liveTunnelLookupAdapter needs from
+// registryTunnelSource is the narrow interface liveTunnelLookupAdapter needs from
 // *server.Server. *server.Server satisfies it implicitly.
-type httpTunnelSource interface {
-	HTTPTunnels() []*server.Tunnel
+type registryTunnelSource interface {
+	Tunnels() []*server.Tunnel
 	SnapshotSessions() []server.SessionSnapshot
 	LookupSessionByTunnelID(tunnelID string) (sessionID, userID string, ok bool)
 }
 
 // liveTunnelLookupAdapter exposes the in-memory tunnel registry to the HTTP API
-// (api.LiveTunnelLookup). It scans HTTPTunnels() for service-ID lookups and
-// SnapshotSessions() for tunnel-ID → user-ID resolution.
+// (api.LiveTunnelLookup). It scans Tunnels() (http and tcp) for service-ID
+// lookups and SnapshotSessions() for tunnel-ID → user-ID resolution.
 type liveTunnelLookupAdapter struct {
-	srv httpTunnelSource
+	srv registryTunnelSource
 }
 
 // LookupByServiceID implements api.LiveTunnelLookup.
-// Returns the first HTTP tunnel with matching ServiceID; ok=false when absent.
-// SessionID names the session that owns the tunnel ("" when it left the
-// registry between the two reads).
+// Returns the first tunnel of any type with matching ServiceID; ok=false when
+// absent. A tcp service counts as connected like an http one, so a served
+// tcp service cannot be deleted either. SessionID names the session that owns
+// the tunnel ("" when it left the registry between the two reads).
 func (a liveTunnelLookupAdapter) LookupByServiceID(serviceID string) (api.LiveTunnelSnapshot, bool) {
-	for _, tn := range a.srv.HTTPTunnels() {
+	if serviceID == "" {
+		return api.LiveTunnelSnapshot{}, false
+	}
+	for _, tn := range a.srv.Tunnels() {
 		if tn.ServiceID == serviceID {
 			sessionID, _, _ := a.srv.LookupSessionByTunnelID(tn.ID)
 			return api.LiveTunnelSnapshot{
@@ -547,21 +615,21 @@ func (a liveTunnelLookupAdapter) LookupByServiceID(serviceID string) (api.LiveTu
 // ServiceID comes from the HTTP-tunnel registry; UserID is resolved via
 // SnapshotSessions (the session that owns the tunnel).
 func (a liveTunnelLookupAdapter) LookupByTunnelID(tunnelID string) (api.TunnelLocator, bool) {
-	// First pass: find the ServiceID from the HTTP-tunnel registry.
+	// First pass: find the ServiceID from the tunnel registry.
 	var serviceID string
-	for _, tn := range a.srv.HTTPTunnels() {
+	for _, tn := range a.srv.Tunnels() {
 		if tn.ID == tunnelID {
 			serviceID = tn.ServiceID
 			break
 		}
 	}
 	if serviceID == "" {
-		// Also scan non-HTTP tunnels by iterating sessions.
+		// A tunnel without a service: one of a relay without tcp services.
 		for _, ss := range a.srv.SnapshotSessions() {
 			for _, tv := range ss.Tunnels {
 				if tv.ID == tunnelID {
-					// For non-HTTP tunnels serviceID is empty — return
-					// what we have so the API can still back-compat-route.
+					// Its serviceID is empty — return what we have so the
+					// API can still back-compat-route.
 					return api.TunnelLocator{ServiceID: "", UserID: ss.UserID}, true
 				}
 			}
@@ -576,6 +644,6 @@ func (a liveTunnelLookupAdapter) LookupByTunnelID(tunnelID string) (api.TunnelLo
 			}
 		}
 	}
-	// Found via HTTPTunnels but no session snapshot yet — still return serviceID.
+	// Found via Tunnels but no session snapshot yet — still return serviceID.
 	return api.TunnelLocator{ServiceID: serviceID, UserID: ""}, true
 }

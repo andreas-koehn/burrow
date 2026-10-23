@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net"
 	"sync/atomic"
 	"time"
@@ -19,7 +20,7 @@ type Observer interface {
 	// registration, removal and refusal of its tunnels.
 	ObserveSession(observe.Session)
 	// ObserveTraffic receives each visitor connection of a tcp tunnel when
-	// it ends.
+	// it ends, with the tunnel's service.
 	ObserveTraffic(observe.Traffic)
 }
 
@@ -93,17 +94,27 @@ func (c *countingStream) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// tcpTraffic reports one visitor connection of a tcp tunnel that has ended.
-func (s *Server) tcpTraffic(tun *Tunnel, visitor net.Conn, started time.Time, in, out uint64, outcome string) {
+// tcpTraffic reports one visitor connection of a tcp tunnel that has ended:
+// to the observer, and as a row of the connection log.
+func (s *Server) tcpTraffic(tun *Tunnel, visitor net.Conn, started time.Time, in, out uint64, outcome, reason string) {
 	ip, _, err := net.SplitHostPort(visitor.RemoteAddr().String())
 	if err != nil {
 		ip = visitor.RemoteAddr().String()
 	}
+	ended := time.Now()
 	s.reg.observer().ObserveTraffic(observe.Traffic{
-		Kind: observe.TrafficTCP, TunnelID: tun.ID,
+		Kind: observe.TrafficTCP, ServiceID: tun.ServiceID, TunnelID: tun.ID,
 		UserID: tun.sess.UserID, SessionID: tun.sess.SessionID,
 		Outcome: outcome, SourceIP: ip,
 		BytesIn: int64(in), BytesOut: int64(out),
-		Started: started, Duration: time.Since(started),
+		Started: started, Duration: ended.Sub(started),
 	})
+	if s.opts.ConnLog != nil {
+		s.opts.ConnLog.RecordConnection(context.Background(), ConnLogEntry{
+			Kind: observe.TrafficTCP, ServiceID: tun.ServiceID, TunnelID: tun.ID,
+			UserID: tun.sess.UserID, ClientSessionID: tun.sess.SessionID, SourceIP: ip,
+			StartedAt: started, EndedAt: ended, BytesIn: int64(in), BytesOut: int64(out),
+			Status: outcome, Reason: reason,
+		})
+	}
 }

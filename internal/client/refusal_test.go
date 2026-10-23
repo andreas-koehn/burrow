@@ -420,6 +420,8 @@ func TestRun_StopsOnARefusalThatWillNotChange(t *testing.T) {
 			proto.CodeAccessInvalid, "burrow_login requires a configured auth_domain", "register failed: burrow_login requires a configured auth_domain"},
 		{"forbidden", mk(registerRefusal(`{"ok":false,"error":"your role may not choose a slug","code":"forbidden"}`)),
 			proto.CodeForbidden, "your role may not choose a slug", "register failed: your role may not choose a slug"},
+		{"name in use", mk(registerRefusal(`{"ok":false,"error":"the name web is used by an http service","code":"name_in_use"}`)),
+			proto.CodeNameInUse, "the name web is used by an http service", "register failed: the name web is used by an http service"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

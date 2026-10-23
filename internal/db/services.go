@@ -71,14 +71,15 @@ func (x *DB) CreateService(ctx context.Context, s Service) error {
 // mtls_ca_pem (migration 0009) is included so the proxy layer can populate
 // proxy.Resolved.MTLSCAPEM without a second round-trip; non-mtls services
 // store it as NULL, which COALESCE rewrites to ”.
-const selectServiceCols = `id, user_id, name, type, COALESCE(subdomain,''), access_mode, api_key_header, created_at, COALESCE(mtls_ca_pem,''), gateway_only, last_seen, last_client`
+const selectServiceCols = `id, user_id, name, type, COALESCE(subdomain,''), access_mode, api_key_header, created_at, COALESCE(mtls_ca_pem,''), gateway_only, last_seen, last_client, COALESCE(tcp_port,0), COALESCE(max_connections,0)`
 
 // scanService reads one row of selectServiceCols.
 func scanService(row interface{ Scan(...any) error }) (Service, error) {
 	var s Service
 	var lastSeen sql.NullTime
 	if err := row.Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt,
-		&s.MTLSCAPEM, (*intBool)(&s.GatewayOnly), &lastSeen, &s.LastClient); err != nil {
+		&s.MTLSCAPEM, (*intBool)(&s.GatewayOnly), &lastSeen, &s.LastClient,
+		&s.TCPPort, &s.MaxConnections); err != nil {
 		return Service{}, err
 	}
 	if lastSeen.Valid {

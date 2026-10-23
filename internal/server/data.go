@@ -78,10 +78,17 @@ func newPortAllocator(min, max int) *portAllocator {
 
 // Allocate reserves requested (or, if 0, the first free port in range).
 func (a *portAllocator) Allocate(requested int) (int, error) {
+	return a.allocate(requested, nil)
+}
+
+// allocate is Allocate where an automatic port is never one that held
+// reports as held (another service's port): requested ports are checked by
+// the caller.
+func (a *portAllocator) allocate(requested int, held func(int) bool) (int, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if requested != 0 {
-		if requested < a.min || requested > a.max {
+		if !a.inRange(requested) {
 			return 0, fmt.Errorf("port %d out of range %d-%d", requested, a.min, a.max)
 		}
 		if a.used[requested] {
@@ -91,12 +98,39 @@ func (a *portAllocator) Allocate(requested int) (int, error) {
 		return requested, nil
 	}
 	for p := a.min; p <= a.max; p++ {
-		if !a.used[p] {
+		if !a.used[p] && (held == nil || !held(p)) {
 			a.used[p] = true
 			return p, nil
 		}
 	}
 	return 0, errors.New("no free ports in range")
+}
+
+// inRange reports whether port is one the allocator hands out.
+func (a *portAllocator) inRange(port int) bool { return port >= a.min && port <= a.max }
+
+// allocateTCP picks the public port of a tcp tunnel of serviceID ("" for a
+// tunnel without a service). held maps the ports services hold to the
+// service. The rules keep a service on its port and off the ports of others:
+//
+//   - a port asked for is given unless another service holds it;
+//   - otherwise the service's own port, when it is in range; while a tunnel
+//     of the service still has it (a second client, or the last session
+//     before it is reaped) the registration is refused and tried again
+//     rather than moved;
+//   - otherwise the lowest free port that no other service holds.
+func (a *portAllocator) allocateTCP(requested int, serviceID string, own int, held map[int]string) (int, error) {
+	other := func(p int) bool { id, ok := held[p]; return ok && id != serviceID }
+	switch {
+	case requested != 0:
+		if other(requested) {
+			return 0, fmt.Errorf("port %d is held by another service", requested)
+		}
+		return a.allocate(requested, nil)
+	case own != 0 && a.inRange(own):
+		return a.allocate(own, nil)
+	}
+	return a.allocate(0, other)
 }
 
 // Release returns a port to the pool.
@@ -154,17 +188,16 @@ func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn) {
 	})
 	if err != nil {
 		s.log.Warn("client did not open stream", "tunnel_id", tun.ID, "err", err)
-		s.tcpTraffic(tun, visitor, started, 0, 0, observe.OutcomeError)
+		s.tcpTraffic(tun, visitor, started, 0, 0, observe.OutcomeError, ConnLogReasonNoStream)
 		return
 	}
 	defer stream.Close()
-	// The connection's own totals, added to the tunnel's when it ends: the
-	// copy itself counts nothing (see bridge.Pipe).
+	// The tunnel's counters move while the connection is open (the stream
+	// counts what passes, as for http); in and out are the connection's own
+	// totals for its log row.
 	var in, out atomic.Uint64
-	bridge.Pipe(visitor, stream, &in, &out)
-	tun.BytesIn.Add(in.Load())
-	tun.BytesOut.Add(out.Load())
-	s.tcpTraffic(tun, visitor, started, in.Load(), out.Load(), observe.OutcomeClean)
+	bridge.Pipe(visitor, &countingStream{Conn: stream, in: &tun.BytesIn, out: &tun.BytesOut}, &in, &out)
+	s.tcpTraffic(tun, visitor, started, in.Load(), out.Load(), observe.OutcomeClean, "")
 }
 
 // handleDataStream reads a freshly-accepted client stream's StreamHeader and

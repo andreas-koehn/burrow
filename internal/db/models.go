@@ -112,6 +112,12 @@ type Service struct {
 	// token that client logged in with, "" until then.
 	LastSeen   *time.Time
 	LastClient string
+	// TCPPort is the public port the relay last gave the tcp service, kept
+	// so that a reconnect gets the same one; 0 when it has none (an http
+	// service, or a tcp service never served). MaxConnections caps the
+	// concurrent visitors of that port; 0 is the relay's default.
+	TCPPort        int
+	MaxConnections int
 }
 
 // ServiceAPIKey is a row of the service_api_keys table.

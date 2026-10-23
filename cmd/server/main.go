@@ -612,14 +612,29 @@ func newRootCmd() *cobra.Command {
 					"approving a client sign-in asks for the password. Set BURROW_SERVICES_DOMAIN to serve them on a host of their own")
 			}
 
+			// v0.5.0 F-13: the connection-log sink. The proxy records one
+			// connection_logs row per closed request, the control server one
+			// per tcp visitor; adapter shims translate their entries into the
+			// concrete connlog.Entry — kept here (not in internal/proxy or
+			// internal/server) so those packages stay import-free of connlog.
+			//
+			// v0.5.1 P2.1 (Task 5): pass the store as the settings
+			// reader so SQLSink.Rollup honours the
+			// connection_logs.rollup_include_top_ips toggle. The
+			// settings reader is only consulted on the daily rollup
+			// compaction path, NOT the per-connection Record hot path.
+			connLogSink := connlog.NewSQLSink(db.Wrap(database), log).WithSettings(st)
+
 			srv, err := server.New(server.Options{
 				Listen: cfg.Listen, TLSCert: cfg.TLSCert, TLSKey: cfg.TLSKey,
 				PublicBind: cfg.PublicBind, PortMin: cfg.PortMin, PortMax: cfg.PortMax,
 				Auth: st, Tunnels: tunnelStoreAdapter{st}, Events: bus, Logger: log,
 				SessionRecorder: st,
 				ServiceRecorder: st,
-				// v0.3.0: HTTP tunnel service identity + subdomain resolver.
+				// v0.3.0: HTTP tunnel service identity + subdomain resolver;
+				// v0.13.0: tcp tunnels are services too, with sticky ports.
 				Services:   serviceResolverAdapter{db: db.Wrap(database), authDomain: proxyAuthDomain},
+				ConnLog:    serverConnLogAdapter{sink: connLogSink},
 				AuthDomain: proxyAuthDomain,
 				// Tunnel addresses are on the services host when one is set.
 				ServicesDomain: cfg.ServicesDomain,
@@ -828,18 +843,6 @@ func newRootCmd() *cobra.Command {
 				proxy.WithAccessSecureCookies(effectiveSecureCookies))
 			gate := proxy.NewGate(st, proxyAuthDomain, effectiveSecureCookies, log,
 				proxy.WithServicesDomain(cfg.ServicesDomain), proxy.WithGateAuditLogger(v04.AuditLogger))
-			// v0.5.0 F-13: wire the connection-log sink so the proxy
-			// records one connection_logs row per closed request. The
-			// adapter shim translates proxy.ConnLogEntry into the
-			// concrete connlog.Entry — kept here (not in internal/proxy)
-			// so the proxy package stays import-free of connlog.
-			//
-			// v0.5.1 P2.1 (Task 5): pass the store as the settings
-			// reader so SQLSink.Rollup honours the
-			// connection_logs.rollup_include_top_ips toggle. The
-			// settings reader is only consulted on the daily rollup
-			// compaction path, NOT the per-connection Record hot path.
-			connLogSink := connlog.NewSQLSink(db.Wrap(database), log).WithSettings(st)
 			// The daily rollup of the connection log, announced per service
 			// as connection.session_summary. Ends with ctx, before the
 			// dispatcher closes (reaperWg).
@@ -1595,6 +1598,34 @@ func (a proxyConnLogAdapter) Record(ctx context.Context, e proxy.ConnLogEntry) e
 		ClientSessionID: e.ClientSessionID,
 		SourceIP:        e.SourceIP,
 		UserAgent:       e.UserAgent,
+		StartedAt:       e.StartedAt,
+		EndedAt:         e.EndedAt,
+		BytesIn:         e.BytesIn,
+		BytesOut:        e.BytesOut,
+		Status:          connlog.Status(e.Status),
+		Reason:          e.Reason,
+	})
+}
+
+// serverConnLogAdapter hands the control server's connection-log entries
+// (tcp visitors) to the concrete *connlog.SQLSink, as proxyConnLogAdapter
+// does for the proxy's. Record writes in the background, so the visitor's
+// goroutine never waits for the database.
+type serverConnLogAdapter struct {
+	sink *connlog.SQLSink
+}
+
+func (a serverConnLogAdapter) RecordConnection(ctx context.Context, e server.ConnLogEntry) {
+	if a.sink == nil {
+		return
+	}
+	_ = a.sink.Record(ctx, connlog.Entry{
+		Kind:            connlog.Kind(e.Kind),
+		ServiceID:       e.ServiceID,
+		TunnelID:        e.TunnelID,
+		UserID:          e.UserID,
+		ClientSessionID: e.ClientSessionID,
+		SourceIP:        e.SourceIP,
 		StartedAt:       e.StartedAt,
 		EndedAt:         e.EndedAt,
 		BytesIn:         e.BytesIn,

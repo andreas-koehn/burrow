@@ -43,9 +43,11 @@ type Tunnel struct {
 	// sess is the owning session (for control-channel notifies).
 	sess *ClientSession
 
+	// ServiceID is the stable service identity from ServiceResolver (http)
+	// or TCPServiceResolver (tcp); "" for a tunnel without a service.
+	ServiceID string
 	// HTTP tunnel fields (only set when IsHTTP==true).
 	Subdomain string // assigned subdomain; "" for tcp tunnels
-	ServiceID string // stable service identity from ServiceResolver; "" for tcp tunnels
 	IsHTTP    bool   // true for http-mode tunnels (no TCP port allocated)
 
 	// What the registration reported, for the observer's TunnelOpened event.
