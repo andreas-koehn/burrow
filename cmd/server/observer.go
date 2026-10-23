@@ -196,6 +196,8 @@ func (o *observer) ObserveSession(e observe.Session) {
 		o.publishTunnel(e.UserID, "tunnel.disconnected", map[string]any{
 			"ServiceID": e.ServiceID, "TunnelID": e.TunnelID, "Kind": e.TunnelType,
 		})
+	case observe.TCPPortReclaimed:
+		o.tcpPortReclaimed(e)
 	case observe.TunnelRefused:
 		// One per user and reason per minute: a client that keeps asking for
 		// a taken port must not fill the queue.
@@ -203,6 +205,26 @@ func (o *observer) ObserveSession(e observe.Session) {
 			o.publish("tunnel.failed", map[string]any{"ServiceID": "", "TunnelID": "", "Error": e.RefusalCode})
 		}
 	}
+}
+
+// tcpPortReclaimed writes the audit entry of a tcp port taken from an
+// offline service: the subject is the service that lost the port, the actor
+// the owner of the client that took it.
+func (o *observer) tcpPortReclaimed(e observe.Session) {
+	if o.Audit == nil {
+		return
+	}
+	ev := audit.Event{
+		ActorID: e.UserID, Action: audit.ActionServiceTCPPortReclaimed, SubjectID: e.FromServiceID, Result: "ok",
+		Payload: audit.MustJSON(map[string]any{
+			"service_id": e.ServiceID, "from_service_id": e.FromServiceID, "port": e.Port, "reason": e.Reason,
+		}),
+	}
+	o.enqueue(func(ctx context.Context) {
+		if err := o.Audit.Append(ctx, ev); err != nil {
+			o.log.Warn("observer: audit write failed", "action", audit.ActionServiceTCPPortReclaimed, "err", err)
+		}
+	})
 }
 
 // sessionOpened counts one more open session of the user and remembers the

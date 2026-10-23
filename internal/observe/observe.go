@@ -32,6 +32,17 @@ const (
 	TunnelOpened  = "tunnel_opened"  // the session registered a tunnel
 	TunnelClosed  = "tunnel_closed"  // a tunnel was unregistered, or its session ended
 	TunnelRefused = "tunnel_refused" // a registration was refused
+	// TCPPortReclaimed: a tcp registration took the port an offline
+	// service held automatically (ServiceID took it from FromServiceID; ""
+	// for a tunnel without a service). Reason is TCPPortTakeover or
+	// TCPPortReclaim.
+	TCPPortReclaimed = "tcp_port_reclaimed"
+)
+
+// The reasons of TCPPortReclaimed.
+const (
+	TCPPortTakeover = "takeover" // the client asked for the port
+	TCPPortReclaim  = "reclaim"  // no free port was left
 )
 
 // Session is one event of a client's control session. The session fields are
@@ -61,6 +72,10 @@ type Session struct {
 	// RefusalCode is the proto.Code… value the client was answered with
 	// (TunnelRefused).
 	RefusalCode string
+	// FromServiceID, Port and Reason describe a TCPPortReclaimed.
+	FromServiceID string
+	Port          int
+	Reason        string
 }
 
 // The kinds of Traffic; they are the kinds of the connection log.

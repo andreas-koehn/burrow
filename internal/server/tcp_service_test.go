@@ -7,6 +7,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"reflect"
@@ -650,5 +651,141 @@ func TestTunnels_AllTypes(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, []string{"rdp:svc-rdp"}) {
 		t.Fatalf("Tunnels() = %v", got)
+	}
+}
+
+// tokenAuth names a client token after the token itself: every token is
+// valid, for user u1.
+type tokenAuth struct{}
+
+func (tokenAuth) Authenticate(context.Context, string) (string, error) { return "u1", nil }
+func (tokenAuth) AuthenticateToken(_ context.Context, tok string) (string, string, string, error) {
+	return "u1", "tok-" + tok, tok, nil
+}
+
+// reclaims are the TCPPortReclaimed events: "taker<from:port:reason".
+func (r *observedRelay) reclaims() []string {
+	r.obs.mu.Lock()
+	defer r.obs.mu.Unlock()
+	var out []string
+	for _, e := range r.obs.sessions {
+		if e.Kind == observe.TCPPortReclaimed {
+			out = append(out, fmt.Sprintf("%s<%s:%d:%s", e.ServiceID, e.FromServiceID, e.Port, e.Reason))
+		}
+	}
+	return out
+}
+
+// A second registration of a served service with the same client token is
+// probably that client's own session the relay has not seen end: it is
+// refused with service_busy and tried again. With another token it is
+// another machine: name_in_use, which that client does not retry.
+func TestRegisterTCP_ServedByAnotherTokenIsNameInUse(t *testing.T) {
+	res := newTCPResolver()
+	r := tcpRelay(t, 19500, 19502, res, func(o *Options) { o.Auth = tokenAuth{} })
+	laptop := r.clientWith("laptop", nil)
+	defer laptop.close()
+	if rr := laptop.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"}); !rr.OK {
+		t.Fatalf("laptop: %+v", rr)
+	}
+	desk := r.clientWith("desk", nil)
+	defer desk.close()
+	rr := desk.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"})
+	if rr.OK || rr.Code != proto.CodeNameInUse || rr.Error != `the service "rdp" is already served by another client` {
+		t.Fatalf("another token: %+v", rr)
+	}
+	// The desk's other service is not affected.
+	if rr := desk.register(t, proto.TunnelRegister{Name: "ssh", Type: "tcp", LocalAddr: "x"}); !rr.OK {
+		t.Fatalf("desk's other service: %+v", rr)
+	}
+	again := r.clientWith("laptop", nil)
+	defer again.close()
+	rr = again.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"})
+	if rr.OK || rr.Code != proto.CodeServiceBusy {
+		t.Fatalf("the same token: %+v", rr)
+	}
+}
+
+// A tunnel without a name may take over an offline automatic hold it asks
+// for, and reclaim one when the pool is full; the holder loses its hold and
+// the tunnel holds nothing. Pinned holds stay. Every take-over and reclaim is
+// told, with both services, the port and the reason.
+func TestRegisterTCP_UnnamedTakesOverAndReclaimsAutomaticHolds(t *testing.T) {
+	res := newTCPResolver()
+	res.holds[19505] = TCPPortHold{ServiceID: "svc-away1"}
+	res.holds[19506] = TCPPortHold{ServiceID: "svc-pin", Pinned: true}
+	res.holds[19507] = TCPPortHold{ServiceID: "svc-away2"}
+	r := tcpRelay(t, 19505, 19508, res, nil)
+	c := r.client(nil)
+	defer c.close()
+	if rr := c.register(t, proto.TunnelRegister{Type: "tcp", RemotePort: 19505, LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19505 {
+		t.Fatalf("take over: %+v", rr)
+	}
+	if rr := c.register(t, proto.TunnelRegister{Type: "tcp", RemotePort: 19506, LocalAddr: "x"}); rr.OK {
+		t.Fatalf("a pinned hold: %+v", rr)
+	}
+	if rr := c.register(t, proto.TunnelRegister{Type: "tcp", LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19508 {
+		t.Fatalf("a free port: %+v", rr)
+	}
+	if rr := c.register(t, proto.TunnelRegister{Type: "tcp", LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19507 {
+		t.Fatalf("reclaim: %+v", rr)
+	}
+	if rr := c.register(t, proto.TunnelRegister{Type: "tcp", LocalAddr: "x"}); rr.OK {
+		t.Fatalf("only the pinned hold is left: %+v", rr)
+	}
+	res.mu.Lock()
+	holds := len(res.holds)
+	_, pin := res.holds[19506]
+	res.mu.Unlock()
+	if holds != 1 || !pin {
+		t.Fatalf("holds %v", res.holds)
+	}
+	if got := r.reclaims(); !reflect.DeepEqual(got, []string{"<svc-away1:19505:takeover", "<svc-away2:19507:reclaim"}) {
+		t.Fatalf("reclaims %v", got)
+	}
+}
+
+// A named take-over and reclaim are told too.
+func TestRegisterTCP_NamedReclaimsAreTold(t *testing.T) {
+	res := newTCPResolver()
+	res.holds[19510] = TCPPortHold{ServiceID: "svc-away1"}
+	res.holds[19511] = TCPPortHold{ServiceID: "svc-away2"}
+	r := tcpRelay(t, 19510, 19511, res, nil)
+	c := r.client(nil)
+	defer c.close()
+	if rr := c.register(t, proto.TunnelRegister{Name: "fixed", Type: "tcp", RemotePort: 19510, LocalAddr: "x"}); !rr.OK {
+		t.Fatalf("take over: %+v", rr)
+	}
+	if rr := c.register(t, proto.TunnelRegister{Name: "auto", Type: "tcp", LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19511 {
+		t.Fatalf("reclaim: %+v", rr)
+	}
+	if got := r.reclaims(); !reflect.DeepEqual(got, []string{"svc-fixed<svc-away1:19510:takeover", "svc-auto<svc-away2:19511:reclaim"}) {
+		t.Fatalf("reclaims %v", got)
+	}
+}
+
+// The cap counts the ports the allocator handed out and the store does not
+// know yet: two registrations that read the same holds cannot both pass it.
+func TestAllocateTCP_CapCountsPortsNotYetKept(t *testing.T) {
+	a := newPortAllocator(19515, 19519)
+	q := tcpPortRequest{userID: "u1", limit: 1, held: map[int]TCPPortHold{}, serving: func(string) bool { return false }}
+	q.serviceID = "svc-a"
+	if _, err := a.allocateTCP(q); err != nil {
+		t.Fatal(err)
+	}
+	q.serviceID = "svc-b"
+	if _, err := a.allocateTCP(q); err == nil || err.Error() != "port limit reached (1); delete an unused tcp service" {
+		t.Fatalf("second service over the cap: %v", err)
+	}
+	// Another user is not counted against u1, and a released port is not
+	// counted at all.
+	q.userID = "u2"
+	if _, err := a.allocateTCP(q); err != nil {
+		t.Fatalf("another user: %v", err)
+	}
+	a.Release(19515)
+	q.userID, q.serviceID = "u1", "svc-c"
+	if _, err := a.allocateTCP(q); err != nil {
+		t.Fatalf("after release: %v", err)
 	}
 }

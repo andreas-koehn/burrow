@@ -70,10 +70,17 @@ type portAllocator struct {
 	mu       sync.Mutex
 	min, max int
 	used     map[int]bool
+	// owner names the user and service of each port allocateTCP handed to a
+	// service, until it is released: the cap counts them before the store
+	// knows of them.
+	owner map[int]portOwner
 }
 
+// portOwner is who a port of allocateTCP went to.
+type portOwner struct{ userID, serviceID string }
+
 func newPortAllocator(min, max int) *portAllocator {
-	return &portAllocator{min: min, max: max, used: make(map[int]bool)}
+	return &portAllocator{min: min, max: max, used: make(map[int]bool), owner: make(map[int]portOwner)}
 }
 
 // Allocate reserves requested (or, if 0, the first free port in range).
@@ -115,6 +122,7 @@ type tcpPortPlan struct {
 	port     int
 	pinned   bool   // the client asked for it
 	takeFrom string // the offline service whose automatic hold is taken over
+	reason   string // why: observe.TCPPortTakeover or observe.TCPPortReclaim
 	persist  bool   // the hold changes
 }
 
@@ -144,8 +152,10 @@ type tcpPortRequest struct {
 //     reclaimed. Pinned holds are never reclaimed.
 //
 // A service that holds no port yet gets one only while its owner holds fewer
-// than limit. A tunnel without a service (an old client that sends no name)
-// keeps away from every hold and holds nothing itself.
+// than limit, counting the ports handed out that the store does not know
+// yet. A tunnel without a service (an old client that sends no name) follows
+// the same rules and holds nothing itself: a hold it takes over or reclaims
+// is cleared.
 func (a *portAllocator) allocateTCP(q tcpPortRequest) (tcpPortPlan, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -155,16 +165,25 @@ func (a *portAllocator) allocateTCP(q tcpPortRequest) (tcpPortPlan, error) {
 		return h, ok && h.ServiceID != q.serviceID
 	}
 	free := func(p int) bool { return a.inRange(p) && !a.used[p] }
-	take := func(p int) { a.used[p] = true }
-	newHold := named && (q.own == 0 || (q.requested == 0 && !a.inRange(q.own)))
-	if newHold && q.limit > 0 && q.own == 0 {
-		n := 0
+	take := func(p int) {
+		a.used[p] = true
+		if named {
+			a.owner[p] = portOwner{userID: q.userID, serviceID: q.serviceID}
+		}
+	}
+	if named && q.own == 0 && q.limit > 0 {
+		holders := map[string]bool{}
 		for _, h := range q.held {
 			if h.UserID == q.userID && h.ServiceID != q.serviceID {
-				n++
+				holders[h.ServiceID] = true
 			}
 		}
-		if n >= q.limit {
+		for _, o := range a.owner {
+			if o.userID == q.userID && o.serviceID != q.serviceID {
+				holders[o.serviceID] = true
+			}
+		}
+		if len(holders) >= q.limit {
 			return tcpPortPlan{}, fmt.Errorf("port limit reached (%d); delete an unused tcp service", q.limit)
 		}
 	}
@@ -175,10 +194,10 @@ func (a *portAllocator) allocateTCP(q tcpPortRequest) (tcpPortPlan, error) {
 		}
 		plan := tcpPortPlan{port: q.requested, pinned: named}
 		if h, ok := other(q.requested); ok {
-			if !named || h.Pinned || q.serving(h.ServiceID) {
+			if h.Pinned || q.serving(h.ServiceID) {
 				return tcpPortPlan{}, portNotAvailable(q.requested)
 			}
-			plan.takeFrom = h.ServiceID
+			plan.takeFrom, plan.reason = h.ServiceID, observe.TCPPortTakeover
 		}
 		if !free(q.requested) {
 			return tcpPortPlan{}, portNotAvailable(q.requested)
@@ -200,9 +219,6 @@ func (a *portAllocator) allocateTCP(q tcpPortRequest) (tcpPortPlan, error) {
 			return tcpPortPlan{port: p, persist: named}, nil
 		}
 	}
-	if !named {
-		return tcpPortPlan{}, errPortsFull
-	}
 	best, bestSeen := 0, time.Time{}
 	for p := a.min; p <= a.max; p++ {
 		h, ok := other(p)
@@ -217,13 +233,14 @@ func (a *portAllocator) allocateTCP(q tcpPortRequest) (tcpPortPlan, error) {
 		return tcpPortPlan{}, errPortsFull
 	}
 	take(best)
-	return tcpPortPlan{port: best, takeFrom: q.held[best].ServiceID, persist: true}, nil
+	return tcpPortPlan{port: best, takeFrom: q.held[best].ServiceID, reason: observe.TCPPortReclaim, persist: named}, nil
 }
 
 // Release returns a port to the pool.
 func (a *portAllocator) Release(port int) {
 	a.mu.Lock()
 	delete(a.used, port)
+	delete(a.owner, port)
 	a.mu.Unlock()
 }
 

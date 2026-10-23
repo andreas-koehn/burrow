@@ -513,3 +513,47 @@ func TestCheckAuth_CodeAndRelayVersion(t *testing.T) {
 		t.Fatalf("%+v %v", res, err)
 	}
 }
+
+// A final refusal of one tunnel ends that tunnel, not the session: the
+// others stay registered and the client neither reconnects nor stops. Only a
+// session in which every tunnel was refused ends, with the refusal.
+func TestRun_AFinalRefusalOfOneTunnelKeepsTheOthers(t *testing.T) {
+	r := startRawRelay(t, oldAuthOK, func(req proto.TunnelRegister) string {
+		if req.Name == "rdp" {
+			return `{"ok":false,"error":"the service \"rdp\" is already served by another client","code":"name_in_use"}`
+		}
+		return `{"ok":true,"tunnel_id":"t-` + req.Name + `","remote_port":9001}`
+	})
+	obs := &sessionObserver{}
+	o := r.options(
+		TunnelSpec{Name: "rdp", Type: "tcp", LocalAddr: "127.0.0.1:3389"},
+		TunnelSpec{Name: "ssh", Type: "tcp", LocalAddr: "127.0.0.1:22"},
+	)
+	o.StopOnRefusal = true
+	o.Observer = obs
+	var logs syncBuffer
+	o.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	if err, ended := runFor(t, o, 2*time.Second); ended {
+		t.Fatalf("the client ended: %v", err)
+	}
+	if auths, regs := r.sent(); len(auths) != 1 || len(regs) != 2 {
+		t.Fatalf("%d sessions, %d registrations; want 1 and 2", len(auths), len(regs))
+	}
+	obs.mu.Lock()
+	regs := append([]RegisteredTunnel(nil), obs.regs...)
+	obs.mu.Unlock()
+	if len(regs) != 1 || regs[0].Name != "ssh" {
+		t.Fatalf("registered %+v", regs)
+	}
+	if !strings.Contains(logs.String(), `msg="tunnel refused" name=rdp code=name_in_use`) {
+		t.Fatalf("no log line for the refused tunnel: %s", logs.String())
+	}
+
+	// Every tunnel refused: the session ends with the refusal, as before.
+	o.Tunnels = o.Tunnels[:1]
+	err, ended := runFor(t, o, 3*time.Second)
+	var re *RefusedError
+	if !ended || !errors.As(err, &re) || re.Code != proto.CodeNameInUse {
+		t.Fatalf("one refused tunnel: %v %v", err, ended)
+	}
+}

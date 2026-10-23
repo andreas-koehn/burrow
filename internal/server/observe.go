@@ -70,6 +70,17 @@ func (s *Server) refused(reg *Registry, cs *ClientSession, tr proto.TunnelRegist
 	reg.observer().ObserveSession(ev)
 }
 
+// portReclaimed logs and tells the observer that a tcp registration of cs
+// took port from the offline service from (serviceID "" for a tunnel without
+// a service).
+func (s *Server) portReclaimed(reg *Registry, cs *ClientSession, serviceID, from string, port int, reason string) {
+	s.log.Info("tcp port taken from an offline service", "service_id", serviceID, "from_service_id", from,
+		"remote_port", port, "reason", reason, "session_id", cs.SessionID)
+	ev := sessionEvent(observe.TCPPortReclaimed, cs)
+	ev.TunnelType, ev.ServiceID, ev.FromServiceID, ev.Port, ev.Reason = "tcp", serviceID, from, port, reason
+	reg.observer().ObserveSession(ev)
+}
+
 // countingStream adds what passes through a tunnel stream to the tunnel's
 // byte counters: what is written to the client is BytesIn (visitor→local),
 // what is read from it BytesOut. One atomic add per call, nothing else.

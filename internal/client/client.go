@@ -221,6 +221,13 @@ func (c *Client) connectOnce(ctx context.Context) error {
 	}
 	defer ctrl.Close()
 	var env proto.Envelope
+	// A refusal that will not change (see RefusedError.Final) ends its own
+	// tunnel: it is logged and skipped, and the others are served. Only a
+	// session in which every tunnel was refused so ends, with the first
+	// refusal. Any other refusal ends the session as it always has, so that
+	// the reconnect tries every tunnel again.
+	var firstFinal *RefusedError
+	served := 0
 	for _, tn := range c.opts.Tunnels {
 		if err := proto.WriteMessage(ctrl, proto.MsgTunnelRegister, proto.TunnelRegister{
 			Name: tn.Name, Type: tn.Type, RemotePort: tn.RemotePort, LocalAddr: tn.LocalAddr,
@@ -236,8 +243,17 @@ func (c *Client) connectOnce(ctx context.Context) error {
 			return fmt.Errorf("register failed: %s", rr.Error)
 		}
 		if !rr.OK {
-			return newRefused(stageRegister, rr.Code, rr.Error)
+			re := newRefused(stageRegister, rr.Code, rr.Error)
+			if !re.Final() {
+				return re
+			}
+			c.log.Warn("tunnel refused", "name", tn.Name, "code", re.Code, "err", re.Message)
+			if firstFinal == nil {
+				firstFinal = re
+			}
+			continue
 		}
+		served++
 		reg := RegisteredTunnel{
 			TunnelID: rr.TunnelID, Name: tn.Name, Type: tn.Type, LocalAddr: tn.LocalAddr,
 			AccessMode: rr.AccessMode, Created: rr.Created, DashboardURL: rr.DashboardURL, GatewayOnly: rr.GatewayOnly,
@@ -289,6 +305,9 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		c.live[rr.TunnelID] = &liveTunnel{http: tn.Type == "http"}
 		c.lastRemotePort = rr.RemotePort
 		c.mu.Unlock()
+	}
+	if served == 0 && firstFinal != nil {
+		return firstFinal
 	}
 	c.registered.Store(true)
 	// Reset backoff only after auth AND all tunnels are registered so that a

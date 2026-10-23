@@ -34,6 +34,7 @@ const (
 	ActionServiceAccessModeUpdate   = "service.access_mode.update"
 	ActionServiceSlugChange         = "service.slug_changed"
 	ActionServiceGatewayOnlyUpdate  = "service.gateway_only.update"
+	ActionServiceTCPPortReclaimed   = "service.tcp_port.reclaimed" // a tcp registration took an offline service's automatic port
 	ActionServiceAccessPolicyUpdate = "service.access_policy.update"
 	ActionServiceAPIKeyCreate       = "service.api_key.create"
 	ActionServiceAPIKeyRevoke       = "service.api_key.revoke"
@@ -195,6 +196,7 @@ var AllActions = []string{
 	ActionSessionCreate, ActionSessionDelete, ActionSessionRevokeOthers,
 	ActionServiceCreate, ActionServiceDelete,
 	ActionServiceAccessModeUpdate, ActionServiceSlugChange, ActionServiceGatewayOnlyUpdate, ActionServiceAccessPolicyUpdate,
+	ActionServiceTCPPortReclaimed,
 	ActionServiceAPIKeyCreate, ActionServiceAPIKeyRevoke,
 	ActionServiceAIConfigUpdate,
 	ActionAIProviderCreate, ActionAIProviderUpdate, ActionAIProviderDelete,

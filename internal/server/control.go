@@ -252,22 +252,25 @@ func (s *Server) resolveTCP(cs *ClientSession, tr proto.TunnelRegister) (tcpServ
 	return tcpService{res: res, held: held, tcp: tcp}, nil
 }
 
-// claimTCPService marks the service as served by one tunnel; false when
-// another tunnel serves it. A tunnel without a service claims nothing.
-func (s *Server) claimTCPService(serviceID string) bool {
+// claimTCPService marks the service as served by one tunnel of a session
+// that logged in with tokenID. ok is false when another tunnel serves it;
+// sameToken then says that tunnel's session logged in with the same token
+// (probably the same client, whose last session the relay has not seen end).
+// A tunnel without a service claims nothing.
+func (s *Server) claimTCPService(serviceID, tokenID string) (ok, sameToken bool) {
 	if serviceID == "" {
-		return true
+		return true, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.tcpServing[serviceID] {
-		return false
+	if holder, served := s.tcpServing[serviceID]; served {
+		return false, holder == tokenID
 	}
 	if s.tcpServing == nil {
-		s.tcpServing = map[string]bool{}
+		s.tcpServing = map[string]string{}
 	}
-	s.tcpServing[serviceID] = true
-	return true
+	s.tcpServing[serviceID] = tokenID
+	return true, false
 }
 
 // releaseTCPService ends a claim of claimTCPService.
@@ -284,7 +287,8 @@ func (s *Server) releaseTCPService(serviceID string) {
 func (s *Server) servingTCP(serviceID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.tcpServing[serviceID]
+	_, served := s.tcpServing[serviceID]
+	return served
 }
 
 // endTCPTunnel closes what a tcp tunnel holds on the relay: its listener,
@@ -320,8 +324,15 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 		return
 	}
 	serviceID := svc.res.ServiceID
-	if !s.claimTCPService(serviceID) {
-		refuseWith(proto.CodeServiceBusy, fmt.Sprintf("the service %q is already served by another client", tr.Name))
+	if ok, same := s.claimTCPService(serviceID, cs.TokenID); !ok {
+		// The same token: likely the client's own last session, not reaped
+		// yet; it tries again. Another token: another machine, which must
+		// not keep trying.
+		code := proto.CodeNameInUse
+		if same {
+			code = proto.CodeServiceBusy
+		}
+		refuseWith(code, fmt.Sprintf("the service %q is already served by another client", tr.Name))
 		return
 	}
 	plan, perr := s.ports.allocateTCP(tcpPortRequest{
@@ -347,10 +358,17 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 	}
 	// The service keeps the port for its next registration. A hold that
 	// another service has meanwhile (a take-over that lost a race) refuses
-	// the registration; any other failure costs only the stickiness.
-	if svc.tcp != nil && plan.persist {
+	// the registration; any other failure costs only the stickiness. A
+	// tunnel without a service holds nothing: the hold it took over or
+	// reclaimed is cleared.
+	if svc.tcp != nil && (plan.persist || plan.takeFrom != "") {
 		ctx, cancel := context.WithTimeout(context.Background(), sessionRecordTimeout)
-		err := svc.tcp.SetServiceTCPPort(ctx, serviceID, port, plan.pinned, plan.takeFrom)
+		var err error
+		if serviceID != "" {
+			err = svc.tcp.SetServiceTCPPort(ctx, serviceID, port, plan.pinned, plan.takeFrom)
+		} else {
+			err = svc.tcp.SetServiceTCPPort(ctx, plan.takeFrom, 0, false, "")
+		}
 		cancel()
 		if err != nil {
 			if errors.Is(err, ErrTCPPortTaken) || plan.takeFrom != "" {
@@ -360,6 +378,8 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 				return
 			}
 			s.log.Warn("keep tcp port failed", "service_id", serviceID, "remote_port", port, "err", err)
+		} else if plan.takeFrom != "" {
+			s.portReclaimed(reg, cs, serviceID, plan.takeFrom, port, plan.reason)
 		}
 	}
 	reg.AddTunnel(cs, tn)

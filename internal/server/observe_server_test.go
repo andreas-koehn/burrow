@@ -149,7 +149,13 @@ type handClient struct {
 
 func (r *observedRelay) client(onConn func(st *yamux.Stream)) *handClient {
 	r.t.Helper()
-	conn, ar := r.dial("secret", "")
+	return r.clientWith("secret", onConn)
+}
+
+// clientWith is client with the given token.
+func (r *observedRelay) clientWith(token string, onConn func(st *yamux.Stream)) *handClient {
+	r.t.Helper()
+	conn, ar := r.dial(token, "")
 	if !ar.OK {
 		r.t.Fatalf("auth: %+v", ar)
 	}

@@ -7,20 +7,24 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/client"
 	"github.com/ankoehn/burrow/internal/connlog"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/observe"
 	"github.com/ankoehn/burrow/internal/proto"
 	"github.com/ankoehn/burrow/internal/proxy"
 	"github.com/ankoehn/burrow/internal/server"
@@ -411,5 +415,33 @@ func TestProxy_NeverResolvesATCPService(t *testing.T) {
 	}
 	if _, err := d.DialTunnelStream(ctx, "tcpguard"); !errors.Is(err, proxy.ErrNotFound) {
 		t.Fatalf("DialTunnelStream: %v", err)
+	}
+}
+
+// A tcp port taken from an offline service is an audit row that names both
+// services, the port and the reason; the subject is the service that lost it.
+func TestObserver_TCPPortReclaimedIsAudited(t *testing.T) {
+	o, _, _, au := newTestObserver(t)
+	o.ObserveSession(observe.Session{
+		Kind: observe.TCPPortReclaimed, UserID: "u-1", SessionID: "sess-1", TunnelType: "tcp",
+		ServiceID: "svc-fixed", FromServiceID: "svc-away", Port: 9010, Reason: observe.TCPPortTakeover,
+	})
+	if err := o.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	au.mu.Lock()
+	defer au.mu.Unlock()
+	if len(au.got) != 1 {
+		t.Fatalf("audit %+v", au.got)
+	}
+	e := au.got[0]
+	var p map[string]any
+	_ = json.Unmarshal(e.Payload, &p)
+	if e.Action != audit.ActionServiceTCPPortReclaimed || e.ActorID != "u-1" || e.SubjectID != "svc-away" || e.Result != "ok" ||
+		p["service_id"] != "svc-fixed" || p["from_service_id"] != "svc-away" || p["port"] != float64(9010) || p["reason"] != "takeover" {
+		t.Fatalf("audit %+v payload %v", e, p)
+	}
+	if !slices.Contains(audit.AllActions, audit.ActionServiceTCPPortReclaimed) || audit.ActionServiceTCPPortReclaimed != "service.tcp_port.reclaimed" {
+		t.Fatal("service.tcp_port.reclaimed is not a listed action")
 	}
 }

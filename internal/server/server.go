@@ -283,9 +283,9 @@ type Server struct {
 	mu sync.Mutex
 	ln net.Listener
 	wg sync.WaitGroup
-	// tcpServing holds the tcp services a live tunnel serves (under mu): one
-	// tunnel per service.
-	tcpServing map[string]bool
+	// tcpServing maps the tcp services a live tunnel serves to the client
+	// token of its session (under mu): one tunnel per service.
+	tcpServing map[string]string
 	// unnamedWarned: the warning about a tcp tunnel without a name was
 	// logged.
 	unnamedWarned atomic.Bool
