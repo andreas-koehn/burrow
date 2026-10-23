@@ -53,8 +53,8 @@ type serviceDB interface {
 	GetServiceBySubdomain(ctx context.Context, sub string) (db.Service, error)
 	GetUserByID(ctx context.Context, id string) (db.User, error)
 	// For the tcp services (server.TCPServiceResolver).
-	SetServiceTCPPort(ctx context.Context, id string, port int) error
-	ListTCPPortReservations(ctx context.Context) (map[int]string, error)
+	SetServiceTCPPort(ctx context.Context, id string, port int, pinned bool, takeFrom string) error
+	ListTCPPortReservations(ctx context.Context) (map[int]db.TCPPortHold, error)
 }
 
 // serviceResolverAdapter adapts the db layer to server.ServiceResolver and
@@ -66,6 +66,10 @@ type serviceResolverAdapter struct {
 	// authDomain is the domain services are served under; "" means the
 	// burrow_login mode cannot be chosen, as in the API.
 	authDomain string
+	// tcpPortsPerUser is BURROW_TCP_PORTS_PER_USER: how many public ports
+	// the tcp services of one user may hold; 0 is no limit. Administrators
+	// have none.
+	tcpPortsPerUser int
 }
 
 const subdomainRetries = 8
@@ -279,7 +283,15 @@ func (a serviceResolverAdapter) create(ctx context.Context, userID, name, typ st
 // slug, and o is not applied: there is nothing to choose for one yet. As for
 // http, any client token's owner may create one: a tcp tunnel has always
 // been open to every token.
+//
+// Created is true until a client served the service once (last_seen is
+// set when a registration succeeds), so a registration that created the row
+// and then failed for want of a port does not use up the announcement.
 func (a serviceResolverAdapter) ResolveTCP(ctx context.Context, userID, name string, _ server.ResolveOptions) (server.Resolved, error) {
+	limit, err := a.tcpPortLimit(ctx, userID)
+	if err != nil {
+		return server.Resolved{}, err
+	}
 	// Two rounds: when another registration creates the service between the
 	// lookup and the insert, the second round finds it.
 	for round := 0; round < 2; round++ {
@@ -288,12 +300,15 @@ func (a serviceResolverAdapter) ResolveTCP(ctx context.Context, userID, name str
 			return server.Resolved{}, err
 		}
 		if found {
-			return server.Resolved{ServiceID: svc.ID, AccessMode: svc.AccessMode, TCPPort: svc.TCPPort}, nil
+			return server.Resolved{
+				ServiceID: svc.ID, AccessMode: svc.AccessMode, Created: svc.LastSeen == nil,
+				TCPPort: svc.TCPPort, TCPPortPinned: svc.TCPPortPinned, TCPPortLimit: limit,
+			}, nil
 		}
 		id := uuid.NewString()
 		err = a.db.CreateService(ctx, db.Service{ID: id, UserID: userID, Name: name, Type: "tcp", AccessMode: "open"})
 		if err == nil {
-			return server.Resolved{ServiceID: id, AccessMode: "open", Created: true}, nil
+			return server.Resolved{ServiceID: id, AccessMode: "open", Created: true, TCPPortLimit: limit}, nil
 		}
 		if !errors.Is(err, db.ErrDuplicateService) {
 			return server.Resolved{}, fmt.Errorf("resolve service: create: %w", err)
@@ -302,14 +317,46 @@ func (a serviceResolverAdapter) ResolveTCP(ctx context.Context, userID, name str
 	return server.Resolved{}, fmt.Errorf("resolve service: %q was created and removed while registering", name)
 }
 
+// tcpPortLimit is how many ports the user's tcp services may hold: the
+// configured number, or none for a role that may configure any service.
+func (a serviceResolverAdapter) tcpPortLimit(ctx context.Context, userID string) (int, error) {
+	if a.tcpPortsPerUser <= 0 {
+		return 0, nil
+	}
+	u, err := a.db.GetUserByID(ctx, userID)
+	if err != nil {
+		return 0, fmt.Errorf("resolve service: owner: %w", err)
+	}
+	if authz.Can(u.Role, authz.PermServicesConfigureAny) {
+		return 0, nil
+	}
+	return a.tcpPortsPerUser, nil
+}
+
 // TCPPortReservations implements server.TCPServiceResolver.
-func (a serviceResolverAdapter) TCPPortReservations(ctx context.Context) (map[int]string, error) {
-	return a.db.ListTCPPortReservations(ctx)
+func (a serviceResolverAdapter) TCPPortReservations(ctx context.Context) (map[int]server.TCPPortHold, error) {
+	rows, err := a.db.ListTCPPortReservations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int]server.TCPPortHold, len(rows))
+	for p, h := range rows {
+		v := server.TCPPortHold{ServiceID: h.ServiceID, UserID: h.UserID, Pinned: h.Pinned}
+		if h.LastSeen != nil {
+			v.LastSeen = *h.LastSeen
+		}
+		out[p] = v
+	}
+	return out, nil
 }
 
 // SetServiceTCPPort implements server.TCPServiceResolver.
-func (a serviceResolverAdapter) SetServiceTCPPort(ctx context.Context, serviceID string, port int) error {
-	return a.db.SetServiceTCPPort(ctx, serviceID, port)
+func (a serviceResolverAdapter) SetServiceTCPPort(ctx context.Context, serviceID string, port int, pinned bool, takeFrom string) error {
+	err := a.db.SetServiceTCPPort(ctx, serviceID, port, pinned, takeFrom)
+	if errors.Is(err, db.ErrTCPPortReserved) {
+		return server.ErrTCPPortTaken
+	}
+	return err
 }
 
 // freeSlug returns a generated slug that no service uses right now.

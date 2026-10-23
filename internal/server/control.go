@@ -210,23 +210,39 @@ func refusalResponse(prefix string, err error) proto.TunnelRegisterResponse {
 // takes a port.
 type tcpService struct {
 	res  Resolved
-	held map[int]string // the ports services hold
+	held map[int]TCPPortHold // the ports services hold
 	tcp  TCPServiceResolver
 }
 
+// tcpResolveTimeout bounds what a tcp registration asks the store before it
+// takes a port.
+const tcpResolveTimeout = 5 * time.Second
+
+// errTCPLookup is what the client is told when the store failed: the
+// failure itself is logged, never sent.
+const errTCPLookup = "the relay could not look up the service; try again later"
+
 // resolveTCP binds a tcp tunnel to its service when the relay keeps tcp
-// services (see TCPServiceResolver). Without one, the tunnel has no service
-// and the zero tcpService is returned. The client's access and slug wishes
-// are not passed on: a tcp service has neither yet.
+// services (see TCPServiceResolver), and reads the holds on ports. Without a
+// resolver the zero tcpService is returned; a tunnel without a name (an old
+// client that was given none) gets the holds and no service. The client's
+// access and slug wishes are not passed on: a tcp service has neither yet.
 func (s *Server) resolveTCP(cs *ClientSession, tr proto.TunnelRegister) (tcpService, error) {
 	tcp, ok := s.opts.Services.(TCPServiceResolver)
 	if !ok {
 		return tcpService{}, nil
 	}
-	ctx := context.Background()
-	res, err := tcp.ResolveTCP(ctx, cs.UserID, tr.Name, ResolveOptions{})
-	if err != nil {
-		return tcpService{}, err
+	ctx, cancel := context.WithTimeout(context.Background(), tcpResolveTimeout)
+	defer cancel()
+	var res Resolved
+	if tr.Name != "" {
+		var err error
+		if res, err = tcp.ResolveTCP(ctx, cs.UserID, tr.Name, ResolveOptions{}); err != nil {
+			return tcpService{}, err
+		}
+	} else if s.unnamedWarned.CompareAndSwap(false, true) {
+		s.log.Warn("a client registered a tcp tunnel without a name: it gets no service and no sticky port; upgrade the client and give the tunnel a name",
+			"session_id", cs.SessionID, "client_version", cs.ClientVersion)
 	}
 	// Without them a port of another service could be handed out.
 	held, err := tcp.TCPPortReservations(ctx)
@@ -236,40 +252,115 @@ func (s *Server) resolveTCP(cs *ClientSession, tr proto.TunnelRegister) (tcpServ
 	return tcpService{res: res, held: held, tcp: tcp}, nil
 }
 
+// claimTCPService marks the service as served by one tunnel; false when
+// another tunnel serves it. A tunnel without a service claims nothing.
+func (s *Server) claimTCPService(serviceID string) bool {
+	if serviceID == "" {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tcpServing[serviceID] {
+		return false
+	}
+	if s.tcpServing == nil {
+		s.tcpServing = map[string]bool{}
+	}
+	s.tcpServing[serviceID] = true
+	return true
+}
+
+// releaseTCPService ends a claim of claimTCPService.
+func (s *Server) releaseTCPService(serviceID string) {
+	if serviceID == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.tcpServing, serviceID)
+	s.mu.Unlock()
+}
+
+// servingTCP reports whether a tunnel serves the tcp service now.
+func (s *Server) servingTCP(serviceID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tcpServing[serviceID]
+}
+
+// endTCPTunnel closes what a tcp tunnel holds on the relay: its listener,
+// its port and its claim on the service. The service keeps its hold on the
+// port for the next registration.
+func (s *Server) endTCPTunnel(tn *Tunnel) {
+	if tn == nil || tn.IsHTTP {
+		return
+	}
+	if tn.Listener != nil {
+		_ = tn.Listener.Close()
+		s.ports.Release(tn.RemotePort)
+	}
+	s.releaseTCPService(tn.ServiceID)
+}
+
 // registerTCP registers a tcp tunnel: its service, its public port and its
 // listener, and answers the client.
 func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRegister) {
+	refuseWith := func(code, msg string) {
+		_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: msg, Code: code})
+		s.refused(reg, cs, tr, code)
+	}
 	svc, rerr := s.resolveTCP(cs, tr)
 	if rerr != nil {
-		refused := refusalResponse("resolve service: ", rerr)
-		_ = cs.SendControl(proto.MsgTunnelRegisterResp, refused)
-		s.refused(reg, cs, tr, refused.Code)
+		var re *RefusalError
+		if errors.As(rerr, &re) {
+			refuseWith(re.Code, re.Message)
+			return
+		}
+		s.log.Warn("resolve tcp service failed", "session_id", cs.SessionID, "name", tr.Name, "err", rerr)
+		refuseWith(proto.CodeInternal, errTCPLookup)
 		return
 	}
-	port, perr := s.ports.allocateTCP(tr.RemotePort, svc.res.ServiceID, svc.res.TCPPort, svc.held)
+	serviceID := svc.res.ServiceID
+	if !s.claimTCPService(serviceID) {
+		refuseWith(proto.CodeServiceBusy, fmt.Sprintf("the service %q is already served by another client", tr.Name))
+		return
+	}
+	plan, perr := s.ports.allocateTCP(tcpPortRequest{
+		requested: tr.RemotePort, serviceID: serviceID, userID: cs.UserID,
+		own: svc.res.TCPPort, ownPinned: svc.res.TCPPortPinned, limit: svc.res.TCPPortLimit,
+		held: svc.held, serving: s.servingTCP,
+	})
 	if perr != nil {
-		_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: perr.Error(), Code: proto.CodePortUnavailable})
-		s.refused(reg, cs, tr, proto.CodePortUnavailable)
+		s.releaseTCPService(serviceID)
+		refuseWith(proto.CodePortUnavailable, perr.Error())
 		return
 	}
+	port := plan.port
 	tn := &Tunnel{
 		ID: uuid.NewString(), Name: tr.Name, Type: tr.Type, RemotePort: port, LocalAddr: tr.LocalAddr, sess: cs,
-		ServiceID: svc.res.ServiceID, accessMode: svc.res.AccessMode, created: svc.res.Created,
+		ServiceID: serviceID, accessMode: svc.res.AccessMode, created: svc.res.Created,
 	}
 	if lerr := s.startPublicListener(tn); lerr != nil {
 		s.ports.Release(port)
-		_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: lerr.Error(), Code: proto.CodePortUnavailable})
-		s.refused(reg, cs, tr, proto.CodePortUnavailable)
+		s.releaseTCPService(serviceID)
+		refuseWith(proto.CodePortUnavailable, lerr.Error())
 		return
 	}
-	// The service keeps the port for its next registration. A failure costs
-	// only that: the tunnel is up.
-	if svc.tcp != nil && port != svc.res.TCPPort {
+	// The service keeps the port for its next registration. A hold that
+	// another service has meanwhile (a take-over that lost a race) refuses
+	// the registration; any other failure costs only the stickiness.
+	if svc.tcp != nil && plan.persist {
 		ctx, cancel := context.WithTimeout(context.Background(), sessionRecordTimeout)
-		if err := svc.tcp.SetServiceTCPPort(ctx, tn.ServiceID, port); err != nil {
-			s.log.Warn("keep tcp port failed", "service_id", tn.ServiceID, "remote_port", port, "err", err)
-		}
+		err := svc.tcp.SetServiceTCPPort(ctx, serviceID, port, plan.pinned, plan.takeFrom)
 		cancel()
+		if err != nil {
+			if errors.Is(err, ErrTCPPortTaken) || plan.takeFrom != "" {
+				s.log.Warn("keep tcp port failed, registration refused", "service_id", serviceID, "remote_port", port, "err", err)
+				s.endTCPTunnel(tn)
+				refuseWith(proto.CodePortUnavailable, portNotAvailable(port).Error())
+				return
+			}
+			s.log.Warn("keep tcp port failed", "service_id", serviceID, "remote_port", port, "err", err)
+		}
 	}
 	reg.AddTunnel(cs, tn)
 	// Best-effort persist. RunControlLoop is serial (ping/pong/register/
@@ -282,7 +373,7 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 	s.recordSession(reg, cs)
 	s.stampService(cs, tn)
 	s.opts.Events.PublishTunnelsChanged(cs.UserID)
-	s.log.Info("tunnel registered", "tunnel_id", tn.ID, "remote_port", port, "service_id", tn.ServiceID, "session_id", cs.SessionID)
+	s.log.Info("tunnel registered", "tunnel_id", tn.ID, "remote_port", port, "service_id", serviceID, "session_id", cs.SessionID)
 	_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{
 		OK: true, TunnelID: tn.ID, RemotePort: port,
 		// A tcp service has neither a slug nor an access mode yet.
@@ -360,10 +451,7 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 			var tu proto.TunnelUnregister
 			if err := proto.DecodePayload(env, &tu); err == nil {
 				tn := reg.Tunnel(cs, tu.TunnelID)
-				if tn != nil && tn.Listener != nil {
-					_ = tn.Listener.Close()
-					s.ports.Release(tn.RemotePort)
-				}
+				s.endTCPTunnel(tn)
 				reg.RemoveTunnel(cs, tu.TunnelID)
 				s.recordSession(reg, cs)
 				s.stampService(cs, tn)

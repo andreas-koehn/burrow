@@ -164,6 +164,10 @@ const (
 	// another type (an http service where a tcp tunnel was asked, or the
 	// other way round).
 	CodeNameInUse = "name_in_use"
+	// CodeServiceBusy: another client serves the service now. It may be the
+	// last session of the same client that the relay has not seen end yet,
+	// so a client tries again.
+	CodeServiceBusy = "service_busy"
 )
 
 // StreamHeader is the first frame the client writes on a new data stream,

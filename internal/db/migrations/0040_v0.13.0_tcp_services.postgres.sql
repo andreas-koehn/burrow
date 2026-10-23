@@ -2,9 +2,13 @@
 -- A tcp tunnel is a service like an http one (type 'tcp'). tcp_port is the
 -- public port the relay gave it last, so that a reconnect gets the same one;
 -- NULL until it was given one, and for http services. A port belongs to one
--- service at a time. max_connections caps the concurrent visitors of the
+-- service at a time. tcp_port_pinned: the client asked for that port (a
+-- fixed --remote); an automatic port (0) may be handed to another service
+-- while this one is offline, a pinned one only goes with the service or a
+-- new request of its own. max_connections caps the concurrent visitors of the
 -- service's port; NULL is the relay's default.
 ALTER TABLE services ADD COLUMN tcp_port        INTEGER;
+ALTER TABLE services ADD COLUMN tcp_port_pinned INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE services ADD COLUMN max_connections INTEGER;
 CREATE UNIQUE INDEX idx_services_tcp_port ON services(tcp_port) WHERE tcp_port IS NOT NULL;
 
@@ -27,4 +31,5 @@ DROP INDEX IF EXISTS idx_service_ip_grants_service;
 DROP TABLE IF EXISTS service_ip_grants;
 DROP INDEX IF EXISTS idx_services_tcp_port;
 ALTER TABLE services DROP COLUMN IF EXISTS max_connections;
+ALTER TABLE services DROP COLUMN IF EXISTS tcp_port_pinned;
 ALTER TABLE services DROP COLUMN IF EXISTS tcp_port;

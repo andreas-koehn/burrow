@@ -79,11 +79,11 @@ func (f *fakeServiceDB) GetUserByID(context.Context, string) (db.User, error) {
 	return db.User{Role: "user"}, nil
 }
 
-func (f *fakeServiceDB) SetServiceTCPPort(context.Context, string, int) error {
+func (f *fakeServiceDB) SetServiceTCPPort(context.Context, string, int, bool, string) error {
 	return errors.New("fakeServiceDB: SetServiceTCPPort is not supported")
 }
 
-func (f *fakeServiceDB) ListTCPPortReservations(context.Context) (map[int]string, error) {
+func (f *fakeServiceDB) ListTCPPortReservations(context.Context) (map[int]db.TCPPortHold, error) {
 	return nil, errors.New("fakeServiceDB: ListTCPPortReservations is not supported")
 }
 

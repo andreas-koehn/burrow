@@ -117,6 +117,7 @@ type Service struct {
 	// service, or a tcp service never served). MaxConnections caps the
 	// concurrent visitors of that port; 0 is the relay's default.
 	TCPPort        int
+	TCPPortPinned  bool // the client asked for TCPPort (see migration 0040)
 	MaxConnections int
 }
 

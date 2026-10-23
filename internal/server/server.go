@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -52,9 +53,27 @@ type Resolved struct {
 	// not applied because the service existed with other values.
 	Ignored []string
 	// TCPPort is the public port a tcp service holds (TCPServiceResolver);
-	// 0 when it holds none.
-	TCPPort int
+	// 0 when it holds none. TCPPortPinned: the client asked for that port.
+	TCPPort       int
+	TCPPortPinned bool
+	// TCPPortLimit is how many ports the owner may hold; 0 is no limit (an
+	// administrator, or a relay without one).
+	TCPPortLimit int
 }
+
+// TCPPortHold is a service's hold on a public port.
+type TCPPortHold struct {
+	ServiceID, UserID string
+	// Pinned: the client asked for the port. An automatic hold of an offline
+	// service may be taken over; a pinned one only goes with the service.
+	Pinned bool
+	// LastSeen is when a client last served the service; zero: never.
+	LastSeen time.Time
+}
+
+// ErrTCPPortTaken is what SetServiceTCPPort returns when another service
+// holds the port (and it was not one that could be taken over).
+var ErrTCPPortTaken = errors.New("tcp port is held by another service")
 
 // OptionsResolver is a ServiceResolver that can create a service with a
 // chosen slug and access mode. The options apply only when the service is
@@ -77,10 +96,13 @@ type TCPServiceResolver interface {
 	// *RefusalError with proto.CodeNameInUse. Resolved.TCPPort is the port the
 	// service holds.
 	ResolveTCP(ctx context.Context, userID, name string, o ResolveOptions) (Resolved, error)
-	// TCPPortReservations maps every port a service holds to the service id.
-	TCPPortReservations(ctx context.Context) (map[int]string, error)
-	// SetServiceTCPPort makes port the one the service holds.
-	SetServiceTCPPort(ctx context.Context, serviceID string, port int) error
+	// TCPPortReservations maps every port a service holds to the hold.
+	TCPPortReservations(ctx context.Context) (map[int]TCPPortHold, error)
+	// SetServiceTCPPort makes port the one the service holds, pinned or
+	// not. takeFrom, when set, is the service whose automatic hold on the
+	// port is taken over in the same step. ErrTCPPortTaken when another
+	// service holds the port.
+	SetServiceTCPPort(ctx context.Context, serviceID string, port int, pinned bool, takeFrom string) error
 }
 
 // RefusalError is a refusal with one of the proto.Code… values. Message is
@@ -261,6 +283,12 @@ type Server struct {
 	mu sync.Mutex
 	ln net.Listener
 	wg sync.WaitGroup
+	// tcpServing holds the tcp services a live tunnel serves (under mu): one
+	// tunnel per service.
+	tcpServing map[string]bool
+	// unnamedWarned: the warning about a tcp tunnel without a name was
+	// logged.
+	unnamedWarned atomic.Bool
 }
 
 // New validates options and loads the TLS keypair.
@@ -446,10 +474,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer func() {
 		tunnels := s.reg.snapshotTunnels(cs)
 		for _, tn := range tunnels {
-			if tn.Listener != nil {
-				_ = tn.Listener.Close()
-			}
-			s.ports.Release(tn.RemotePort)
+			s.endTCPTunnel(tn)
 			_ = s.opts.Tunnels.MarkTunnelSeen(context.Background(), tn.ID)
 		}
 		// After the ports are free, so that a slow write keeps none taken, and

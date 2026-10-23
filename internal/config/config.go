@@ -38,6 +38,7 @@ type ServerConfig struct {
 	PublicBind        string `koanf:"public_bind"`
 	PortMin           int    `koanf:"port_min" validate:"gte=1,lte=65535"`
 	PortMax           int    `koanf:"port_max" validate:"gte=1,lte=65535,gtefield=PortMin"`
+	TCPPortsPerUser   int    `koanf:"tcp_ports_per_user" validate:"gte=0"` // ports one user's tcp services may hold; 0: no limit, admins none
 	DatabasePath      string `koanf:"database_path"`
 	AdminEmail        string `koanf:"admin_email"`
 	AdminPassword     string `koanf:"admin_password"`
@@ -397,7 +398,7 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 	_ = k.Load(confmap.Provider(map[string]any{
 		"listen": ":7000", "tls_cert": "certs/dev-server.pem",
 		"tls_key": "certs/dev-server-key.pem", "log_level": "info", "log_format": "text",
-		"public_bind": "0.0.0.0", "port_min": 9000, "port_max": 9100,
+		"public_bind": "0.0.0.0", "port_min": 9000, "port_max": 9100, "tcp_ports_per_user": 10,
 		// database_path is resolved relative to the process working directory;
 		// supply an absolute path via BURROW_DATABASE_PATH in production.
 		"database_path": "./burrow.db", "http_listen": ":8080", "http_secure_cookies": false,

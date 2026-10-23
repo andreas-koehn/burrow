@@ -7,12 +7,14 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"github.com/ankoehn/burrow/internal/connlog"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/proto"
+	"github.com/ankoehn/burrow/internal/proxy"
 	"github.com/ankoehn/burrow/internal/server"
 )
 
@@ -27,7 +30,8 @@ import (
 var _ server.TCPServiceResolver = serviceResolverAdapter{}
 
 // A tcp registration creates a tcp service in mode open, without a slug, and
-// the next one finds it. The port it holds comes back with it.
+// the next one finds it. The port it holds comes back with it, and Created
+// stays true until a client served the service once.
 func TestResolveTCP_CreatesAndReuses(t *testing.T) {
 	x, uid := optionsDB(t)
 	a := serviceResolverAdapter{db: x, authDomain: "burrow.example.com"}
@@ -43,20 +47,56 @@ func TestResolveTCP_CreatesAndReuses(t *testing.T) {
 	if row.ID != r.ServiceID || row.Type != "tcp" || row.AccessMode != "open" || row.Subdomain != "" {
 		t.Fatalf("row %+v", row)
 	}
-	if err := a.SetServiceTCPPort(ctx, r.ServiceID, 9005); err != nil {
+	if err := a.SetServiceTCPPort(ctx, r.ServiceID, 9005, true, ""); err != nil {
 		t.Fatal(err)
 	}
 	r2, err := a.ResolveTCP(ctx, uid, "rdp", server.ResolveOptions{})
-	if err != nil || r2.Created || r2.ServiceID != r.ServiceID || r2.TCPPort != 9005 || r2.AccessMode != "open" {
-		t.Fatalf("again: %+v %v", r2, err)
+	if err != nil || !r2.Created || r2.ServiceID != r.ServiceID || r2.TCPPort != 9005 || !r2.TCPPortPinned || r2.AccessMode != "open" {
+		t.Fatalf("again, never served: %+v %v", r2, err)
+	}
+	if err := x.TouchServiceLastSeen(ctx, r.ServiceID, "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	if r3, err := a.ResolveTCP(ctx, uid, "rdp", server.ResolveOptions{}); err != nil || r3.Created {
+		t.Fatalf("again, served: %+v %v", r3, err)
 	}
 	held, err := a.TCPPortReservations(ctx)
-	if err != nil || held[9005] != r.ServiceID {
+	if h := held[9005]; err != nil || h.ServiceID != r.ServiceID || h.UserID != uid || !h.Pinned || h.LastSeen.IsZero() {
 		t.Fatalf("reservations %v %v", held, err)
+	}
+	other, err := a.ResolveTCP(ctx, uid, "ssh", server.ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetServiceTCPPort(ctx, other.ServiceID, 9005, false, ""); !errors.Is(err, server.ErrTCPPortTaken) {
+		t.Fatalf("a held port: %v", err)
 	}
 }
 
-// One registration of many at the same moment creates the service.
+// The ports per user: the configured limit for a user, none for an
+// administrator, none when the limit is 0.
+func TestResolveTCP_PortLimit(t *testing.T) {
+	x, admin := optionsDB(t)
+	ctx := context.Background()
+	if err := x.CreateUser(ctx, db.User{ID: "u-plain", Email: "u@x.com", PasswordHash: "x", Role: "user", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	a := serviceResolverAdapter{db: x, tcpPortsPerUser: 10}
+	if r, err := a.ResolveTCP(ctx, "u-plain", "rdp", server.ResolveOptions{}); err != nil || r.TCPPortLimit != 10 {
+		t.Fatalf("user: %+v %v", r, err)
+	}
+	if r, err := a.ResolveTCP(ctx, admin, "rdp", server.ResolveOptions{}); err != nil || r.TCPPortLimit != 0 {
+		t.Fatalf("admin: %+v %v", r, err)
+	}
+	a.tcpPortsPerUser = 0
+	if r, err := a.ResolveTCP(ctx, "u-plain", "rdp", server.ResolveOptions{}); err != nil || r.TCPPortLimit != 0 {
+		t.Fatalf("no limit: %+v %v", r, err)
+	}
+}
+
+// Many registrations at the same moment create one service. (Each reports
+// Created until a client served it; the control server lets only one of them
+// register, so service.created is announced once.)
 func TestResolveTCP_ConcurrentCreation(t *testing.T) {
 	x, uid := optionsDB(t)
 	a := serviceResolverAdapter{db: x}
@@ -71,7 +111,7 @@ func TestResolveTCP_ConcurrentCreation(t *testing.T) {
 			res <- out{r, err}
 		}()
 	}
-	created, id := 0, ""
+	id := ""
 	for i := 0; i < 8; i++ {
 		o := <-res
 		if o.err != nil {
@@ -80,15 +120,12 @@ func TestResolveTCP_ConcurrentCreation(t *testing.T) {
 		if id == "" {
 			id = o.r.ServiceID
 		}
-		if o.r.ServiceID != id {
-			t.Fatalf("two services: %q and %q", id, o.r.ServiceID)
-		}
-		if o.r.Created {
-			created++
+		if o.r.ServiceID != id || !o.r.Created {
+			t.Fatalf("registration %d: %+v, the others' service %q", i, o.r, id)
 		}
 	}
-	if created != 1 {
-		t.Fatalf("created %d times", created)
+	if rows := servicesOf(t, x, uid); len(rows) != 1 {
+		t.Fatalf("rows %+v", rows)
 	}
 }
 
@@ -304,5 +341,75 @@ func TestServe_TCPTunnelIsAService(t *testing.T) {
 	r.mustAdmin(http.MethodDelete, "/api/v1/services/"+s.ID, nil, http.StatusNoContent, nil)
 	if _, ok := find(); ok {
 		t.Fatal("the service is still listed")
+	}
+}
+
+// No door of the proxy reaches a tcp service, even one that has a slug: not
+// its host, not /svc/<slug>, not a lookup by service id (custom domains, the
+// gateway). The tcp tunnel fronts an http app here, so a leak would answer.
+func TestProxy_NeverResolvesATCPService(t *testing.T) {
+	s := bootE2EStack(t)
+	ctx := context.Background()
+	tok, err := s.store.IssueClientToken(ctx, s.userID, "tcp-guard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := client.New(client.Options{
+		Server: s.server.Addr(), Token: tok, RootCAs: s.caPool, ServerName: "localhost",
+		Tunnels: []client.TunnelSpec{{Name: "rdpguard", Type: "tcp", LocalAddr: s.upstreamAddr}},
+		Logger:  s.log,
+	})
+	go func() { _ = c.Run(s.ctx) }()
+	x := db.Wrap(s.db)
+	var id string
+	deadline := time.Now().Add(10 * time.Second)
+	for id == "" && time.Now().Before(deadline) {
+		if svc, ok := servicesOf(t, x, s.userID)["rdpguard"]; ok {
+			if _, live := s.server.LookupTunnelByServiceID(svc.ID); live {
+				id = svc.ID
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if id == "" {
+		t.Fatal("the tcp tunnel never registered")
+	}
+	if err := x.SetServiceSubdomain(ctx, id, "tcpguard"); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, get := range map[string]func() (*http.Response, error){
+		"host": func() (*http.Response, error) {
+			return s.visitorClient(t).Get("https://tcpguard." + e2eAuthDomain + ":" + s.proxyPort + "/")
+		},
+		"/svc/": func() (*http.Response, error) {
+			return s.pathClient(t).Get("https://" + e2eAuthDomain + "/svc/tcpguard/")
+		},
+	} {
+		resp, err := get()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound || strings.Contains(string(body), "upstream got") {
+			t.Fatalf("%s: %d %s", name, resp.StatusCode, body)
+		}
+	}
+	d := proxyDialerAdapter{st: s.store, srv: s.server}
+	if _, err := d.Lookup(ctx, "tcpguard"); !errors.Is(err, proxy.ErrNotFound) {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if _, err := d.LookupByServiceID(ctx, id); !errors.Is(err, proxy.ErrNotFound) {
+		t.Fatalf("LookupByServiceID: %v", err)
+	}
+	if _, err := (ingressDialerAdapter{d}).LookupByServiceID(ctx, id); !errors.Is(err, proxy.ErrNotFound) {
+		t.Fatalf("ingress LookupByServiceID: %v", err)
+	}
+	if _, err := d.DialTunnelStreamByServiceID(ctx, id); !errors.Is(err, proxy.ErrNotFound) {
+		t.Fatalf("DialTunnelStreamByServiceID: %v", err)
+	}
+	if _, err := d.DialTunnelStream(ctx, "tcpguard"); !errors.Is(err, proxy.ErrNotFound) {
+		t.Fatalf("DialTunnelStream: %v", err)
 	}
 }

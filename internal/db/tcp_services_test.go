@@ -14,6 +14,10 @@ import (
 
 func TestServiceTCPPort(t *testing.T) { checkServiceTCPPort(t, testDB(t), "u-tcpport", 9501) }
 
+func TestServiceTCPPortTakeOver(t *testing.T) {
+	checkServiceTCPPortTakeOver(t, testDB(t), "u-tcptake", 9511)
+}
+
 func TestMigration0040_DownAndUp(t *testing.T) {
 	checkMigration0029DownAndUp(t, testDB(t), "0040_v0.13.0_tcp_services.sql")
 }
@@ -22,9 +26,9 @@ func TestServiceIPGrantsGoWithService(t *testing.T) {
 	checkServiceIPGrantsCascade(t, testDB(t), "u-grants")
 }
 
-// A tcp service starts without a port; the port it is given is read back,
-// listed as reserved for it, and cannot be given to a second service. Giving
-// it port 0 clears it, and a deleted service frees its port.
+// A tcp service starts without a port; the port it is given is read back
+// with its kind, listed as held by it, and cannot be given to a second
+// service. Giving it port 0 clears it, and a deleted service frees its port.
 func checkServiceTCPPort(t *testing.T, x *DB, userID string, basePort int) {
 	t.Helper()
 	ctx := context.Background()
@@ -40,41 +44,41 @@ func checkServiceTCPPort(t *testing.T, x *DB, userID string, basePort int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.TCPPort != 0 || got.MaxConnections != 0 {
-		t.Fatalf("new tcp service: TCPPort %d, MaxConnections %d, want 0 and 0", got.TCPPort, got.MaxConnections)
+	if got.TCPPort != 0 || got.TCPPortPinned || got.MaxConnections != 0 {
+		t.Fatalf("new tcp service: %+v", got)
 	}
 
-	if err := x.SetServiceTCPPort(ctx, a.ID, basePort); err != nil {
+	if err := x.SetServiceTCPPort(ctx, a.ID, basePort, true, ""); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := x.GetServiceByID(ctx, a.ID); got.TCPPort != basePort {
-		t.Fatalf("TCPPort = %d, want %d", got.TCPPort, basePort)
+	if got, _ := x.GetServiceByID(ctx, a.ID); got.TCPPort != basePort || !got.TCPPortPinned {
+		t.Fatalf("TCPPort = %d pinned %v, want %d pinned", got.TCPPort, got.TCPPortPinned, basePort)
 	}
 	res, err := x.ListTCPPortReservations(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res[basePort] != a.ID {
-		t.Fatalf("reservations[%d] = %q, want %q (%v)", basePort, res[basePort], a.ID, res)
+	if h := res[basePort]; h.ServiceID != a.ID || h.UserID != userID || !h.Pinned || h.LastSeen != nil {
+		t.Fatalf("reservations[%d] = %+v", basePort, h)
 	}
-	// Setting the same port again is no change.
-	if err := x.SetServiceTCPPort(ctx, a.ID, basePort); err != nil {
+	// Setting the same port again is no change; automatic now.
+	if err := x.SetServiceTCPPort(ctx, a.ID, basePort, false, ""); err != nil {
 		t.Fatalf("same port again: %v", err)
 	}
-	if err := x.SetServiceTCPPort(ctx, b.ID, basePort); !errors.Is(err, ErrTCPPortReserved) {
+	if err := x.SetServiceTCPPort(ctx, b.ID, basePort, false, ""); !errors.Is(err, ErrTCPPortReserved) {
 		t.Fatalf("a second service on the port: err = %v, want ErrTCPPortReserved", err)
 	}
-	if err := x.SetServiceTCPPort(ctx, "svc-missing-"+userID, basePort+1); !errors.Is(err, ErrNotFound) {
+	if err := x.SetServiceTCPPort(ctx, "svc-missing-"+userID, basePort+1, false, ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing service: err = %v, want ErrNotFound", err)
 	}
 
-	if err := x.SetServiceTCPPort(ctx, a.ID, 0); err != nil {
+	if err := x.SetServiceTCPPort(ctx, a.ID, 0, false, ""); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := x.GetServiceByID(ctx, a.ID); got.TCPPort != 0 {
-		t.Fatalf("cleared: TCPPort = %d, want 0", got.TCPPort)
+	if got, _ := x.GetServiceByID(ctx, a.ID); got.TCPPort != 0 || got.TCPPortPinned {
+		t.Fatalf("cleared: %+v", got)
 	}
-	if err := x.SetServiceTCPPort(ctx, b.ID, basePort); err != nil {
+	if err := x.SetServiceTCPPort(ctx, b.ID, basePort, false, ""); err != nil {
 		t.Fatalf("a freed port: %v", err)
 	}
 	if err := x.DeleteService(ctx, b.ID); err != nil {
@@ -84,8 +88,48 @@ func checkServiceTCPPort(t *testing.T, x *DB, userID string, basePort int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id, ok := res[basePort]; ok {
-		t.Fatalf("a deleted service still holds port %d (%q)", basePort, id)
+	if h, ok := res[basePort]; ok {
+		t.Fatalf("a deleted service still holds port %d (%+v)", basePort, h)
+	}
+}
+
+// A port is taken over from the service named in takeFrom while that one
+// holds it automatically, in one step: the other service loses it. A pinned
+// hold, or a port the named service no longer holds, is not taken and
+// nothing changes.
+func checkServiceTCPPortTakeOver(t *testing.T, x *DB, userID string, basePort int) {
+	t.Helper()
+	ctx := context.Background()
+	freshServiceUser(t, x, userID)
+	auto := Service{ID: "svc-auto-" + userID, UserID: userID, Name: "auto", Type: "tcp", AccessMode: "open"}
+	fixed := Service{ID: "svc-fixed-" + userID, UserID: userID, Name: "fixed", Type: "tcp", AccessMode: "open"}
+	for _, s := range []Service{auto, fixed} {
+		if err := x.CreateService(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := x.SetServiceTCPPort(ctx, auto.ID, basePort, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.SetServiceTCPPort(ctx, fixed.ID, basePort, true, auto.ID); err != nil {
+		t.Fatalf("take over an automatic hold: %v", err)
+	}
+	if got, _ := x.GetServiceByID(ctx, auto.ID); got.TCPPort != 0 {
+		t.Fatalf("the displaced service still holds %d", got.TCPPort)
+	}
+	if got, _ := x.GetServiceByID(ctx, fixed.ID); got.TCPPort != basePort || !got.TCPPortPinned {
+		t.Fatalf("taker: %+v", got)
+	}
+	// fixed's hold is pinned: auto cannot take it back.
+	if err := x.SetServiceTCPPort(ctx, auto.ID, basePort, false, fixed.ID); !errors.Is(err, ErrTCPPortReserved) {
+		t.Fatalf("take a pinned hold: err = %v", err)
+	}
+	// auto holds nothing now: naming it takes nothing.
+	if err := x.SetServiceTCPPort(ctx, fixed.ID, basePort+1, true, auto.ID); !errors.Is(err, ErrTCPPortReserved) {
+		t.Fatalf("take from a service that holds nothing there: err = %v", err)
+	}
+	if got, _ := x.GetServiceByID(ctx, fixed.ID); got.TCPPort != basePort {
+		t.Fatalf("a refused take over changed the taker: %+v", got)
 	}
 }
 

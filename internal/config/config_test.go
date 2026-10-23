@@ -63,8 +63,12 @@ func TestServerPublicDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadServer: %v", err)
 	}
-	if c.PublicBind != "0.0.0.0" || c.PortMin != 9000 || c.PortMax != 9100 {
-		t.Fatalf("got PublicBind=%q PortMin=%d PortMax=%d", c.PublicBind, c.PortMin, c.PortMax)
+	if c.PublicBind != "0.0.0.0" || c.PortMin != 9000 || c.PortMax != 9100 || c.TCPPortsPerUser != 10 {
+		t.Fatalf("got PublicBind=%q PortMin=%d PortMax=%d TCPPortsPerUser=%d", c.PublicBind, c.PortMin, c.PortMax, c.TCPPortsPerUser)
+	}
+	t.Setenv("BURROW_TCP_PORTS_PER_USER", "0")
+	if c, err := LoadServer(nil); err != nil || c.TCPPortsPerUser != 0 {
+		t.Fatalf("BURROW_TCP_PORTS_PER_USER=0: %+v %v", c, err)
 	}
 }
 

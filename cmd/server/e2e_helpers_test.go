@@ -107,6 +107,9 @@ type e2eStack struct {
 	// quotaEngine.Reload to pick up the new rows before firing requests.
 	quotaEngine *quota.Engine
 
+	// caPool trusts the control listener's dev certificate.
+	caPool *x509.CertPool
+
 	cleanupFns []func()
 }
 
@@ -380,6 +383,7 @@ func bootE2EStack(t *testing.T, opts ...bootE2EStackOption) *e2eStack {
 	}
 	caPool := x509.NewCertPool()
 	caPool.AppendCertsFromPEM(caPEM)
+	s.caPool = caPool
 
 	// 3. Wildcard cert for *.test.local (proxy ingress).
 	proxyCertPath, proxyKeyPath := generateWildcardCert(t, dir, "*."+e2eAuthDomain, e2eAuthDomain)

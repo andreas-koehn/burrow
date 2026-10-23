@@ -63,6 +63,7 @@ exercised. Switch back to the production CA (the default) when going live.
 | `BURROW_PUBLIC_BIND` | `0.0.0.0` | Network interface for TCP tunnel data ports. |
 | `BURROW_PORT_MIN` | `9000` | Inclusive lower bound for auto-assigned TCP tunnel ports. |
 | `BURROW_PORT_MAX` | `9100` | Inclusive upper bound for auto-assigned TCP tunnel ports. |
+| `BURROW_TCP_PORTS_PER_USER` | `10` | How many public ports the TCP services of one user may hold (a port stays with its service across reconnects). `0` = no limit. Administrators have no limit. |
 
 `BURROW_HTTP_PROXY_LISTEN` is empty by default. Set it (for example to `:8443`)
 to start the opt-in host-routed ingress, which serves services at

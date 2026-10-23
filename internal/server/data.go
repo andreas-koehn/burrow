@@ -78,13 +78,6 @@ func newPortAllocator(min, max int) *portAllocator {
 
 // Allocate reserves requested (or, if 0, the first free port in range).
 func (a *portAllocator) Allocate(requested int) (int, error) {
-	return a.allocate(requested, nil)
-}
-
-// allocate is Allocate where an automatic port is never one that held
-// reports as held (another service's port): requested ports are checked by
-// the caller.
-func (a *portAllocator) allocate(requested int, held func(int) bool) (int, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if requested != 0 {
@@ -92,45 +85,139 @@ func (a *portAllocator) allocate(requested int, held func(int) bool) (int, error
 			return 0, fmt.Errorf("port %d out of range %d-%d", requested, a.min, a.max)
 		}
 		if a.used[requested] {
-			return 0, fmt.Errorf("port %d already in use", requested)
+			return 0, portNotAvailable(requested)
 		}
 		a.used[requested] = true
 		return requested, nil
 	}
 	for p := a.min; p <= a.max; p++ {
-		if !a.used[p] && (held == nil || !held(p)) {
+		if !a.used[p] {
 			a.used[p] = true
 			return p, nil
 		}
 	}
-	return 0, errors.New("no free ports in range")
+	return 0, errPortsFull
 }
 
 // inRange reports whether port is one the allocator hands out.
 func (a *portAllocator) inRange(port int) bool { return port >= a.min && port <= a.max }
 
-// allocateTCP picks the public port of a tcp tunnel of serviceID ("" for a
-// tunnel without a service). held maps the ports services hold to the
-// service. The rules keep a service on its port and off the ports of others:
+// errPortsFull is the refusal of an automatic port when none is left.
+var errPortsFull = errors.New("no free ports in range")
+
+// portNotAvailable is the refusal of a port that was asked for and cannot
+// be had. It says nothing of who has it.
+func portNotAvailable(port int) error { return fmt.Errorf("port %d is not available", port) }
+
+// tcpPortPlan is the port a tcp registration got and what the service's hold
+// on it becomes.
+type tcpPortPlan struct {
+	port     int
+	pinned   bool   // the client asked for it
+	takeFrom string // the offline service whose automatic hold is taken over
+	persist  bool   // the hold changes
+}
+
+// tcpPortRequest is what a tcp registration brings to the allocator.
+type tcpPortRequest struct {
+	requested int    // the port the client asked for, 0: any
+	serviceID string // "" for a tunnel without a service
+	userID    string
+	own       int  // the port the service holds, 0: none
+	ownPinned bool // that hold is pinned
+	limit     int  // how many ports the owner may hold, 0: no limit
+	held      map[int]TCPPortHold
+	serving   func(serviceID string) bool // the service has a live tunnel
+}
+
+// allocateTCP picks the public port of a tcp tunnel and reserves it in the
+// allocator. The rules keep a service on its port and off the ports of
+// others:
 //
-//   - a port asked for is given unless another service holds it;
-//   - otherwise the service's own port, when it is in range; while a tunnel
-//     of the service still has it (a second client, or the last session
-//     before it is reaped) the registration is refused and tried again
-//     rather than moved;
-//   - otherwise the lowest free port that no other service holds.
-func (a *portAllocator) allocateTCP(requested int, serviceID string, own int, held map[int]string) (int, error) {
-	other := func(p int) bool { id, ok := held[p]; return ok && id != serviceID }
-	switch {
-	case requested != 0:
-		if other(requested) {
-			return 0, fmt.Errorf("port %d is held by another service", requested)
-		}
-		return a.allocate(requested, nil)
-	case own != 0 && a.inRange(own):
-		return a.allocate(own, nil)
+//   - a port asked for is given unless another service's hold is pinned or
+//     that service is online; an automatic hold of an offline service is
+//     taken over (that service gets another port next time). The hold
+//     becomes pinned.
+//   - otherwise the service's own port, when it is in range.
+//   - otherwise the lowest free port that no service holds; when there is
+//     none, the automatic hold of the offline service seen least recently is
+//     reclaimed. Pinned holds are never reclaimed.
+//
+// A service that holds no port yet gets one only while its owner holds fewer
+// than limit. A tunnel without a service (an old client that sends no name)
+// keeps away from every hold and holds nothing itself.
+func (a *portAllocator) allocateTCP(q tcpPortRequest) (tcpPortPlan, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	named := q.serviceID != ""
+	other := func(p int) (TCPPortHold, bool) {
+		h, ok := q.held[p]
+		return h, ok && h.ServiceID != q.serviceID
 	}
-	return a.allocate(0, other)
+	free := func(p int) bool { return a.inRange(p) && !a.used[p] }
+	take := func(p int) { a.used[p] = true }
+	newHold := named && (q.own == 0 || (q.requested == 0 && !a.inRange(q.own)))
+	if newHold && q.limit > 0 && q.own == 0 {
+		n := 0
+		for _, h := range q.held {
+			if h.UserID == q.userID && h.ServiceID != q.serviceID {
+				n++
+			}
+		}
+		if n >= q.limit {
+			return tcpPortPlan{}, fmt.Errorf("port limit reached (%d); delete an unused tcp service", q.limit)
+		}
+	}
+
+	if q.requested != 0 {
+		if !a.inRange(q.requested) {
+			return tcpPortPlan{}, fmt.Errorf("port %d out of range %d-%d", q.requested, a.min, a.max)
+		}
+		plan := tcpPortPlan{port: q.requested, pinned: named}
+		if h, ok := other(q.requested); ok {
+			if !named || h.Pinned || q.serving(h.ServiceID) {
+				return tcpPortPlan{}, portNotAvailable(q.requested)
+			}
+			plan.takeFrom = h.ServiceID
+		}
+		if !free(q.requested) {
+			return tcpPortPlan{}, portNotAvailable(q.requested)
+		}
+		take(q.requested)
+		plan.persist = named && (q.requested != q.own || !q.ownPinned || plan.takeFrom != "")
+		return plan, nil
+	}
+	if named && q.own != 0 && a.inRange(q.own) {
+		if !free(q.own) {
+			return tcpPortPlan{}, portNotAvailable(q.own)
+		}
+		take(q.own)
+		return tcpPortPlan{port: q.own, pinned: q.ownPinned}, nil
+	}
+	for p := a.min; p <= a.max; p++ {
+		if _, held := q.held[p]; free(p) && !held {
+			take(p)
+			return tcpPortPlan{port: p, persist: named}, nil
+		}
+	}
+	if !named {
+		return tcpPortPlan{}, errPortsFull
+	}
+	best, bestSeen := 0, time.Time{}
+	for p := a.min; p <= a.max; p++ {
+		h, ok := other(p)
+		if !ok || h.Pinned || !free(p) || q.serving(h.ServiceID) {
+			continue
+		}
+		if best == 0 || h.LastSeen.Before(bestSeen) {
+			best, bestSeen = p, h.LastSeen
+		}
+	}
+	if best == 0 {
+		return tcpPortPlan{}, errPortsFull
+	}
+	take(best)
+	return tcpPortPlan{port: best, takeFrom: q.held[best].ServiceID, persist: true}, nil
 }
 
 // Release returns a port to the pool.

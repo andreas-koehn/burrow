@@ -633,7 +633,7 @@ func newRootCmd() *cobra.Command {
 				ServiceRecorder: st,
 				// v0.3.0: HTTP tunnel service identity + subdomain resolver;
 				// v0.13.0: tcp tunnels are services too, with sticky ports.
-				Services:   serviceResolverAdapter{db: db.Wrap(database), authDomain: proxyAuthDomain},
+				Services:   serviceResolverAdapter{db: db.Wrap(database), authDomain: proxyAuthDomain, tcpPortsPerUser: cfg.TCPPortsPerUser},
 				ConnLog:    serverConnLogAdapter{sink: connLogSink},
 				AuthDomain: proxyAuthDomain,
 				// Tunnel addresses are on the services host when one is set.

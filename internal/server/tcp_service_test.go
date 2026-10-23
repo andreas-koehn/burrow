@@ -21,28 +21,35 @@ import (
 )
 
 // tcpResolver is a TCPServiceResolver over an in-memory table: one service
-// per name, the ports the services hold, and names that belong to an http
-// service.
+// per name, the holds on ports, names that belong to an http service, and
+// when each service was last served (it is also the ServiceRecorder).
 type tcpResolver struct {
 	mu       sync.Mutex
 	ids      map[string]string // name → service id
-	ports    map[int]string    // port → service id
+	holds    map[int]TCPPortHold
+	seen     map[string]time.Time
 	httpName map[string]bool
-	setPorts []string // "svc:port" for every SetServiceTCPPort
+	limit    int // TCPPortLimit of every resolution
+	names    []string
 	listErr  error
+	resErr   error
 }
 
 func newTCPResolver() *tcpResolver {
-	return &tcpResolver{ids: map[string]string{}, ports: map[int]string{}, httpName: map[string]bool{}}
+	return &tcpResolver{ids: map[string]string{}, holds: map[int]TCPPortHold{}, seen: map[string]time.Time{}, httpName: map[string]bool{}}
 }
 
 func (r *tcpResolver) Resolve(context.Context, string, string, string) (string, string, error) {
 	return "", "", errors.New("Resolve must not be used for tcp")
 }
 
-func (r *tcpResolver) ResolveTCP(_ context.Context, _, name string, _ ResolveOptions) (Resolved, error) {
+func (r *tcpResolver) ResolveTCP(_ context.Context, userID, name string, _ ResolveOptions) (Resolved, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.names = append(r.names, name)
+	if r.resErr != nil {
+		return Resolved{}, r.resErr
+	}
 	if r.httpName[name] {
 		return Resolved{}, &RefusalError{Code: proto.CodeNameInUse, Message: "the name " + name + " is used by an http service"}
 	}
@@ -51,55 +58,78 @@ func (r *tcpResolver) ResolveTCP(_ context.Context, _, name string, _ ResolveOpt
 		id = "svc-" + name
 		r.ids[name] = id
 	}
-	res := Resolved{ServiceID: id, AccessMode: "open", Created: !ok}
-	for p, sid := range r.ports {
-		if sid == id {
-			res.TCPPort = p
+	_, served := r.seen[id]
+	res := Resolved{ServiceID: id, AccessMode: "open", Created: !served, TCPPortLimit: r.limit}
+	for p, h := range r.holds {
+		if h.ServiceID == id {
+			res.TCPPort, res.TCPPortPinned = p, h.Pinned
 		}
 	}
 	return res, nil
 }
 
-func (r *tcpResolver) TCPPortReservations(context.Context) (map[int]string, error) {
+func (r *tcpResolver) TCPPortReservations(context.Context) (map[int]TCPPortHold, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.listErr != nil {
 		return nil, r.listErr
 	}
-	out := map[int]string{}
-	for p, id := range r.ports {
-		out[p] = id
+	out := map[int]TCPPortHold{}
+	for p, h := range r.holds {
+		if h.UserID == "" {
+			h.UserID = "u1"
+		}
+		h.LastSeen = r.seen[h.ServiceID]
+		out[p] = h
 	}
 	return out, nil
 }
 
-func (r *tcpResolver) SetServiceTCPPort(_ context.Context, id string, port int) error {
+func (r *tcpResolver) SetServiceTCPPort(_ context.Context, id string, port int, pinned bool, takeFrom string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for p, sid := range r.ports {
-		if sid == id {
-			delete(r.ports, p)
+	if h, ok := r.holds[port]; ok && h.ServiceID != id {
+		if h.ServiceID != takeFrom || h.Pinned {
+			return ErrTCPPortTaken
+		}
+		delete(r.holds, port)
+	}
+	for p, h := range r.holds {
+		if h.ServiceID == id {
+			delete(r.holds, p)
 		}
 	}
 	if port != 0 {
-		r.ports[port] = id
+		r.holds[port] = TCPPortHold{ServiceID: id, UserID: "u1", Pinned: pinned}
 	}
-	r.setPorts = append(r.setPorts, id+":"+itoa(port))
 	return nil
 }
 
-func (r *tcpResolver) portOf(id string) int {
+func (r *tcpResolver) TouchServiceLastSeen(_ context.Context, id, _ string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	for p, sid := range r.ports {
-		if sid == id {
-			return p
-		}
-	}
-	return 0
+	r.seen[id] = time.Now()
+	r.mu.Unlock()
+	return nil
 }
 
-func itoa(n int) string { return (&net.TCPAddr{Port: n}).String()[1:] }
+func (r *tcpResolver) hold(id string) (port int, pinned bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for p, h := range r.holds {
+		if h.ServiceID == id {
+			return p, h.Pinned
+		}
+	}
+	return 0, false
+}
+
+func (r *tcpResolver) portOf(id string) int { p, _ := r.hold(id); return p }
+
+func (r *tcpResolver) resolved() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.names...)
+}
 
 // recConnLog records the connection-log entries it is given.
 type recConnLog struct {
@@ -217,28 +247,108 @@ func TestRegisterTCP_ServiceAndStickyPort(t *testing.T) {
 	}
 }
 
-// A port another service holds is never handed out: asked for, it is
-// refused, and an automatic port skips it. When every free port is held, a
-// new service gets none.
-func TestRegisterTCP_PortsOfOtherServicesAreKept(t *testing.T) {
+// A pinned port of another service is never handed out: asked for, it is
+// "not available", and an automatic port skips it, also when the pool is
+// full. An automatic hold of an offline service is taken over by a request
+// for its port, and reclaimed when no port is left, the least recently seen
+// first.
+func TestRegisterTCP_PinnedHoldsSurviveAutomaticOnesAreReclaimed(t *testing.T) {
 	res := newTCPResolver()
-	res.ports[19410] = "svc-away"
-	r := tcpRelay(t, 19410, 19411, res, nil)
+	now := time.Now()
+	res.holds[19410] = TCPPortHold{ServiceID: "svc-pin", Pinned: true}
+	res.holds[19411] = TCPPortHold{ServiceID: "svc-newer"}
+	res.holds[19412] = TCPPortHold{ServiceID: "svc-older"}
+	res.seen["svc-pin"] = now.Add(-3 * time.Hour)
+	res.seen["svc-newer"] = now.Add(-time.Hour)
+	res.seen["svc-older"] = now.Add(-2 * time.Hour)
+	r := tcpRelay(t, 19410, 19412, res, nil)
 	c := r.client(nil)
 	defer c.close()
 	rr := c.register(t, proto.TunnelRegister{Name: "pg", Type: "tcp", RemotePort: 19410, LocalAddr: "x"})
+	if rr.OK || rr.Code != proto.CodePortUnavailable || rr.Error != "port 19410 is not available" {
+		t.Fatalf("a pinned port: %+v", rr)
+	}
+	// The pool is full: the automatic hold seen longest ago goes.
+	if rr := c.register(t, proto.TunnelRegister{Name: "pg", Type: "tcp", LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19412 {
+		t.Fatalf("reclaimed: %+v", rr)
+	}
+	if p, pinned := res.hold("svc-pg"); p != 19412 || pinned {
+		t.Fatalf("pg holds %d pinned %v", p, pinned)
+	}
+	if p := res.portOf("svc-older"); p != 0 {
+		t.Fatalf("the displaced service still holds %d", p)
+	}
+	if rr := c.register(t, proto.TunnelRegister{Name: "ssh", Type: "tcp", LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19411 {
+		t.Fatalf("second reclaim: %+v", rr)
+	}
+	rr = c.register(t, proto.TunnelRegister{Name: "vnc", Type: "tcp", LocalAddr: "x"})
 	if rr.OK || rr.Code != proto.CodePortUnavailable {
-		t.Fatalf("a held port: %+v", rr)
+		t.Fatalf("only a pinned hold is left: %+v", rr)
 	}
-	if rr := c.register(t, proto.TunnelRegister{Name: "pg", Type: "tcp", LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19411 {
-		t.Fatalf("automatic port: %+v", rr)
+	if p, pinned := res.hold("svc-pin"); p != 19410 || !pinned {
+		t.Fatalf("the pinned hold: %d %v", p, pinned)
 	}
-	rr = c.register(t, proto.TunnelRegister{Name: "ssh", Type: "tcp", LocalAddr: "x"})
-	if rr.OK || rr.Code != proto.CodePortUnavailable {
-		t.Fatalf("no unheld port left: %+v", rr)
+}
+
+// The restart race: an automatic service takes port N while the client that
+// asks for N is away. While the automatic one is online N is not available;
+// once it is offline the fixed client gets N, pinned, and the automatic one
+// moves on its next registration.
+func TestRegisterTCP_FixedRequestTakesOverAnOfflineAutomaticHold(t *testing.T) {
+	res := newTCPResolver()
+	r := tcpRelay(t, 19480, 19482, res, func(o *Options) { o.ServiceRecorder = res })
+	auto := r.client(nil)
+	if rr := auto.register(t, proto.TunnelRegister{Name: "auto", Type: "tcp", LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19480 {
+		t.Fatalf("auto: %+v", rr)
 	}
-	if p := res.portOf("svc-away"); p != 19410 {
-		t.Fatalf("the away service lost its port: %d", p)
+	fixed := r.client(nil)
+	rr := fixed.register(t, proto.TunnelRegister{Name: "fixed", Type: "tcp", RemotePort: 19480, LocalAddr: "x"})
+	if rr.OK || rr.Code != proto.CodePortUnavailable || rr.Error != "port 19480 is not available" {
+		t.Fatalf("fixed while auto is online: %+v", rr)
+	}
+	auto.close()
+	r.waitFor("auto leaves", func() bool { _, ok := r.srv.LookupTunnelByServiceID("svc-auto"); return !ok })
+	if rr := fixed.register(t, proto.TunnelRegister{Name: "fixed", Type: "tcp", RemotePort: 19480, LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19480 {
+		t.Fatalf("fixed while auto is offline: %+v", rr)
+	}
+	if p, pinned := res.hold("svc-fixed"); p != 19480 || !pinned {
+		t.Fatalf("fixed holds %d pinned %v", p, pinned)
+	}
+	auto = r.client(nil)
+	defer auto.close()
+	if rr := auto.register(t, proto.TunnelRegister{Name: "auto", Type: "tcp", LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19481 {
+		t.Fatalf("auto moved: %+v", rr)
+	}
+	fixed.close()
+}
+
+// A user holds at most TCPPortLimit ports: a service that holds none yet is
+// refused beyond it; the services that hold one keep registering.
+func TestRegisterTCP_PortsPerUserCap(t *testing.T) {
+	res := newTCPResolver()
+	res.limit = 2
+	r := tcpRelay(t, 19485, 19489, res, nil)
+	c := r.client(nil)
+	for _, n := range []string{"a", "b"} {
+		if rr := c.register(t, proto.TunnelRegister{Name: n, Type: "tcp", LocalAddr: "x"}); !rr.OK {
+			t.Fatalf("%s: %+v", n, rr)
+		}
+	}
+	for _, rp := range []int{0, 19489} {
+		rr := c.register(t, proto.TunnelRegister{Name: "c", Type: "tcp", RemotePort: rp, LocalAddr: "x"})
+		if rr.OK || rr.Code != proto.CodePortUnavailable || rr.Error != "port limit reached (2); delete an unused tcp service" {
+			t.Fatalf("over the cap (remote %d): %+v", rp, rr)
+		}
+	}
+	c.close()
+	waitTunnelsGone(t, r)
+	c = r.client(nil)
+	defer c.close()
+	if rr := c.register(t, proto.TunnelRegister{Name: "b", Type: "tcp", RemotePort: 19488, LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19488 {
+		t.Fatalf("a service that holds a port moves: %+v", rr)
+	}
+	if rr := c.register(t, proto.TunnelRegister{Name: "a", Type: "tcp", LocalAddr: "x"}); !rr.OK {
+		t.Fatalf("a service that holds a port: %+v", rr)
 	}
 }
 
@@ -247,14 +357,14 @@ func TestRegisterTCP_PortsOfOtherServicesAreKept(t *testing.T) {
 func TestRegisterTCP_ChosenPortAndPortOutOfRange(t *testing.T) {
 	res := newTCPResolver()
 	res.ids["rdp"] = "svc-rdp"
-	res.ports[18000] = "svc-rdp"
+	res.holds[18000] = TCPPortHold{ServiceID: "svc-rdp"}
 	r := tcpRelay(t, 19420, 19422, res, nil)
 	c := r.client(nil)
 	if rr := c.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19420 {
 		t.Fatalf("out of range: %+v", rr)
 	}
-	if p := res.portOf("svc-rdp"); p != 19420 {
-		t.Fatalf("stored port %d, want 19420", p)
+	if p, pinned := res.hold("svc-rdp"); p != 19420 || pinned {
+		t.Fatalf("stored port %d pinned %v, want 19420 automatic", p, pinned)
 	}
 	c.close()
 	waitTunnelsGone(t, r)
@@ -263,30 +373,116 @@ func TestRegisterTCP_ChosenPortAndPortOutOfRange(t *testing.T) {
 	if rr := c.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", RemotePort: 19422, LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19422 {
 		t.Fatalf("chosen port: %+v", rr)
 	}
-	if p := res.portOf("svc-rdp"); p != 19422 {
-		t.Fatalf("stored port %d, want 19422", p)
+	if p, pinned := res.hold("svc-rdp"); p != 19422 || !pinned {
+		t.Fatalf("stored port %d pinned %v, want 19422 pinned", p, pinned)
 	}
 }
 
-// While the service's port is taken by its own tunnel of another session (a
-// second client, or the last session before it is reaped), a registration
-// that asks for no port is refused and tried again: the port does not hop.
-func TestRegisterTCP_OwnPortStillTaken(t *testing.T) {
+// A tcp service is served by one client at a time: a second registration is
+// refused with service_busy (tried again: it may be the last session of the
+// same client, not reaped yet) and succeeds once the first is gone.
+func TestRegisterTCP_SecondLiveTunnelIsRefused(t *testing.T) {
 	res := newTCPResolver()
 	r := tcpRelay(t, 19430, 19432, res, nil)
 	a := r.client(nil)
-	defer a.close()
 	if rr := a.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19430 {
 		t.Fatalf("first client: %+v", rr)
 	}
 	b := r.client(nil)
 	defer b.close()
-	rr := b.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"})
-	if rr.OK || rr.Code != proto.CodePortUnavailable {
+	rr := b.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", RemotePort: 19431, LocalAddr: "x"})
+	if rr.OK || rr.Code != proto.CodeServiceBusy || rr.Error != `the service "rdp" is already served by another client` {
 		t.Fatalf("second client: %+v", rr)
 	}
 	if p := res.portOf("svc-rdp"); p != 19430 {
 		t.Fatalf("stored port %d, want 19430", p)
+	}
+	a.close()
+	r.waitFor("the first leaves", func() bool { _, ok := r.srv.LookupTunnelByServiceID("svc-rdp"); return !ok })
+	if rr := b.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19430 {
+		t.Fatalf("second client after the first left: %+v", rr)
+	}
+	// Unregistering frees the service for the next registration.
+	if err := proto.WriteMessage(b.ctrl, proto.MsgTunnelUnregister, proto.TunnelUnregister{TunnelID: r.srv.Tunnels()[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	r.waitFor("unregistered", func() bool { return len(r.srv.Tunnels()) == 0 })
+	if rr := b.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"}); !rr.OK {
+		t.Fatalf("after unregister: %+v", rr)
+	}
+}
+
+// An old client without --name sends no name: such tunnels have no service,
+// as before, and each gets its own port, freed when it goes.
+func TestRegisterTCP_UnnamedTunnelsKeepTheOldPath(t *testing.T) {
+	res := newTCPResolver()
+	res.holds[19435] = TCPPortHold{ServiceID: "svc-pin", Pinned: true}
+	r := tcpRelay(t, 19435, 19437, res, nil)
+	c := r.client(nil)
+	ports := map[int]bool{}
+	for i := 0; i < 2; i++ {
+		rr := c.register(t, proto.TunnelRegister{Type: "tcp", LocalAddr: "x"})
+		if !rr.OK || rr.RemotePort == 19435 {
+			t.Fatalf("unnamed %d: %+v", i, rr)
+		}
+		ports[rr.RemotePort] = true
+	}
+	if len(ports) != 2 {
+		t.Fatalf("ports %v", ports)
+	}
+	for _, tn := range r.srv.Tunnels() {
+		if tn.ServiceID != "" {
+			t.Fatalf("an unnamed tunnel has service %q", tn.ServiceID)
+		}
+	}
+	if got := res.resolved(); len(got) != 0 {
+		t.Fatalf("resolved %v", got)
+	}
+	if len(res.holds) != 1 {
+		t.Fatalf("holds %v", res.holds)
+	}
+	c.close()
+	waitTunnelsGone(t, r)
+	c = r.client(nil)
+	defer c.close()
+	if rr := c.register(t, proto.TunnelRegister{Type: "tcp", LocalAddr: "x"}); !rr.OK || rr.RemotePort != 19436 {
+		t.Fatalf("the ports were freed: %+v", rr)
+	}
+}
+
+// Created is reported until a registration of the service succeeds: one that
+// fails for want of a port does not use it up.
+func TestRegisterTCP_CreatedUntilServed(t *testing.T) {
+	res := newTCPResolver()
+	res.holds[19438] = TCPPortHold{ServiceID: "svc-pin", Pinned: true}
+	r := tcpRelay(t, 19438, 19438, res, func(o *Options) { o.ServiceRecorder = res })
+	c := r.client(nil)
+	if rr := c.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"}); rr.OK {
+		t.Fatalf("no port: %+v", rr)
+	}
+	res.mu.Lock()
+	delete(res.holds, 19438)
+	res.mu.Unlock()
+	if rr := c.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	c.close()
+	waitTunnelsGone(t, r)
+	c = r.client(nil)
+	defer c.close()
+	if rr := c.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"}); !rr.OK {
+		t.Fatalf("again: %+v", rr)
+	}
+	var created []bool
+	r.obs.mu.Lock()
+	for _, e := range r.obs.sessions {
+		if e.Kind == observe.TunnelOpened {
+			created = append(created, e.ServiceCreated)
+		}
+	}
+	r.obs.mu.Unlock()
+	if !reflect.DeepEqual(created, []bool{true, false}) {
+		t.Fatalf("ServiceCreated of the openings: %v", created)
 	}
 }
 
@@ -312,17 +508,28 @@ func TestRegisterTCP_NameInUse(t *testing.T) {
 	r.waitFor("the refusal is told", func() bool { return r.count(observe.TunnelRefused+":tcp:"+proto.CodeNameInUse) == 1 })
 }
 
-// Without the port reservations a registration cannot know which ports are
-// held: it is refused, and tried again.
-func TestRegisterTCP_ReservationsUnreadable(t *testing.T) {
-	res := newTCPResolver()
-	res.listErr = errors.New("db down")
-	r := tcpRelay(t, 19445, 19445, res, nil)
-	c := r.client(nil)
-	defer c.close()
-	rr := c.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"})
-	if rr.OK || rr.Code != proto.CodeInternal {
-		t.Fatalf("answer: %+v", rr)
+// A failure of the store is refused with a text that names nothing of it,
+// and tried again: without the holds a port of another service could be
+// handed out.
+func TestRegisterTCP_StoreFailuresSayNothingOfTheStore(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		edit func(*tcpResolver)
+	}{
+		{"holds unreadable", func(r *tcpResolver) { r.listErr = errors.New("pq: connection refused at 10.0.0.5:5432") }},
+		{"resolve failed", func(r *tcpResolver) { r.resErr = errors.New("resolve service: list: pq: connection refused") }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			res := newTCPResolver()
+			c.edit(res)
+			r := tcpRelay(t, 19445, 19445, res, nil)
+			cl := r.client(nil)
+			defer cl.close()
+			rr := cl.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"})
+			if rr.OK || rr.Code != proto.CodeInternal || rr.Error != "the relay could not look up the service; try again later" {
+				t.Fatalf("answer: %+v", rr)
+			}
+		})
 	}
 }
 
