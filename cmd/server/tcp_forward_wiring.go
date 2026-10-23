@@ -31,6 +31,11 @@ type forwardDB interface {
 // access policy, which for a tcp service is the forward policy (empty: the
 // owner alone). A suspended user reaches nothing. Every read is made on every
 // open, so a change of role or policy applies to the next stream.
+//
+// A target that does not exist reads a policy too (of no service) before it
+// is refused, so that an absent service and a denied one cost the same: the
+// answer is not_found for both, and its timing must not tell them apart.
+// The owner's own target reads none; that is no refusal.
 type forwardAuthorizer struct{ db forwardDB }
 
 func (a forwardAuthorizer) AuthorizeForward(ctx context.Context, userID, target string) (server.ForwardTarget, error) {
@@ -49,10 +54,13 @@ func (a forwardAuthorizer) AuthorizeForward(ctx context.Context, userID, target 
 		return server.ForwardTarget{}, err
 	}
 	if !found {
+		if _, err := a.db.GetAccessPolicy(ctx, noService); err != nil {
+			return server.ForwardTarget{}, fmt.Errorf("forward: access policy: %w", err)
+		}
 		return server.ForwardTarget{}, server.ErrForwardNotFound
 	}
-	t := server.ForwardTarget{ServiceID: svc.ID, Name: svc.Name}
-	if svc.UserID == userID {
+	t := server.ForwardTarget{ServiceID: svc.ID, Name: svc.Name, Owner: svc.UserID == userID}
+	if t.Owner {
 		return t, nil
 	}
 	roles, err := a.db.GetAccessPolicy(ctx, svc.ID)
@@ -66,6 +74,10 @@ func (a forwardAuthorizer) AuthorizeForward(ctx context.Context, userID, target 
 	}
 	return t, server.ErrForwardDenied
 }
+
+// noService is the id whose policy an absent target reads: no service has
+// it, so the read finds no row, as for a service with an empty policy.
+const noService = "00000000-0000-0000-0000-000000000000"
 
 // find resolves target to a tcp service.
 func (a forwardAuthorizer) find(ctx context.Context, userID, target string) (db.Service, bool, error) {

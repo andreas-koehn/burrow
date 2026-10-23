@@ -36,6 +36,8 @@ import (
 // ForwardTarget is the tcp service a forward reaches.
 type ForwardTarget struct {
 	ServiceID, Name string
+	// Owner: the caller owns the service.
+	Owner bool
 }
 
 // ErrForwardNotFound: no tcp service answers to the target. ErrForwardDenied:
@@ -62,6 +64,9 @@ const (
 	forwardOpenBurst      = 10
 	forwardOpensPerMinute = 30
 	forwardMaxActive      = 16
+	// forwardPerUser is how many forward streams one user who is not the
+	// owner may have open to one service.
+	forwardPerUser = 4
 	// forwardMaxTarget bounds the target a client may name.
 	forwardMaxTarget = 200
 	// forwardAuthTimeout bounds the authorization of one open.
@@ -116,6 +121,13 @@ func (l *forwardLimits) admit() bool {
 	l.tokens--
 	l.active++
 	return true
+}
+
+// activeCount is how many opens are under way or open (tests).
+func (l *forwardLimits) activeCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.active
 }
 
 func (l *forwardLimits) done() {
@@ -330,12 +342,12 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 		return
 	}
 	if tn.limits != nil {
-		if reason := tn.limits.admitForward(); reason != "" {
+		if reason := tn.limits.admitForward(cs.UserID, target.Owner); reason != "" {
 			s.refuseForward(cs, target.ServiceID, reason)
 			refuse(proto.CodeRateLimited, fmt.Sprintf("the service %q has too many connections; try again later", target.Name))
 			return
 		}
-		defer tn.limits.done("")
+		defer tn.limits.doneForward(cs.UserID, target.Owner)
 	}
 
 	started := time.Now()
@@ -346,7 +358,7 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 		})
 	})
 	if tn.limits != nil {
-		tn.limits.paired()
+		tn.limits.pairedForward(target.Owner)
 	}
 	c := &liveConn{
 		id: uuid.NewString(), kind: ConnKindForward, sourceIP: hostOf(cs.RemoteAddr),

@@ -1,8 +1,11 @@
 package server
 
 import (
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -357,15 +360,55 @@ func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn, source string) {
 	s.tcpTraffic(tun, visitor, started, c.in.Load(), c.out.Load(), observe.OutcomeClean, "")
 }
 
+// The first frame of a client-opened stream (stream_open or forward_open) is
+// small: one that declares more than maxFirstFrame bytes is closed before
+// anything is allocated for it. A session may have maxStreamsWaiting streams
+// whose first frame has not come yet; one more is closed at once.
+const (
+	maxFirstFrame     = 4 << 10
+	maxStreamsWaiting = 32
+)
+
+// readFirstFrame reads one frame of at most maxFirstFrame bytes: its length
+// is checked before its body is read or allocated.
+func readFirstFrame(r io.Reader, env *proto.Envelope) error {
+	var hdr [4]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return err
+	}
+	n := binary.BigEndian.Uint32(hdr[:])
+	if n > maxFirstFrame {
+		return fmt.Errorf("first frame of %d bytes, at most %d", n, maxFirstFrame)
+	}
+	body := make([]byte, n)
+	if _, err := io.ReadFull(r, body); err != nil {
+		return err
+	}
+	return json.Unmarshal(body, env)
+}
+
+// forwardsOf is how many forward streams of user (not the owner) the tunnel
+// has open (tests).
+func (l *tcpLimits) forwardsOf(user string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.perUser[user]
+}
+
 // handleDataStream reads the first frame of a freshly-accepted client
 // stream. A StreamHeader hands it to the waiting visitor (it is closed if
 // nobody is waiting); a forward_open is a forward stream (see handleForward)
 // on a relay that takes them. Anything else is closed, which is also what an
 // older relay does with a forward_open.
+//
+// The caller counted the stream in cs.waitingFirst; it is counted out once
+// the first frame is read or has failed.
 func (s *Server) handleDataStream(cs *ClientSession, st *yamux.Stream) {
 	var env proto.Envelope
 	_ = st.SetReadDeadline(time.Now().Add(10 * time.Second))
-	if err := proto.ReadFrame(st, &env); err != nil {
+	err := readFirstFrame(st, &env)
+	cs.waitingFirst.Add(-1)
+	if err != nil {
 		_ = st.Close()
 		return
 	}

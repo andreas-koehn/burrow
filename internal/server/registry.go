@@ -105,6 +105,9 @@ type ClientSession struct {
 	// the open ones, by id (both under mu).
 	fwdLimits *forwardLimits
 	forwards  map[string]*liveConn
+	// waitingFirst counts the client-opened streams whose first frame has
+	// not been read yet (see maxStreamsWaiting).
+	waitingFirst atomic.Int32
 }
 
 // summaryQueue is how many request summaries may wait for one client.

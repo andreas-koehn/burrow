@@ -66,7 +66,7 @@ func (f *fakeForwards) AuthorizeForward(_ context.Context, userID, target string
 	if !ok {
 		return ForwardTarget{}, ErrForwardNotFound
 	}
-	t := ForwardTarget{ServiceID: id, Name: target}
+	t := ForwardTarget{ServiceID: id, Name: target, Owner: userID == "u1"}
 	if userID != "u1" && !f.allowed[userID] {
 		return t, ErrForwardDenied
 	}
@@ -450,7 +450,9 @@ func TestForward_Limits(t *testing.T) {
 		t.Fatalf("another session: %+v", resp)
 	}
 
-	// The tunnel's cap: one connection at most.
+	// The tunnel's cap: one connection at most (for users it allows; the
+	// owner has its own slots, TestForward_TheOwnerIsNeverLockedOut).
+	r.fwd.allow("u3")
 	id := r.res.setMode("rdp", "private")
 	r.res.mu.Lock()
 	r.res.maxConns[id] = 1
@@ -458,13 +460,13 @@ func TestForward_Limits(t *testing.T) {
 	if rr := r.home.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"}); !rr.OK || rr.AccessMode != "private" {
 		t.Fatalf("register: %+v", rr)
 	}
-	owner := r.forwarder("secret")
-	st, resp, _ := owner.open(t, "rdp")
+	friend := r.forwarder("friend")
+	st, resp, _ := friend.open(t, "rdp")
 	if !resp.OK {
 		t.Fatalf("first: %+v", resp)
 	}
 	readN(t, st, 3)
-	if _, resp, _ := owner.open(t, "rdp"); resp.Code != proto.CodeRateLimited {
+	if _, resp, _ := friend.open(t, "rdp"); resp.Code != proto.CodeRateLimited {
 		t.Fatalf("over the tunnel's cap: %+v", resp)
 	}
 	if rows := r.refusedRows(TCPRefusedTunnelFull); len(rows) != 1 || rows[0].Kind != TrafficTCPForward {
@@ -504,5 +506,152 @@ func TestForwardLimits_BurstRefillAndActive(t *testing.T) {
 	l.done()
 	if !l.admit() {
 		t.Fatal("one ended, one may open")
+	}
+}
+
+// rawStream opens a stream on f's session and writes raw bytes on it.
+func (f *forwarder) rawStream(t *testing.T, b []byte) *yamux.Stream {
+	t.Helper()
+	st, err := f.sess.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) > 0 {
+		if _, err := st.Write(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return st
+}
+
+// closedSoon reports whether the relay ends st within d.
+func closedSoon(st *yamux.Stream, d time.Duration) bool {
+	_ = st.SetReadDeadline(time.Now().Add(d))
+	_, err := st.Read(make([]byte, 1))
+	return err == io.EOF
+}
+
+// The first frame of a client-opened stream may declare at most
+// maxFirstFrame bytes: a larger one is closed before its body is read.
+func TestDataStream_FirstFrameIsSmall(t *testing.T) {
+	r := newForwardRelay(t, 19540, nil)
+	f := r.forwarder("secret")
+	hdr := func(n uint32) []byte { return []byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)} }
+	if st := f.rawStream(t, hdr(maxFirstFrame+1)); !closedSoon(st, 2*time.Second) {
+		t.Fatal("a first frame over the cap was waited for")
+	}
+	// At the cap, the relay reads on (and closes at its deadline, since no
+	// body comes): it is not closed at once.
+	if st := f.rawStream(t, hdr(maxFirstFrame)); closedSoon(st, 300*time.Millisecond) {
+		t.Fatal("a first frame at the cap was refused")
+	}
+}
+
+// A session may have maxStreamsWaiting streams that have not sent their
+// first frame; one more is closed at once. When one sends its frame, there
+// is room again.
+func TestDataStream_StreamsWaitingForTheFirstFrame(t *testing.T) {
+	r := newForwardRelay(t, 19541, nil)
+	f := r.forwarder("secret")
+	idle := make([]*yamux.Stream, 0, maxStreamsWaiting)
+	for i := 0; i < maxStreamsWaiting; i++ {
+		idle = append(idle, f.rawStream(t, nil))
+	}
+	// yamux opens a stream with its first write; a window update does it.
+	for _, st := range idle {
+		_, _ = st.Write(nil)
+	}
+	r.waitFor("the idle streams are waiting", func() bool { return r.waitingStreams() == maxStreamsWaiting })
+	over := f.rawStream(t, []byte{0})
+	if !closedSoon(over, 2*time.Second) {
+		t.Fatal("a stream over the limit was kept")
+	}
+	_ = idle[0].Close() // its read ends: one waits less
+	r.waitFor("a slot is free", func() bool { return r.waitingStreams() < maxStreamsWaiting })
+	if _, resp, err := f.open(t, "ghost"); err != nil || resp.Code != proto.CodeNotFound {
+		t.Fatalf("after one went: %+v %v", resp, err)
+	}
+}
+
+// waitingStreams is how many streams of all sessions wait for their first
+// frame.
+func (r *observedRelay) waitingStreams() int {
+	n := 0
+	for _, cs := range r.srv.reg.Sessions() {
+		n += int(cs.waitingFirst.Load())
+	}
+	return n
+}
+
+// The owner keeps a way in: users the policy allows may fill the tunnel's
+// cap, and the owner still forwards. One allowed user holds at most
+// forwardPerUser streams to one service.
+func TestForward_TheOwnerIsNeverLockedOut(t *testing.T) {
+	r := newForwardRelay(t, 19542, nil)
+	id := r.res.setMode("rdp", "private")
+	r.res.mu.Lock()
+	r.res.maxConns[id] = forwardPerUser + 1
+	r.res.mu.Unlock()
+	if rr := r.home.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	r.fwd.allow("u2")
+	r.fwd.allow("u3")
+	other, friend := r.forwarder("other"), r.forwarder("friend")
+	for i := 0; i < forwardPerUser; i++ {
+		if _, resp, _ := friend.open(t, "rdp"); !resp.OK {
+			t.Fatalf("friend %d: %+v", i, resp)
+		}
+	}
+	if _, resp, _ := friend.open(t, "rdp"); resp.Code != proto.CodeRateLimited {
+		t.Fatalf("over the per-user limit: %+v", resp)
+	}
+	if _, resp, _ := other.open(t, "rdp"); !resp.OK {
+		t.Fatalf("other user: %+v", resp)
+	}
+	if _, resp, _ := other.open(t, "rdp"); resp.Code != proto.CodeRateLimited {
+		t.Fatalf("over the tunnel's cap: %+v", resp)
+	}
+	owner := r.forwarder("secret")
+	st, resp, _ := owner.open(t, "rdp")
+	if !resp.OK {
+		t.Fatalf("the owner was locked out: %+v", resp)
+	}
+	if got := readN(t, st, 3); got != "hi " {
+		t.Fatalf("home said %q", got)
+	}
+}
+
+// A forward whose home client never opens the stream ends offline after the
+// pairing timeout, and gives back everything it held: the session's open
+// count, the tunnel's pending and active counts and the per-user count.
+func TestForward_APairingTimeoutReleasesTheLimits(t *testing.T) {
+	fwd := &fakeForwards{allowed: map[string]bool{"u2": true}}
+	res := newTCPResolver()
+	fwd.res = res
+	r := tcpRelay(t, 19543, 19543, res, func(o *Options) {
+		o.TCPAccess, o.ConnLog, o.Auth, o.Forwards = newFakeTCPAccess(), &recConnLog{}, tokenUsers{}, fwd
+	})
+	home := r.client(nil) // never opens a stream
+	if rr := home.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x", Access: "private"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	f := r.forwarder("other")
+	start := time.Now()
+	if _, resp, err := f.open(t, "rdp"); err != nil || resp.Code != proto.CodeOffline {
+		t.Fatalf("open: %+v %v", resp, err)
+	}
+	if d := time.Since(start); d < tcpPairTimeout-time.Second {
+		t.Fatalf("answered after %v", d)
+	}
+	tn, _ := r.srv.LookupTunnelByServiceID("svc-rdp")
+	r.waitFor("the limits are free", func() bool {
+		active, pending := tn.limits.counts()
+		return active == 0 && pending == 0 && tn.limits.forwardsOf("u2") == 0
+	})
+	for _, cs := range r.srv.reg.Sessions() {
+		if l := cs.forwardLimits(); l.activeCount() != 0 {
+			t.Fatalf("session %s still counts %d", cs.SessionID, l.activeCount())
+		}
 	}
 }

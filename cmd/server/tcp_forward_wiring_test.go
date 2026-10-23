@@ -478,3 +478,155 @@ func TestObserver_ForwardOpenedIsAuditedOncePerMinute(t *testing.T) {
 		t.Fatal("the forward actions are not listed")
 	}
 }
+
+// policyCounter is a forwardDB that counts the policy reads.
+type policyCounter struct {
+	forwardDB
+	reads int
+}
+
+func (p *policyCounter) GetAccessPolicy(ctx context.Context, id string) ([]string, error) {
+	p.reads++
+	return p.forwardDB.GetAccessPolicy(ctx, id)
+}
+
+// A refusal costs the same whether the service is absent or denied: both
+// read a policy before not_found. An administrator who does not own the
+// service is a user like another: denied unless the policy names its role.
+// The owner is told it owns it.
+func TestForwardAuthorizer_TimingOwnerAndAdmins(t *testing.T) {
+	x, owner := optionsDB(t)
+	ctx := context.Background()
+	if err := x.CreateUser(ctx, db.User{ID: "u-admin2", Email: "a2@x.com", PasswordHash: "x", Role: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.CreateUser(ctx, db.User{ID: "u-bob", Email: "bob@x.com", PasswordHash: "x", Role: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	rdp, err := serviceResolverAdapter{db: x}.ResolveTCP(ctx, owner, "rdp", server.ResolveOptions{Access: "private"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc := &policyCounter{forwardDB: x}
+	a := forwardAuthorizer{db: pc}
+	if _, err := a.AuthorizeForward(ctx, "u-bob", "no-such-slug"); !errors.Is(err, server.ErrForwardNotFound) || pc.reads != 1 {
+		t.Fatalf("absent: %v, %d policy reads", err, pc.reads)
+	}
+	if _, err := a.AuthorizeForward(ctx, "u-bob", rdp.Slug); !errors.Is(err, server.ErrForwardDenied) || pc.reads != 2 {
+		t.Fatalf("denied: %v, %d policy reads", err, pc.reads)
+	}
+	if _, err := a.AuthorizeForward(ctx, "u-admin2", rdp.Slug); !errors.Is(err, server.ErrForwardDenied) {
+		t.Fatalf("a non-owner admin: %v", err)
+	}
+	if got, err := a.AuthorizeForward(ctx, owner, "rdp"); err != nil || !got.Owner {
+		t.Fatalf("owner: %+v %v", got, err)
+	}
+	if err := x.SetAccessPolicy(ctx, rdp.ServiceID, []string{"user"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := a.AuthorizeForward(ctx, "u-bob", rdp.Slug); err != nil || got.Owner {
+		t.Fatalf("allowed user: %+v %v", got, err)
+	}
+}
+
+// A forward stream lives no longer than its credentials: revoking the token
+// of the session ends it, and so does suspending the user.
+func TestServe_TCPForwardEndsWithItsCredentials(t *testing.T) {
+	r := bootObsRelay(t)
+	echo, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = echo.Close() })
+	go func() {
+		for {
+			c, err := echo.Accept()
+			if err != nil {
+				return
+			}
+			go func() { defer c.Close(); _, _ = io.Copy(c, c) }()
+		}
+	}()
+	mint := func(name string) string {
+		var tok struct {
+			Token string `json:"token"`
+		}
+		r.mustAdmin(http.MethodPost, "/api/v1/tokens", map[string]string{"name": name}, http.StatusCreated, &tok)
+		return tok.Token
+	}
+	homeTok, laptopTok := mint("home"), mint("laptop")
+	stop := r.connectWith(homeTok, client.TunnelSpec{Name: "rdp", Type: "tcp", LocalAddr: echo.Addr().String()})
+	defer stop()
+	alive := func(st *yamux.Stream) bool {
+		_ = st.SetDeadline(time.Now().Add(5 * time.Second))
+		if _, err := st.Write([]byte("x")); err != nil {
+			return false
+		}
+		_, err := io.ReadFull(st, make([]byte, 1))
+		return err == nil
+	}
+	ended := func(st *yamux.Stream) bool {
+		_ = st.SetReadDeadline(time.Now().Add(10 * time.Second))
+		_, err := st.Read(make([]byte, 1))
+		return err != nil
+	}
+
+	laptop := dialForwarder(t, r, laptopTok)
+	st, resp := laptop.open(t, "rdp")
+	if !resp.OK || !alive(st) {
+		t.Fatalf("open: %+v", resp)
+	}
+	var tokens []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	r.mustAdmin(http.MethodGet, "/api/v1/tokens", nil, http.StatusOK, &tokens)
+	for _, tk := range tokens {
+		if tk.Name == "laptop" {
+			r.mustAdmin(http.MethodDelete, "/api/v1/tokens/"+tk.ID, nil, http.StatusNoContent, nil)
+		}
+	}
+	if !ended(st) {
+		t.Fatal("the forward outlived its revoked token")
+	}
+
+	var slug, serviceID string
+	var rows []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Slug string `json:"slug"`
+	}
+	r.mustAdmin(http.MethodGet, "/api/v1/services", nil, http.StatusOK, &rows)
+	for _, s := range rows {
+		if s.Name == "rdp" {
+			slug, serviceID = s.Slug, s.ID
+		}
+	}
+	r.mustAdmin(http.MethodPut, "/api/v1/services/"+serviceID+"/access-policy", map[string]any{"roles": []string{"user"}}, http.StatusNoContent, nil)
+	var bob struct {
+		ID string `json:"id"`
+	}
+	r.mustAdmin(http.MethodPost, "/api/v1/users", map[string]string{"email": "bob@x.com", "password": "password-bob-1", "role": "user"}, http.StatusCreated, &bob)
+	hc, csrf := signIn(t, r.base, "bob@x.com", "password-bob-1")
+	confirmPassword(t, hc, r.base, csrf, "password-bob-1")
+	req, _ := http.NewRequest(http.MethodPost, r.base+"/api/v1/tokens", strings.NewReader(`{"name":"bob-laptop"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrf)
+	hr, err := hc.Do(req)
+	if err != nil || hr.StatusCode != http.StatusCreated {
+		t.Fatalf("bob's token: %v %v", hr, err)
+	}
+	var bobTok struct {
+		Token string `json:"token"`
+	}
+	_ = json.NewDecoder(hr.Body).Decode(&bobTok)
+	_ = hr.Body.Close()
+	bst, bresp := dialForwarder(t, r, bobTok.Token).open(t, slug)
+	if !bresp.OK || !alive(bst) {
+		t.Fatalf("bob: %+v", bresp)
+	}
+	r.mustAdmin(http.MethodPatch, "/api/v1/users/"+bob.ID, map[string]string{"status": "suspended"}, http.StatusNoContent, nil)
+	if !ended(bst) {
+		t.Fatal("the forward outlived its suspended user")
+	}
+}

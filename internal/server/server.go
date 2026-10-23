@@ -567,6 +567,12 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 			if e != nil {
 				return
 			}
+			// Bounded before a goroutine is started for it.
+			if cs.waitingFirst.Add(1) > maxStreamsWaiting {
+				cs.waitingFirst.Add(-1)
+				_ = st.Close()
+				continue
+			}
 			go s.handleDataStream(cs, st)
 		}
 	}()

@@ -235,6 +235,11 @@ type tcpLimits struct {
 	sources  map[string]*tcpSource
 	now      func() time.Time
 	refillAt time.Duration // how long one new connection takes to refill
+	// owners are the owner's forward streams (they count against no cap
+	// but tcpOwnerForwards); perUser the open forward streams of each other
+	// user.
+	owners  int
+	perUser map[string]int
 }
 
 type tcpSource struct {
@@ -304,22 +309,75 @@ func (l *tcpLimits) admit(source string) string {
 	return ""
 }
 
-// admitForward lets a forward stream in, or names why not: it counts against
-// the tunnel's cap and its pending pairings like a visitor, and against no
-// source (a forward is limited per session, see forwardLimits). It ends with
-// paired and done("").
-func (l *tcpLimits) admitForward() string {
+// tcpOwnerForwards is how many forward streams the owner of a service may
+// have open to it, outside its cap: the users it allows (and the visitors of
+// its port) can never lock the owner out.
+const tcpOwnerForwards = 4
+
+// TCPRefusedUserLimit: a user who is not the owner has forwardPerUser
+// streams open to the service.
+const TCPRefusedUserLimit = "user_limit"
+
+// admitForward lets a forward stream of user in, or names why not. The
+// owner's streams count only against tcpOwnerForwards. Another user's count
+// against the tunnel's cap and pending pairings like a visitor, and against
+// forwardPerUser for that user, never against a source (a forward is also
+// limited per session, see forwardLimits). It ends with pairedForward and
+// doneForward.
+func (l *tcpLimits) admitForward(user string, owner bool) string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if owner {
+		if l.owners >= tcpOwnerForwards {
+			return TCPRefusedTunnelFull
+		}
+		l.owners++
+		return ""
+	}
 	if l.active >= l.max {
 		return TCPRefusedTunnelFull
 	}
 	if l.pending >= tcpMaxPending {
 		return TCPRefusedPendingFull
 	}
+	if l.perUser[user] >= forwardPerUser {
+		return TCPRefusedUserLimit
+	}
+	if l.perUser == nil {
+		l.perUser = map[string]int{}
+	}
+	l.perUser[user]++
 	l.active++
 	l.pending++
 	return ""
+}
+
+// pairedForward ends the wait of a forward stream admitted for a user who
+// is not the owner (the owner's do not wait in the pending count).
+func (l *tcpLimits) pairedForward(owner bool) {
+	if !owner {
+		l.paired()
+	}
+}
+
+// doneForward ends a forward stream admitted by admitForward.
+func (l *tcpLimits) doneForward(user string, owner bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if owner {
+		if l.owners > 0 {
+			l.owners--
+		}
+		return
+	}
+	if l.active > 0 {
+		l.active--
+	}
+	if n := l.perUser[user]; n <= 1 {
+		delete(l.perUser, user)
+	} else {
+		l.perUser[user] = n - 1
+	}
 }
 
 func (l *tcpLimits) refill(src *tcpSource, now time.Time) {
