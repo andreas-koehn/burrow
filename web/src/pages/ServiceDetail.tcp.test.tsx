@@ -7,6 +7,8 @@ import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { db, type ServiceRow } from "@/mocks/db";
 import ServiceDetail from "@/pages/ServiceDetail";
+import { ReauthDialog } from "@/components/ReauthDialog";
+import { focusManager } from "@tanstack/react-query";
 
 function addTcp(over: Partial<ServiceRow> = {}): ServiceRow {
   const row: ServiceRow = {
@@ -113,6 +115,24 @@ describe("ServiceDetail of a tcp service", () => {
       expect(within(card).getByText("localhost:13389")).toBeInTheDocument();
       expect(card).toHaveTextContent(/mstsc/);
       expect(card).toHaveTextContent(/no public port/i);
+    });
+
+    it("private on a port that is not RDP: the forward command without the mstsc line", async () => {
+      addTcp({ local_addr: "127.0.0.1:22" });
+      mount();
+      const card = await screen.findByRole("region", { name: "Connect" });
+      expect(within(card).getByText("burrow forward rdp 13389")).toBeInTheDocument();
+      expect(within(card).getByText("localhost:13389")).toBeInTheDocument();
+      expect(card).not.toHaveTextContent(/mstsc/);
+      expect(card).not.toHaveTextContent(/Remote Desktop/);
+    });
+
+    it("open on a port that is not RDP: no mstsc line", async () => {
+      addTcp({ access_mode: "open", remote_port: 9005, local_addr: "127.0.0.1:5900" });
+      mount();
+      const card = await screen.findByRole("region", { name: "Connect" });
+      await within(card).findByText("relay.example.com:9005");
+      expect(card).not.toHaveTextContent(/mstsc/);
     });
 
     it("open: the public address", async () => {
@@ -463,6 +483,71 @@ describe("ServiceDetail of a tcp service", () => {
       }
     });
 
+    it("stops asking once the page is gone", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        addTcp();
+        let calls = 0;
+        server.use(http.get("/api/v1/services/svc_rdp01/connections", () => { calls++; return HttpResponse.json([]); }));
+        const view = mount();
+        await screen.findByText(/No connection is open right now/);
+        view.unmount();
+        const after = calls;
+        await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
+        expect(calls).toBe(after);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not ask while the window is in the background", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        addTcp();
+        let calls = 0;
+        server.use(http.get("/api/v1/services/svc_rdp01/connections", () => { calls++; return HttpResponse.json([]); }));
+        mount();
+        await screen.findByText(/No connection is open right now/);
+        act(() => focusManager.setFocused(false));
+        const hidden = calls;
+        await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
+        expect(calls).toBe(hidden);
+      } finally {
+        act(() => focusManager.setFocused(undefined));
+        vi.useRealTimers();
+      }
+    });
+
+    it("asks for the password when the relay wants it, then disconnects", async () => {
+      addTcp({ access_mode: "ip", remote_port: 9005 });
+      db.serviceConnections.svc_rdp01 = [{ ...visitor, since: since() }];
+      let tries = 0;
+      server.use(http.delete("/api/v1/services/svc_rdp01/connections/c_v1", () => {
+        tries += 1;
+        if (tries === 1) return HttpResponse.json({ error: "reauth_required" }, { status: 403 });
+        db.serviceConnections.svc_rdp01 = [];
+        return new HttpResponse(null, { status: 204 });
+      }));
+      renderApp(
+        <>
+          <Routes><Route path="/services/:id" element={<ServiceDetail />} /></Routes>
+          <ReauthDialog />
+        </>,
+        "/services/svc_rdp01",
+      );
+      await userEvent.click(await screen.findByRole("button", { name: "Disconnect 198.51.100.77" }));
+      await userEvent.click(within(await screen.findByRole("dialog", { name: /Disconnect/ })).getByRole("button", { name: "Disconnect" }));
+      const confirm = await screen.findByRole("dialog", { name: "Confirm your password" });
+      // The password dialog opens over the disconnect dialog: type once focus has moved into it.
+      const input = within(confirm).getByLabelText("Your password");
+      await waitFor(() => expect(input).toHaveFocus());
+      await userEvent.type(input, "password123{Enter}");
+      // Typing the password is slow on a loaded machine: give the retry time.
+      await waitFor(() => expect(tries).toBe(2), { timeout: 5_000 });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), { timeout: 5_000 });
+      await waitFor(() => expect(screen.queryByText("198.51.100.77")).toBeNull(), { timeout: 5_000 });
+    });
+
     it("disconnects one connection after a confirmation", async () => {
       addTcp({ access_mode: "ip", remote_port: 9005 });
       db.serviceConnections.svc_rdp01 = [{ ...visitor, since: since() }];
@@ -516,6 +601,13 @@ describe("ServiceDetail of a tcp service", () => {
       mount();
       const card = await screen.findByRole("region", { name: "Connect" });
       expect(within(card).getByText("burrow forward rdp-x7k2 13389")).toBeInTheDocument();
+    });
+
+    it("falls back to the name when the service has no slug", async () => {
+      addTcp({ slug: "", name: "home-rdp" });
+      mount();
+      const card = await screen.findByRole("region", { name: "Connect" });
+      expect(within(card).getByText("burrow forward home-rdp 13389")).toBeInTheDocument();
     });
   });
 });

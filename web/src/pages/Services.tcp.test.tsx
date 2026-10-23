@@ -42,6 +42,17 @@ describe("Services list: tcp services", () => {
     expect(await within(open).findByText("relay.example.com:9008")).toBeInTheDocument();
   });
 
+  it("a private service's command uses its slug, else its name", async () => {
+    addTcp({ slug: "t3f9a1c07be" });
+    addTcp({ id: "svc_rdp02", name: "rdp-two", slug: "" });
+    renderApp(<Services />, "/services");
+    const table = await screen.findByRole("table", { name: "Services" });
+    const withSlug = within(table).getByText("rdp").closest("tr")!;
+    expect(within(withSlug).getByText("burrow forward t3f9a1c07be 13389")).toBeInTheDocument();
+    const without = within(table).getByText("rdp-two").closest("tr")!;
+    expect(within(without).getByText("burrow forward rdp-two 13389")).toBeInTheDocument();
+  });
+
   it("leaves the address empty while an open service has no port", async () => {
     addTcp({ access_mode: "open", connected: false, remote_port: 0 });
     renderApp(<Services />, "/services");

@@ -34,4 +34,44 @@ describe("forwarding sessions", () => {
     renderApp(<Clients />, "/clients");
     expect(await screen.findByText("2 forwards")).toHaveAttribute("href", `/clients/${db.clients[0].session_id}`);
   });
+
+  it("the client list links to the session that forwards, not the first one", async () => {
+    Object.assign(db.clients[0], { service_count: 0, services: [], forward_count: 0, forwards: [] });
+    db.clients.push({
+      ...db.clients[0], session_id: "sess_forwarder", service_count: 0, services: [], forward_count: 1,
+      forwards: [{ id: "a", service_id: "svc_pg001", service: "postgres", since: since(), bytes_in: 1, bytes_out: 1 }],
+    });
+    renderApp(<Clients />, "/clients");
+    expect(await screen.findByText("1 forward")).toHaveAttribute("href", "/clients/sess_forwarder");
+  });
+
+  it("the client detail of a session that only forwards has no empty Services table", async () => {
+    Object.assign(db.clients[0], { service_count: 0, services: [], forward_count: 1, forwards: [
+      { id: "c_f1", service_id: "svc_pg001", service: "postgres", since: since(), bytes_in: 1, bytes_out: 1 },
+    ] });
+    renderApp(<Routes><Route path="/clients/:id" element={<ClientDetail />} /></Routes>, `/clients/${db.clients[0].session_id}`);
+    await screen.findByRole("table", { name: "Forwards" });
+    expect(screen.queryByRole("table", { name: "Services" })).toBeNull();
+    expect(screen.queryByText("Online, but not serving any service yet.")).toBeNull();
+  });
+
+  it("a relay that omits forwards: the detail shows the services and the list counts them", async () => {
+    const c = db.clients[0] as unknown as Record<string, unknown>;
+    delete c.forwards;
+    delete c.forward_count;
+    renderApp(<Routes><Route path="/clients/:id" element={<ClientDetail />} /></Routes>, `/clients/${db.clients[0].session_id}`);
+    const table = await screen.findByRole("table", { name: "Services" });
+    expect(within(table).getByText("web-staging")).toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "Forwards" })).toBeNull();
+  });
+
+  it("a relay that omits forwards: a session serving nothing shows no forward count", async () => {
+    const c = db.clients[0] as unknown as Record<string, unknown>;
+    delete c.forwards;
+    delete c.forward_count;
+    Object.assign(db.clients[0], { service_count: 0, services: [] });
+    renderApp(<Clients />, "/clients");
+    await screen.findByText("office-box-1");
+    expect(screen.queryByText(/forwards?$/)).toBeNull();
+  });
 });

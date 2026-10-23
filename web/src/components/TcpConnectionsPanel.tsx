@@ -31,6 +31,8 @@ export function TcpConnectionsPanel({ serviceId }: { serviceId: string }) {
     queryKey: ["connection-logs", "service", serviceId],
     queryFn: () => apiFetch<ConnectionLog[]>(`/connection-logs?service_id=${encodeURIComponent(serviceId)}&limit=20`),
     refetchInterval: 15_000,
+    // A hidden tab does not poll; the list is fetched again when the window regains focus.
+    refetchIntervalInBackground: false,
     retry: false,
   });
   const denied = logs.error instanceof ApiError && logs.error.status === 403;

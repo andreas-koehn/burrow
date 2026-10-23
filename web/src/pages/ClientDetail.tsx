@@ -41,6 +41,8 @@ export default function ClientDetail() {
         // The page shows a live session: while it answers, the client is online.
         actions={<StatusBadge state="online" />}
       />
+      {/* A session that only forwards serves nothing: its Forwards table is the page, not an empty Services table. */}
+      {!(data.services.length === 0 && (data.forwards ?? []).length > 0) && (
       <section className="account-section" aria-labelledby="sec-services">
         <div className="section-head"><div className="left"><h2 id="sec-services">Services</h2></div></div>
         <div className="table-wrap">
@@ -77,6 +79,7 @@ export default function ClientDetail() {
           </table>
         </div>
       </section>
+      )}
       {(data.forwards ?? []).length > 0 && (
         <section className="account-section" aria-labelledby="sec-forwards">
           <div className="section-head"><div className="left"><h2 id="sec-forwards">Forwards</h2></div></div>

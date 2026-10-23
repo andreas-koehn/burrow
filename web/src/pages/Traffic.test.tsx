@@ -454,4 +454,22 @@ describe("Traffic: forward rows", () => {
     expect(within(cell.closest("tr")!).getByText("Forward")).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Forward" })).toBeInTheDocument();
   });
+
+  it("the detail of a forward names the client token; other rows have no such line", async () => {
+    db.connectionLogs = [{
+      id: "cl_fwd", kind: "tcp_forward", service_id: "svc_pg001", tunnel_id: "t", user_id: "u1", client_session_id: "s",
+      source_ip: "192.0.2.10", user_agent: "", started_at: new Date().toISOString(), ended_at: new Date().toISOString(),
+      duration_ms: 10, bytes_in: 1, bytes_out: 2, status: "closed_clean", reason: "", token_name: "alice-laptop",
+    }, { ...db.connectionLogs[0]!, id: "cl_plain", token_name: "" }];
+    renderApp(<Traffic />, "/traffic");
+    const cell = await screen.findByText("192.0.2.10");
+    await userEvent.click(within(cell.closest("tr")!).getByRole("button", { name: /^Show details for/ }));
+    const panel = screen.getByRole("region", { name: "Traffic details" });
+    const label = within(panel).getByText("Client token");
+    expect(label.parentElement).toHaveTextContent("alice-laptop");
+    await userEvent.keyboard("{Escape}");
+    const rows = screen.getAllByRole("button", { name: /^Show details for/ });
+    await userEvent.click(rows.find((b) => !b.closest("tr")!.textContent!.includes("192.0.2.10"))!);
+    expect(within(screen.getByRole("region", { name: "Traffic details" })).queryByText("Client token")).toBeNull();
+  });
 });

@@ -29,6 +29,8 @@ export function TcpLiveConnectionsPanel({ serviceId }: { serviceId: string }) {
     queryKey: key,
     queryFn: () => apiFetch<ServiceConnection[]>(`/services/${serviceId}/connections`),
     refetchInterval: REFRESH_MS,
+    // A hidden tab does not poll; the list is fetched again when the window regains focus.
+    refetchIntervalInBackground: false,
     retry: false,
   });
 

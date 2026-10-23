@@ -42,6 +42,8 @@ export function TcpGrantsPanel({ serviceId }: { serviceId: string }) {
     queryKey: ["service", serviceId, "ip-grants"],
     queryFn: () => apiFetch<IpGrant[]>(`/services/${serviceId}/ip-grants`),
     refetchInterval: REFRESH_MS,
+    // A hidden tab does not poll; the list is fetched again when the window regains focus.
+    refetchIntervalInBackground: false,
     retry: false,
   });
 

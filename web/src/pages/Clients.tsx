@@ -51,7 +51,9 @@ function Serves({ client, services }: { client: KnownClient; services: Service[]
     // A session that only forwards serves nothing: the forwards are what it does.
     const f = client.sessions.reduce((sum, x) => sum + (x.forward_count ?? 0), 0);
     if (first && n === 0 && f > 0) {
-      return <Link className="link-inline" to={`/clients/${first.session_id}`}>{f} {f === 1 ? "forward" : "forwards"}</Link>;
+      // The link opens a session whose forwards are listed, not just the first one.
+      const forwarding = client.sessions.find((x) => (x.forward_count ?? 0) > 0) ?? first;
+      return <Link className="link-inline" to={`/clients/${forwarding.session_id}`}>{f} {f === 1 ? "forward" : "forwards"}</Link>;
     }
     if (!first || n === 0) return <>—</>;
     return <Link className="link-inline" to={`/clients/${first.session_id}`}>{n} {n === 1 ? "service" : "services"}</Link>;

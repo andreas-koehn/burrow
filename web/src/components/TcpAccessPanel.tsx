@@ -146,10 +146,16 @@ function ConnectCard({ service, mode }: { service: Service; mode: TcpAccessMode 
             This service has no public port. On the machine you connect from, signed in to Burrow, run:
           </p>
           <CopyableCode text={forwardCommand(target)} label="Copy the forward command" />
-          <p className="muted small">
-            Remote Desktop: start <code>mstsc</code> and connect to <code>localhost:{FORWARD_LOCAL_PORT}</code>.
-            Any other client connects to that address the same way.
-          </p>
+          {rdp ? (
+            <p className="muted small">
+              Remote Desktop: start <code>mstsc</code> and connect to <code>localhost:{FORWARD_LOCAL_PORT}</code>.
+              Any other client connects to that address the same way.
+            </p>
+          ) : (
+            <p className="muted small">
+              Then connect your client to <code>localhost:{FORWARD_LOCAL_PORT}</code>.
+            </p>
+          )}
         </>
       ) : address ? (
         <>
