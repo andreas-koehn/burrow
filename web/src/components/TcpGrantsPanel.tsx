@@ -1,7 +1,7 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, ErrorNotice, Input } from "@/components/ds";
+import { Button, Dialog, ErrorNotice, Input } from "@/components/ds";
 import { RelativeTime } from "@/components/RelativeTime";
 import { remaining, widenCidr } from "@/lib/tcpAccess";
 import type { IpGrant, IpGrantCreated } from "@/lib/contract";
@@ -10,6 +10,16 @@ const PRESETS = [1, 8, 24] as const;
 const FAMILY: Record<IpGrant["family"], string> = { ipv4: "IPv4", ipv6: "IPv6" };
 // The list is asked for again by itself, so a grant that ran out leaves it.
 const REFRESH_MS = 30_000;
+
+/** The clock, moved on every minute so a time left counts down. */
+function useMinuteClock(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  return now;
+}
 
 /**
  * Just-in-time access for a tcp service in IP allowlist mode: the caller's own
@@ -25,6 +35,8 @@ export function TcpGrantsPanel({ serviceId }: { serviceId: string }) {
   const [err, setErr] = useState<string | null>(null);
   const [manual, setManual] = useState("");
   const [manualHours, setManualHours] = useState("8");
+  const [revoking, setRevoking] = useState<IpGrant | null>(null);
+  const now = useMinuteClock();
 
   const grants = useQuery({
     queryKey: ["service", serviceId, "ip-grants"],
@@ -51,9 +63,13 @@ export function TcpGrantsPanel({ serviceId }: { serviceId: string }) {
     mutationFn: (id: string) => apiFetch<void>(`/services/${serviceId}/ip-grants/${encodeURIComponent(id)}`, { method: "DELETE" }),
     onSuccess: () => {
       setErr(null);
+      setRevoking(null);
       void qc.invalidateQueries({ queryKey: ["service", serviceId, "ip-grants"] });
     },
-    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : "Couldn't revoke the grant."),
+    onError: (e: unknown) => {
+      setRevoking(null);
+      setErr(e instanceof ApiError ? e.message : "Couldn't revoke the grant.");
+    },
   });
 
   function submitManual() {
@@ -62,7 +78,8 @@ export function TcpGrantsPanel({ serviceId }: { serviceId: string }) {
     create.mutate({ cidr, hours: Number(manualHours) }, { onSuccess: () => setManual("") });
   }
 
-  const wider = created ? widenCidr(created.grant.cidr) : null;
+  // A private address is the relay's view of a proxy: a wider range would let in the proxy's whole network.
+  const wider = created && !created.grant.warning ? widenCidr(created.grant.cidr) : null;
   const rows = grants.data ?? [];
 
   return (
@@ -136,7 +153,11 @@ export function TcpGrantsPanel({ serviceId }: { serviceId: string }) {
 
       {err && <ErrorNotice role="alert">{err}</ErrorNotice>}
 
-      {rows.length === 0 ? (
+      {grants.error ? (
+        <ErrorNotice role="alert">
+          Couldn&apos;t load the grants.{grants.error instanceof ApiError && ` ${grants.error.message}`}
+        </ErrorNotice>
+      ) : rows.length === 0 ? (
         <p className="muted small">No grants right now.</p>
       ) : (
         <ul aria-label="Active grants" className="col gap-2" style={{ listStyle: "none", padding: 0, margin: 0 }}>
@@ -144,15 +165,14 @@ export function TcpGrantsPanel({ serviceId }: { serviceId: string }) {
             <li key={g.id} className="row row-center gap-3">
               <span className="mono">{g.cidr}</span>
               <span className="muted small">{FAMILY[g.family]}</span>
-              <span className="muted small">{remaining(g.expires_at)}</span>
+              <span className="muted small">{remaining(g.expires_at, now)}</span>
               {g.note && <span className="muted small">{g.note}</span>}
               <Button
                 type="button"
                 variant="secondary"
                 size="sm"
-                disabled={revoke.isPending}
                 aria-label={`Revoke ${g.cidr}`}
-                onClick={() => revoke.mutate(g.id)}
+                onClick={() => setRevoking(g)}
               >
                 Revoke
               </Button>
@@ -160,6 +180,30 @@ export function TcpGrantsPanel({ serviceId }: { serviceId: string }) {
           ))}
         </ul>
       )}
+      <Dialog
+        open={revoking !== null}
+        onOpenChange={(o) => { if (!revoke.isPending && !o) setRevoking(null); }}
+        size="sm"
+        title={`Revoke grant · ${revoking?.cidr ?? ""}`}
+        description={`Stop letting ${revoking?.cidr ?? "this range"} connect?`}
+        footer={
+          <>
+            <Button type="button" variant="secondary" disabled={revoke.isPending} onClick={() => setRevoking(null)}>Cancel</Button>
+            <Button
+              type="button"
+              variant="destructive-solid"
+              disabled={revoke.isPending}
+              onClick={() => revoking && revoke.mutate(revoking.id)}
+            >
+              {revoke.isPending ? "Revoking…" : "Revoke grant"}
+            </Button>
+          </>
+        }
+      >
+        <p className="muted small">
+          New connections from {revoking?.cidr} are refused at once. Connections already open stay.
+        </p>
+      </Dialog>
     </section>
   );
 }

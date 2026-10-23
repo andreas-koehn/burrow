@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { screen, within, waitFor } from "@testing-library/react";
+import { act, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import { http, HttpResponse } from "msw";
@@ -67,12 +67,28 @@ describe("ServiceDetail of a tcp service", () => {
     expect(banner).not.toHaveTextContent(/Remote Desktop|3389|SSH|VNC|Postgres/);
   });
 
-  it("saves the mode and says the client reconnects", async () => {
+  it("says a more restrictive mode applies when the client reconnects", async () => {
+    addTcp({ access_mode: "open", remote_port: 9005 });
+    mount();
+    await userEvent.click(await screen.findByRole("radio", { name: "IP allowlist" }));
+    expect(screen.getByText(/applies when the client reconnects, which it does by itself/i)).toBeInTheDocument();
+    expect(screen.queryByText(/restarted/i)).toBeNull();
+  });
+
+  it("says a more open mode needs the client restarted with the matching --access", async () => {
+    addTcp();
+    mount();
+    await userEvent.click(await screen.findByRole("radio", { name: "IP allowlist" }));
+    expect(screen.getByText(/needs the client to be restarted with --access ip/i)).toBeInTheDocument();
+    expect(screen.getByText(/stops rather than serve a more open mode/i)).toBeInTheDocument();
+    expect(screen.queryByText(/connects again by itself/i)).toBeNull();
+  });
+
+  it("saves the mode", async () => {
     addTcp();
     const spy = vi.spyOn(globalThis, "fetch");
     mount();
     await userEvent.click(await screen.findByRole("radio", { name: "IP allowlist" }));
-    expect(screen.getByText(/disconnects the client, which connects again by itself/i)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Save mode" }));
     await waitFor(() => expect(bodies(spy, "/services/svc_rdp01/access-mode", "PUT")).toEqual([{ access_mode: "ip" }]));
     expect((await screen.findAllByText("IP allowlist")).length).toBeGreaterThan(1);
@@ -121,6 +137,20 @@ describe("ServiceDetail of a tcp service", () => {
       await waitFor(() => expect(bodies(spy, "/services/svc_rdp01/ip-geo", "PUT")).toHaveLength(1));
       expect(bodies(spy, "/services/svc_rdp01/ip-geo", "PUT")[0].allow_cidrs).toEqual(["203.0.113.9"]);
       expect(await within(panel).findByText(/allow 203\.0\.113\.9/)).toBeInTheDocument();
+    });
+
+    it("keeps the dialog open and shows the relay's refusal at the field", async () => {
+      addTcp({ access_mode: "ip", remote_port: 9005 });
+      server.use(http.put("/api/v1/services/svc_rdp01/ip-geo", () =>
+        HttpResponse.json({ error: "cidr 0.0.0.0/0 is too wide" }, { status: 400 })));
+      mount();
+      const panel = await screen.findByRole("region", { name: "Allowed addresses" });
+      await userEvent.click(within(panel).getByRole("button", { name: "Add address" }));
+      await userEvent.type(await screen.findByLabelText("Address or range"), "0.0.0.0/0");
+      await userEvent.click(screen.getByRole("button", { name: "Add" }));
+      const dialog = await screen.findByRole("dialog");
+      expect(await within(dialog).findByText(/too wide/)).toBeInTheDocument();
+      expect(within(dialog).getByLabelText("Address or range")).toHaveValue("0.0.0.0/0");
     });
 
     it("refuses text that is no address", async () => {
@@ -232,10 +262,66 @@ describe("ServiceDetail of a tcp service", () => {
       expect(within(list).getByText("198.51.100.0/24")).toBeInTheDocument();
       expect(list).toHaveTextContent(/1 h 29 min left|1 h 30 min left/);
       await userEvent.click(within(list).getByRole("button", { name: "Revoke 198.51.100.0/24" }));
+      const dialog = await screen.findByRole("dialog", { name: /Revoke grant/ });
+      expect(dialog).toHaveTextContent("198.51.100.0/24");
+      expect(spy.mock.calls.some(([, i]) => (i as RequestInit)?.method === "DELETE")).toBe(false);
+      await userEvent.click(within(dialog).getByRole("button", { name: "Revoke grant" }));
       await waitFor(() => expect(spy.mock.calls.some(([u, i]) =>
         String(u).endsWith("/services/svc_rdp01/ip-grants/g9") && (i as RequestInit)?.method === "DELETE")).toBe(true));
       await waitFor(() => expect(screen.queryByText("198.51.100.0/24")).toBeNull());
       expect(await screen.findByText(/No grants/)).toBeInTheDocument();
+    });
+
+    it("keeps the grant when the revoke is cancelled", async () => {
+      const spy = vi.spyOn(globalThis, "fetch");
+      db.ipGrants.svc_rdp01 = [{
+        id: "g9", cidr: "198.51.100.0/24", family: "ipv4", expires_at: new Date(Date.now() + 90 * 60_000).toISOString(),
+        note: "", created_by: db.me.id, created_at: new Date().toISOString(),
+      }];
+      mountIp();
+      const list = await screen.findByRole("list", { name: "Active grants" });
+      await userEvent.click(within(list).getByRole("button", { name: "Revoke 198.51.100.0/24" }));
+      await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(spy.mock.calls.some(([, i]) => (i as RequestInit)?.method === "DELETE")).toBe(false);
+      expect(screen.getByText("198.51.100.0/24")).toBeInTheDocument();
+    });
+
+    it("shows an error, not an empty list, when the grants cannot be read", async () => {
+      server.use(http.get("/api/v1/services/svc_rdp01/ip-grants", () => HttpResponse.json({ error: "boom" }, { status: 500 })));
+      mountIp();
+      const panel = await screen.findByRole("region", { name: "Allow my address" });
+      expect(await within(panel).findByText(/couldn't load the grants/i)).toBeInTheDocument();
+      expect(within(panel).queryByText(/No grants right now/)).toBeNull();
+    });
+
+    it("offers no widening when the relay warns about the address", async () => {
+      server.use(http.post("/api/v1/services/svc_rdp01/ip-grants", () => HttpResponse.json({
+        id: "g1", cidr: "172.18.0.1/32", family: "ipv4", expires_at: new Date(Date.now() + 3600_000).toISOString(),
+        note: "", created_by: "u", created_at: new Date().toISOString(), from_caller: true, warning: "private address",
+      }, { status: 201 })));
+      mountIp();
+      const panel = await screen.findByRole("region", { name: "Allow my address" });
+      await userEvent.click(within(panel).getByRole("button", { name: "Allow my IP for 1 h" }));
+      await within(panel).findByText("private address");
+      expect(within(panel).queryByRole("button", { name: /Widen to/ })).toBeNull();
+    });
+
+    it("counts the time left down by the minute", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        db.ipGrants.svc_rdp01 = [{
+          id: "g9", cidr: "198.51.100.0/24", family: "ipv4", expires_at: new Date(Date.now() + 90 * 60_000).toISOString(),
+          note: "", created_by: db.me.id, created_at: new Date().toISOString(),
+        }];
+        mountIp();
+        const list = await screen.findByRole("list", { name: "Active grants" });
+        expect(list).toHaveTextContent(/1 h (29|30) min left/);
+        await act(async () => { await vi.advanceTimersByTimeAsync(181_000); });
+        expect(list).toHaveTextContent(/1 h (26|27) min left/);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("shows the relay's refusal", async () => {
@@ -245,6 +331,30 @@ describe("ServiceDetail of a tcp service", () => {
       const panel = await screen.findByRole("region", { name: "Allow my address" });
       await userEvent.click(within(panel).getByRole("button", { name: "Allow my IP for 1 h" }));
       expect(await within(panel).findByRole("alert")).toHaveTextContent("the service has 32 grants");
+    });
+  });
+
+  describe("a user without the permissions", () => {
+    it("sees the mode but cannot change it, and has no address or grant controls", async () => {
+      addTcp({ access_mode: "ip", remote_port: 9005 });
+      db.me = { id: db.me.id, email: "bob@acme.io", role: "operator", permissions: ["tunnels:read:own"] };
+      mount();
+      expect(await screen.findByText(/changing the mode needs the services:configure permission/i)).toBeInTheDocument();
+      expect(screen.queryByRole("radio")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Save mode" })).toBeNull();
+      expect(screen.queryByRole("region", { name: "Allowed addresses" })).toBeNull();
+      expect(screen.queryByRole("region", { name: "Allow my address" })).toBeNull();
+      expect(screen.queryByRole("region", { name: "Who may forward" })).toBeNull();
+      expect(screen.getByText(/ipgeo:manage permission/i)).toBeInTheDocument();
+    });
+
+    it("with only ipgeo:manage may manage addresses but not the mode", async () => {
+      addTcp({ access_mode: "ip", remote_port: 9005 });
+      db.me = { id: db.me.id, email: "bob@acme.io", role: "operator", permissions: ["tunnels:read:own", "ipgeo:manage:own"] };
+      mount();
+      expect(await screen.findByRole("region", { name: "Allow my address" })).toBeInTheDocument();
+      expect(screen.getByRole("region", { name: "Allowed addresses" })).toBeInTheDocument();
+      expect(screen.queryByRole("radio")).toBeNull();
     });
   });
 
@@ -304,6 +414,31 @@ describe("ServiceDetail of a tcp service", () => {
       const live = await within(panel).findByLabelText("Live traffic");
       expect(live).toHaveTextContent("3.0 KiB");
       expect(live).toHaveTextContent("5.0 KiB");
+    });
+  });
+
+  describe("tunnel names shared by several tcp services", () => {
+    it("shows no live traffic when two tcp services have the name", async () => {
+      addTcp({ access_mode: "ip", remote_port: 9005 });
+      addTcp({ id: "svc_rdp02", user_id: "someone_else", access_mode: "ip", remote_port: 9006 });
+      db.clients[0].services.push({ id: "tnl_rdp", name: "rdp", type: "tcp", remote_port: 9005, local_addr: "127.0.0.1:3389", access_mode: "ip", bytes_in: 3072, bytes_out: 5120, total_bytes_in: 1, total_bytes_out: 1 });
+      mount();
+      const panel = await screen.findByRole("region", { name: "Recent connections" });
+      await within(panel).findByText(/Nothing has connected yet/);
+      expect(within(panel).queryByLabelText("Live traffic")).toBeNull();
+    });
+
+    it("prefers the service id a tunnel names", async () => {
+      addTcp({ access_mode: "ip", remote_port: 9005 });
+      addTcp({ id: "svc_rdp02", user_id: "someone_else", access_mode: "ip", remote_port: 9006 });
+      server.use(http.get("/api/v1/tunnels", () => HttpResponse.json([
+        { id: "t1", name: "rdp", type: "tcp", remote_port: 9005, local_addr: "x:3389", bytes_in: 1024, bytes_out: 2048, connected: true, service_id: "svc_rdp01" },
+        { id: "t2", name: "rdp", type: "tcp", remote_port: 9006, local_addr: "x:3389", bytes_in: 7168, bytes_out: 8192, connected: true, service_id: "svc_rdp02" },
+      ])));
+      mount();
+      const live = await screen.findByLabelText("Live traffic");
+      expect(live).toHaveTextContent("1.0 KiB");
+      expect(live).not.toHaveTextContent("7.0 KiB");
     });
   });
 });

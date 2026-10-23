@@ -7,7 +7,7 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Badge, Dialog, Disclosure, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, Segmented, Select, SkeletonRows, SubmitHint, firstMissing } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { formatBytes } from "@/lib/format";
-import { ACCESS_LABEL, forwardCommand } from "@/lib/tcpAccess";
+import { ACCESS_LABEL, forwardCommand, matchTcpService } from "@/lib/tcpAccess";
 import { useRelayHost } from "@/lib/useRelayHost";
 import type { Service, AccessMode, ClientDetail, ClientView } from "@/lib/contract";
 import { ServiceUrl } from "@/components/ServiceUrl";
@@ -20,7 +20,6 @@ import { serviceUrl } from "@/lib/serviceUrl";
 import { useCan } from "@/auth/useCan";
 import { useServicesDomain } from "@/lib/useServicesDomain";
 import { P } from "@/auth/permissions";
-
 
 const ACCESS_MODE_OPTIONS = [
   { value: "open",         label: "Open" },
@@ -174,10 +173,8 @@ export default function Services() {
     const byId = new Map(services.map((s) => [s.id, s]));
     const rows: Row[] = live
       ? (tunnelList ?? []).map((t) => {
-          // An http tunnel names its service; a tcp one is matched by name, as the relay matches them.
-          const s = t.service_id
-            ? byId.get(t.service_id)
-            : t.type === "tcp" ? services.find((x) => x.type === "tcp" && x.name === t.name) : undefined;
+          // A tunnel that names its service is joined by id; a tcp one without it by name, when only one tcp service has it.
+          const s = t.service_id ? byId.get(t.service_id) : matchTcpService(services, t);
           return {
             key: t.id, name: s?.name || t.name || s?.id || "", type: t.type, service: s, tunnel: t,
             // A live tunnel is held by a client right now.

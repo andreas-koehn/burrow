@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Dialog, Input, Select } from "@/components/ds";
+import { isAddrOrCidr } from "@/lib/tcpAccess";
 import type { IpGeoConfig } from "@/lib/contract";
 
 interface GeoStatus {
@@ -11,8 +12,6 @@ interface GeoStatus {
 }
 
 const CIDR_RE = /^[0-9.]+\/\d{1,2}$|^[0-9a-f:]+\/\d{1,3}$/i;
-// A tcp service takes a bare address as well; the relay masks it.
-const ADDR_OR_CIDR_RE = /^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$|^[0-9a-f]*:[0-9a-f:]*(\/\d{1,3})?$/i;
 
 const LIST_OPTIONS = [
   { value: "allow_cidrs", label: "Allow CIDR" },
@@ -58,7 +57,7 @@ export function IPGeoPanel({ serviceId, tcp = false }: { serviceId: string; tcp?
       && data.block_countries.length === 0);
 
   function submitCidr() {
-    if (tcp ? !ADDR_OR_CIDR_RE.test(cidr.trim()) : !CIDR_RE.test(cidr.trim())) {
+    if (tcp ? !isAddrOrCidr(cidr) : !CIDR_RE.test(cidr.trim())) {
       setError(tcp
         ? "That is not an address or range. Use 203.0.113.9, 10.0.0.0/8 or 2001:db8::/32."
         : "Invalid CIDR. Use form 10.0.0.0/8 or fe80::/10.");
@@ -70,10 +69,15 @@ export function IPGeoPanel({ serviceId, tcp = false }: { serviceId: string; tcp?
       enabled: true,
       [list]: [...data[list], cidr.trim()],
     };
+    setError(null);
+    if (tcp) {
+      // The relay judges the prefix length (too wide a range): the dialog stays until it has said yes.
+      save.mutate(next, { onSuccess: () => { setOpen(false); setCidr(""); } });
+      return;
+    }
     save.mutate(next);
     setOpen(false);
     setCidr("");
-    setError(null);
   }
 
   if (tcp) {

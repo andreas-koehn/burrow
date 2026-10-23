@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  ACCESS_LABEL, forwardCommand, localPort, riskyPort, widenCidr, remaining, FORWARD_LOCAL_PORT,
+  ACCESS_LABEL, forwardCommand, isAddrOrCidr, matchTcpService, restrictiveness, localPort, riskyPort, widenCidr, remaining, FORWARD_LOCAL_PORT,
 } from "@/lib/tcpAccess";
 
 describe("tcp access helpers", () => {
@@ -51,5 +51,36 @@ describe("tcp access helpers", () => {
     expect(remaining("2026-10-23T14:00:00Z", now)).toBe("4 h left");
     expect(remaining("2026-10-25T10:00:00Z", now)).toBe("2 d left");
     expect(remaining("2026-10-23T09:00:00Z", now)).toBe("expired");
+  });
+
+  it("accepts an address or a range and nothing looser", () => {
+    for (const ok of ["203.0.113.9", "10.0.0.0/8", "0.0.0.0/0", "2001:db8::/32", "::1", "2001:db8:1:2:3:4:5:6/128", "::ffff:1.2.3.4"]) {
+      expect(isAddrOrCidr(ok), ok).toBe(true);
+    }
+    for (const bad of ["", "not-an-ip", "300.1.1.1", "1.2.3", "1.2.3.4/33", "1.2.3.4/", "2001:db8::/129", "1:2:3:4:5:6:7:8:9", "1::2::3", "12345::1", ":", "g::1", "1.2.3.4/8/8"]) {
+      expect(isAddrOrCidr(bad), bad).toBe(false);
+    }
+  });
+
+  it("orders the modes by how restrictive they are", () => {
+    expect(restrictiveness("open")).toBeLessThan(restrictiveness("ip"));
+    expect(restrictiveness("ip")).toBeLessThan(restrictiveness("private"));
+  });
+
+  describe("matchTcpService", () => {
+    const svc = (id: string, name: string) => ({ id, name, type: "tcp" as const });
+    it("takes the service the tunnel names by id", () => {
+      expect(matchTcpService([svc("a", "rdp"), svc("b", "rdp")], { name: "rdp", type: "tcp", service_id: "b" })?.id).toBe("b");
+    });
+    it("matches one service by name", () => {
+      expect(matchTcpService([svc("a", "rdp"), svc("c", "ssh")], { name: "rdp", type: "tcp" })?.id).toBe("a");
+    });
+    it("leaves the tunnel unjoined when two services share the name", () => {
+      expect(matchTcpService([svc("a", "rdp"), svc("b", "rdp")], { name: "rdp", type: "tcp" })).toBeUndefined();
+    });
+    it("ignores other types and unknown names", () => {
+      expect(matchTcpService([{ id: "h", name: "rdp", type: "http" as const }], { name: "rdp", type: "tcp" })).toBeUndefined();
+      expect(matchTcpService([svc("a", "rdp")], { name: "x", type: "tcp" })).toBeUndefined();
+    });
   });
 });

@@ -8,7 +8,6 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { ACCESS_LABEL } from "@/lib/tcpAccess";
 import type { AccessMode, ClientDetail as ClientDetailT } from "@/lib/contract";
 
-
 const BACK = { to: "/clients", label: "Clients" } as const;
 
 export default function ClientDetail() {

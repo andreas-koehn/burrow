@@ -69,4 +69,15 @@ describe("Services list: tcp services", () => {
     expect(within(row).queryByText(":0")).toBeNull();
     expect(within(row).getByRole("link", { name: "Configure" })).toHaveAttribute("href", "/services/svc_rdp01");
   });
+
+  it("leaves a live tcp connection unjoined when two services share its name", async () => {
+    addTcp({});
+    addTcp({ id: "svc_rdp02", user_id: "someone_else" });
+    db.clients[0].services.push({ id: "tnl_rdp", name: "rdp", type: "tcp", remote_port: 0, local_addr: "127.0.0.1:3389", access_mode: "private", bytes_in: 10, bytes_out: 20, total_bytes_in: 10, total_bytes_out: 20 });
+    renderApp(<Services />, "/services?live=1");
+    const table = await screen.findByRole("table", { name: "Services" });
+    const row = (await within(table).findByText("rdp")).closest("tr")!;
+    expect(within(row).queryByRole("link", { name: "rdp" })).toBeNull();
+    expect(within(row).queryByRole("link", { name: "Configure" })).toBeNull();
+  });
 });

@@ -72,3 +72,59 @@ export function remaining(expiresAt: string, now: number = Date.now()): string {
   if (h < 24) return min % 60 ? `${h} h ${min % 60} min left` : `${h} h left`;
   return `${Math.floor(h / 24)} d left`;
 }
+
+const RESTRICTIVENESS: Partial<Record<AccessMode, number>> = { open: 0, ip: 1, private: 2 };
+
+/** Higher is stricter: a change to a higher value narrows who can reach the service. */
+export function restrictiveness(mode: AccessMode): number {
+  return RESTRICTIVENESS[mode] ?? 0;
+}
+
+function isIPv4(s: string): boolean {
+  const parts = s.split(".");
+  return parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255);
+}
+
+function isIPv6(s: string): boolean {
+  if (!s.includes(":") || s.split("::").length > 2) return false;
+  // An IPv4 tail ("::ffff:1.2.3.4") counts as two groups.
+  const last = s.slice(s.lastIndexOf(":") + 1);
+  let head = s;
+  if (last.includes(".")) {
+    if (!isIPv4(last)) return false;
+    head = s.slice(0, s.lastIndexOf(":") + 1) + "0:0";
+  }
+  const compressed = head.includes("::");
+  const groups = head.split(/::|:/).filter((g, i, a) => !(g === "" && (compressed || i === a.length - 1)));
+  if (!groups.every((g) => /^[0-9a-f]{1,4}$/i.test(g))) return false;
+  const n = groups.length;
+  return compressed ? n < 8 : n === 8;
+}
+
+/** An address or a range as the relay takes it: IPv4 or IPv6, with an optional prefix length. */
+export function isAddrOrCidr(text: string): boolean {
+  const parts = text.trim().split("/");
+  if (parts.length > 2) return false;
+  const [addr, bits] = parts;
+  let max: number;
+  if (isIPv4(addr)) max = 32;
+  else if (isIPv6(addr)) max = 128;
+  else return false;
+  if (bits === undefined) return true;
+  return /^\d{1,3}$/.test(bits) && Number(bits) <= max;
+}
+
+interface TunnelRef { name: string; type: string; service_id?: string }
+interface ServiceRef { id: string; name: string; type: string }
+
+/**
+ * The tcp service a live tunnel serves. A tunnel that names its service id is
+ * taken at its word; otherwise the name decides, and only when exactly one tcp
+ * service has it: names are per owner, so two services may share one.
+ */
+export function matchTcpService<S extends ServiceRef>(services: readonly S[], tunnel: TunnelRef): S | undefined {
+  if (tunnel.service_id) return services.find((s) => s.id === tunnel.service_id);
+  if (tunnel.type !== "tcp") return undefined;
+  const named = services.filter((s) => s.type === "tcp" && s.name === tunnel.name);
+  return named.length === 1 ? named[0] : undefined;
+}

@@ -1,6 +1,8 @@
 import { useId, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
 import { AccessModeCard, Button, ErrorNotice } from "@/components/ds";
 import { AccessPolicyEditor } from "@/components/AccessPolicyEditor";
 import { CopyableCode } from "@/components/CopyableCode";
@@ -8,7 +10,7 @@ import { IPGeoPanel } from "@/components/IPGeoPanel";
 import { TcpConnectionsPanel } from "@/components/TcpConnectionsPanel";
 import { TcpGrantsPanel } from "@/components/TcpGrantsPanel";
 import { useRelayHost } from "@/lib/useRelayHost";
-import { FORWARD_LOCAL_PORT, RISKY_PORTS, forwardCommand, riskyPort, localPort } from "@/lib/tcpAccess";
+import { ACCESS_LABEL, FORWARD_LOCAL_PORT, RISKY_PORTS, forwardCommand, restrictiveness, riskyPort, localPort } from "@/lib/tcpAccess";
 import type { Service, TcpAccessMode } from "@/lib/contract";
 
 const MODES: { value: TcpAccessMode; title: string; help: string }[] = [
@@ -47,11 +49,23 @@ export function TcpAccessPanel({ service }: { service: Service }) {
   });
 
   const risky = riskyPort(service.local_addr);
+  // The relay checks both on every write; the page does not offer what would be refused.
+  const canConfigure = useCan([P.servicesConfigureOwn, P.servicesConfigureAny]);
+  const canAddresses = useCan([P.ipgeoManageOwn, P.ipgeoManageAny]);
+  // The relay applies a stricter mode when the client re-registers; a looser one it only
+  // applies to a client that asked for it, and a client started with a stricter --access stops.
+  const stricter = restrictiveness(selected) > restrictiveness(saved);
 
   return (
     <div className="col gap-4">
       <section className="card col gap-3" aria-labelledby={modeTitleId}>
         <h2 id={modeTitleId}>Access mode</h2>
+        {!canConfigure ? (
+          <p>
+            <span className="muted">Mode: </span>{ACCESS_LABEL[saved]}.{" "}
+            <span className="muted">Changing the mode needs the services:configure permission.</span>
+          </p>
+        ) : (<>
         <div role="radiogroup" aria-label="Access mode" className="mode-list">
           {MODES.map((m) => (
             <AccessModeCard
@@ -74,7 +88,9 @@ export function TcpAccessPanel({ service }: { service: Service }) {
         )}
         {selected !== saved && (
           <p className="muted small">
-            Changing the mode disconnects the client, which connects again by itself.
+            {stricter
+              ? "A stricter mode applies when the client reconnects, which it does by itself."
+              : `A more open mode needs the client to be restarted with --access ${selected}. A client started with a stricter --access stops rather than serve a more open mode.`}
           </p>
         )}
         {err && <p role="alert" className="notice-inline">{err}</p>}
@@ -89,18 +105,24 @@ export function TcpAccessPanel({ service }: { service: Service }) {
             {save.isPending ? "Saving…" : "Save mode"}
           </Button>
         </div>
+        </>)}
       </section>
 
       <ConnectCard service={service} mode={saved} />
 
-      {saved === "ip" && <IPGeoPanel serviceId={service.id} tcp />}
-      {saved === "ip" && <TcpGrantsPanel serviceId={service.id} />}
+      {saved === "ip" && canAddresses && <IPGeoPanel serviceId={service.id} tcp />}
+      {saved === "ip" && canAddresses && <TcpGrantsPanel serviceId={service.id} />}
+      {saved === "ip" && !canAddresses && (
+        <p className="muted small">Managing the allowed addresses and grants needs the ipgeo:manage permission.</p>
+      )}
 
-      <section className="card col gap-2" aria-label="Who may forward">
-        <AccessPolicyEditor serviceId={service.id} forward />
-      </section>
+      {canConfigure && (
+        <section className="card col gap-2" aria-label="Who may forward">
+          <AccessPolicyEditor serviceId={service.id} forward />
+        </section>
+      )}
 
-      <TcpConnectionsPanel serviceId={service.id} name={service.name} />
+      <TcpConnectionsPanel serviceId={service.id} />
     </div>
   );
 }

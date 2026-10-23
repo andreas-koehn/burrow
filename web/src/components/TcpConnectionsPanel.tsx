@@ -3,10 +3,11 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
+import { matchTcpService } from "@/lib/tcpAccess";
 import { RelativeTime } from "@/components/RelativeTime";
-import type { ConnectionLog } from "@/lib/contract";
+import type { ConnectionLog, Service } from "@/lib/contract";
 
-interface LiveTunnel { name: string; type: string; bytes_in: number; bytes_out: number; connected: boolean }
+interface LiveTunnel { id: string; service_id?: string; name: string; type: string; bytes_in: number; bytes_out: number; connected: boolean }
 
 const STATUS: Record<ConnectionLog["status"], string> = {
   closed_clean: "closed",
@@ -28,7 +29,7 @@ function duration(ms: number): string {
  * connection of its client) and the connection log of the service. A connection
  * enters the log when it ends, so the panel does not list the ones still open.
  */
-export function TcpConnectionsPanel({ serviceId, name }: { serviceId: string; name: string }) {
+export function TcpConnectionsPanel({ serviceId }: { serviceId: string }) {
   const titleId = useId();
   const logs = useQuery({
     queryKey: ["connection-logs", "service", serviceId],
@@ -43,7 +44,16 @@ export function TcpConnectionsPanel({ serviceId, name }: { serviceId: string; na
     refetchInterval: 15_000,
     retry: false,
   });
-  const live = (tunnels.data ?? []).find((t) => t.type === "tcp" && t.name === name && t.connected);
+  // Names are per owner, so two services may share one: a tunnel counts only when it names this
+  // service, or when this is the one tcp service of that name.
+  const services = useQuery({
+    queryKey: ["services"],
+    queryFn: () => apiFetch<Service[]>("/services"),
+    retry: false,
+  });
+  const live = services.data
+    ? (tunnels.data ?? []).find((t) => t.type === "tcp" && t.connected && matchTcpService(services.data, t)?.id === serviceId)
+    : undefined;
   const denied = logs.error instanceof ApiError && logs.error.status === 403;
   const rows = logs.data ?? [];
 

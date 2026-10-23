@@ -18,7 +18,6 @@ import { useServicesDomain } from "@/lib/useServicesDomain";
 import { ACCESS_LABEL } from "@/lib/tcpAccess";
 import type { ServiceDetail as ServiceDetailType, AiProvider } from "@/lib/contract";
 
-
 const BACK = { to: "/services", label: "Services" } as const;
 const TAB_VALUES = ["access", "api-keys", "upstream-key"];
 // How often a service nobody serves is asked for again: the reader has the command
