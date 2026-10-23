@@ -27,8 +27,8 @@ type HandshakeOptions struct {
 	// Capabilities are announced to a client that is let in.
 	Capabilities []string
 	// RateLimited: the source of the connection has failed too often. Its
-	// auth_request is answered with proto.CodeRateLimited, and the token is
-	// not looked at.
+	// token is still checked, so a valid client behind the same address gets
+	// in; a token that is not valid is answered with proto.CodeRateLimited.
 	RateLimited bool
 }
 
@@ -57,13 +57,6 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 		_ = proto.WriteMessage(conn, proto.MsgError, proto.Error{Message: "bad auth payload", Code: proto.CodeBadRequest})
 		return nil, authFailure{err}
 	}
-	if o.RateLimited {
-		_ = proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{
-			OK: false, Code: proto.CodeRateLimited,
-			Error: "too many failed sign-ins from this address; try again in a few minutes",
-		})
-		return nil, errors.New("auth refused: too many failed sign-ins from this address")
-	}
 	var userID, tokenID, tokenName string
 	var err error
 	if ta, ok := auth.(interface {
@@ -78,6 +71,19 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 		userID, err = auth.Authenticate(context.Background(), ar.Token)
 	}
 	if err != nil {
+		// Only a token the authenticator rejected is a failed sign-in; a
+		// failure of the store is not the client's, and is not counted.
+		if !errors.Is(err, ErrTokenInvalid) {
+			_ = proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{OK: false, Error: "invalid token", Code: proto.CodeInvalidToken})
+			return nil, fmt.Errorf("token auth: %w", err)
+		}
+		if o.RateLimited {
+			_ = proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{
+				OK: false, Code: proto.CodeRateLimited,
+				Error: "too many failed sign-ins from this address; try again in a few minutes",
+			})
+			return nil, authFailure{fmt.Errorf("token auth, address limited: %w", err)}
+		}
 		_ = proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{OK: false, Error: "invalid token", Code: proto.CodeInvalidToken})
 		return nil, authFailure{fmt.Errorf("token auth: %w", err)}
 	}
@@ -409,7 +415,11 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 	}
 	if mode == TCPAccessPrivate {
 		// No listener and no port. An automatic hold the service kept from
-		// an earlier mode is given back to the pool; a pinned one stays.
+		// an earlier mode is given back to the pool. A pinned hold (the
+		// client asked for that port with --remote) is kept on purpose: it
+		// goes only with the service or a new request of its own (P01), so
+		// that switching back to open or ip gets the same port. It opens
+		// nothing while the service is private.
 		if svc.tcp != nil && svc.res.TCPPort != 0 && !svc.res.TCPPortPinned {
 			ctx, cancel := context.WithTimeout(context.Background(), sessionRecordTimeout)
 			if err := svc.tcp.SetServiceTCPPort(ctx, serviceID, 0, false, ""); err != nil {
@@ -443,8 +453,14 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 			resp.Ignored = []string{"slug"} // a tcp service has no slug
 		}
 	} else {
-		// No service: neither wish could be applied (an access other than
-		// open was refused above).
+		// No service: a slug cannot be applied. An unnamed tunnel on a relay
+		// that keeps tcp services can only have asked for open (any other
+		// access was refused above), which it is: that is not ignored. A
+		// relay without tcp services applies no access at all and says so,
+		// as an older relay does.
+		if keepsServices {
+			tr.Access = ""
+		}
 		resp.Ignored = ignoredOptions(tr)
 	}
 	_ = cs.SendControl(proto.MsgTunnelRegisterResp, resp)

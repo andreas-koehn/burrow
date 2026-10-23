@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -384,26 +385,35 @@ func TestE2EMCP_WritesLeaveTheAuditTrailOfTheAPI(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create service: %v", err)
 	}
+	// Another service holds a slug, which the tool cannot take.
+	if err := e.st.CreateService(ctx, db.Service{
+		ID: "svc-taken", UserID: e.admin.ID, Name: "taken", Type: "http", Subdomain: "echotaken",
+		AccessMode: "open", APIKeyHeader: "Authorization", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create service: %v", err)
+	}
 	tokenRow, bearer, err := e.st.MintAutomationToken(ctx, e.admin.ID, "admin", "audit-trail", []string{"services:configure:own", "audit:read"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mcpURL := e.serve(t, "burrow.example.com") + mcpserv.EndpointPath
 	const agent = "burrow-e2e-agent/1"
-	setPolicy := func(cs *mcp.ClientSession, wantError bool, body map[string]any) string {
+	// The access policy and the ip rules are no tools (they widen access);
+	// the slug is one, and the API writes its audit row.
+	setSlug := func(cs *mcp.ClientSession, wantError bool, body map[string]any) string {
 		t.Helper()
-		return mcpCall(t, cs, wantError, "service_access_policy_update", map[string]any{"serviceID": serviceID, "body": body})
+		return mcpCall(t, cs, wantError, "service_slug_update", map[string]any{"serviceID": serviceID, "body": body})
 	}
-	policy := func() []string {
+	slug := func() string {
 		t.Helper()
-		roles, err := e.st.GetAccessPolicy(ctx, e.admin.ID, "admin", serviceID)
+		svc, err := e.st.ServiceByID(ctx, serviceID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return roles
+		return svc.Subdomain
 	}
 
-	for _, revision := range []string{"2026-07-28", "2025-11-25"} {
+	for i, revision := range []string{"2026-07-28", "2025-11-25"} {
 		t.Run(revision, func(t *testing.T) {
 			cs := mcpConnectAs(t, mcpURL, mcpBearerTransport{token: bearer, userAgent: agent}, revision)
 			seen := map[string]bool{}
@@ -411,22 +421,23 @@ func TestE2EMCP_WritesLeaveTheAuditTrailOfTheAPI(t *testing.T) {
 				seen[r.ID] = true
 			}
 
-			setPolicy(cs, false, map[string]any{"roles": []string{"admin"}})
+			first, second := fmt.Sprintf("echoaudit%da", i), fmt.Sprintf("echoaudit%db", i)
+			setSlug(cs, false, map[string]any{"slug": first})
 			// Input the REST route refuses is refused, and nothing is stored.
-			if got := setPolicy(cs, true, map[string]any{"roles": []string{"no-such-role"}}); !strings.HasPrefix(got, "400 Bad Request: ") {
-				t.Errorf("unknown role: %q", got)
+			if got := setSlug(cs, true, map[string]any{"slug": "echotaken"}); !strings.HasPrefix(got, "409 Conflict: ") {
+				t.Errorf("taken slug: %q", got)
 			}
-			if got := policy(); len(got) != 1 || got[0] != "admin" {
-				t.Errorf("after the refused call: policy %v", got)
+			if got := slug(); got != first {
+				t.Errorf("after the refused call: slug %q", got)
 			}
-			setPolicy(cs, false, map[string]any{"roles": []string{"admin", "user"}})
-			if got := policy(); len(got) != 2 {
-				t.Errorf("after the second call: policy %v", got)
+			setSlug(cs, false, map[string]any{"slug": second})
+			if got := slug(); got != second {
+				t.Errorf("after the second call: slug %q", got)
 			}
 
 			want := map[string]int{
-				audit.ActionServiceAccessPolicyUpdate: 2,
-				audit.ActionMCPToolCall:               3,
+				audit.ActionServiceSlugChange: 2,
+				audit.ActionMCPToolCall:       3,
 			}
 			got := map[string]int{}
 			requestIDs := map[string]map[string]bool{} // action -> request ids
@@ -462,7 +473,7 @@ func TestE2EMCP_WritesLeaveTheAuditTrailOfTheAPI(t *testing.T) {
 				t.Errorf("new audit rows %v, want only %v", got, want)
 			}
 			// The API's row of a change carries the request id of its MCP row.
-			for id := range requestIDs[audit.ActionServiceAccessPolicyUpdate] {
+			for id := range requestIDs[audit.ActionServiceSlugChange] {
 				if !requestIDs[audit.ActionMCPToolCall][id] {
 					t.Errorf("the API row's request id %q is on no mcp.tool.call row", id)
 				}

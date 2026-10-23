@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -50,6 +51,53 @@ func (x *DB) CreateIPGrant(ctx context.Context, g IPGrant) error {
 		g.ID, g.ServiceID, g.CIDR, g.ExpiresAt.UTC(), g.Note, by, g.CreatedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("create ip grant: %w", err)
+	}
+	return nil
+}
+
+// ErrTooManyIPGrants is returned by CreateIPGrantCapped when the service has
+// its maximum of grants that have not expired.
+var ErrTooManyIPGrants = errors.New("db: the service has its maximum of ip grants")
+
+// ipGrantMu serialises CreateIPGrantCapped in this process. One relay
+// process writes the grants; the lock makes the count and the insert one
+// step for it on SQLite and Postgres alike, whatever the isolation level.
+var ipGrantMu sync.Mutex
+
+// CreateIPGrantCapped inserts a grant unless the service already has max
+// grants that have not expired at now: then ErrTooManyIPGrants, and nothing
+// is inserted. The count and the insert run in one transaction under a
+// process-wide lock, so concurrent calls never leave more than max.
+func (x *DB) CreateIPGrantCapped(ctx context.Context, g IPGrant, max int, now time.Time) error {
+	ipGrantMu.Lock()
+	defer ipGrantMu.Unlock()
+	if g.CreatedAt.IsZero() {
+		g.CreatedAt = now
+	}
+	var by sql.NullString
+	if g.CreatedBy != "" {
+		by = sql.NullString{String: g.CreatedBy, Valid: true}
+	}
+	tx, err := x.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("create ip grant: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var n int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM service_ip_grants WHERE service_id=? AND expires_at > ?`, g.ServiceID, now.UTC()).Scan(&n); err != nil {
+		return fmt.Errorf("create ip grant: count: %w", err)
+	}
+	if n >= max {
+		return ErrTooManyIPGrants
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO service_ip_grants(id, service_id, cidr, expires_at, note, created_by, created_at) VALUES(?,?,?,?,?,?,?)`,
+		g.ID, g.ServiceID, g.CIDR, g.ExpiresAt.UTC(), g.Note, by, g.CreatedAt.UTC()); err != nil {
+		return fmt.Errorf("create ip grant: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("create ip grant: commit: %w", err)
 	}
 	return nil
 }

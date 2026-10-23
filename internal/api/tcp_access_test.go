@@ -6,6 +6,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -37,9 +38,18 @@ type memGrants struct {
 	rows []db.IPGrant
 }
 
-func (m *memGrants) CreateIPGrant(_ context.Context, g db.IPGrant) error {
+func (m *memGrants) CreateIPGrantCapped(_ context.Context, g db.IPGrant, max int, now time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	n := 0
+	for _, r := range m.rows {
+		if r.ServiceID == g.ServiceID && r.ExpiresAt.After(now) {
+			n++
+		}
+	}
+	if n >= max {
+		return db.ErrTooManyIPGrants
+	}
 	m.rows = append(m.rows, g)
 	return nil
 }
@@ -324,6 +334,64 @@ func TestTCPAccess_CapAndListsTellTheRelay(t *testing.T) {
 		t.Fatalf("ip-geo: %d %s", r.StatusCode, readBody(t, r))
 	}
 	if refreshed, _ := a.relay.snapshot(); !slices.Equal(refreshed, []string{"rdp", "rdp"}) {
+		t.Fatalf("relay told %v", refreshed)
+	}
+}
+
+// ip-geo of a tcp service: an allow entry wider than /8 (IPv4) or /32
+// (IPv6) is refused with a 400 and nothing is stored; a change is audited as
+// ipgeo.update with the lists before and after (for http too).
+func TestIPGeo_TCPFloorAndAudit(t *testing.T) {
+	a := newTCPAPI(t, nil)
+	for _, wide := range []string{"0.0.0.0/0", "10.0.0.0/7", "::/0", "2001:db8::/31"} {
+		r := a.c.put(t, "/api/v1/services/rdp/ip-geo", ipGeoReq{AllowCIDRs: []string{wide}})
+		if body := readBody(t, r); r.StatusCode != http.StatusBadRequest || !strings.Contains(body, "/8") {
+			t.Errorf("%s: %d %s", wide, r.StatusCode, body)
+		}
+	}
+	if len(a.ipgeo.rows) != 0 || len(a.audits.events) != 0 {
+		t.Fatalf("a refused list was stored or audited: %v %v", a.ipgeo.rows, a.audits.events)
+	}
+	// /8 and /32 are the widest allowed; an http service keeps its old rules.
+	if r := a.c.put(t, "/api/v1/services/rdp/ip-geo", ipGeoReq{AllowCIDRs: []string{"10.0.0.0/8", "2001:db8::/32"}}); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("at the floor: %d %s", r.StatusCode, readBody(t, r))
+	}
+	if r := a.c.put(t, "/api/v1/services/web/ip-geo", ipGeoReq{Enabled: true, AllowCIDRs: []string{"0.0.0.0/0"}}); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("http: %d %s", r.StatusCode, readBody(t, r))
+	}
+	if r := a.c.put(t, "/api/v1/services/rdp/ip-geo", ipGeoReq{AllowCIDRs: []string{"192.0.2.0/24"}, BlockCIDRs: []string{"192.0.2.66"}}); r.StatusCode != http.StatusNoContent {
+		t.Fatal(r.StatusCode)
+	}
+	if len(a.audits.events) != 3 {
+		t.Fatalf("audit %+v", a.audits.events)
+	}
+	ev := a.audits.events[2]
+	var p struct {
+		From, To struct {
+			Enabled    bool     `json:"enabled"`
+			AllowCIDRs []string `json:"allow_cidrs"`
+			BlockCIDRs []string `json:"block_cidrs"`
+		}
+	}
+	if err := json.Unmarshal(ev.Payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if ev.Action != audit.ActionIPGeoUpdate || ev.SubjectID != "rdp" || ev.SubjectLabel != "name-rdp" ||
+		!slices.Equal(p.From.AllowCIDRs, []string{"10.0.0.0/8", "2001:db8::/32"}) ||
+		!slices.Equal(p.To.AllowCIDRs, []string{"192.0.2.0/24"}) || !slices.Equal(p.To.BlockCIDRs, []string{"192.0.2.66"}) {
+		t.Fatalf("audit %+v payload %s", ev, ev.Payload)
+	}
+}
+
+// A failed read of the service before an access-mode write does not leave
+// the relay untold: a change of a tcp mode is applied by the refresh.
+func TestTCPAccessMode_RefreshEvenWhenTheBeforeReadFails(t *testing.T) {
+	a := newTCPAPI(t, nil)
+	a.svcs.getSvcErr = errors.New("database is busy")
+	if r := a.c.put(t, "/api/v1/services/rdp/access-mode", setAccessModeReq{AccessMode: "open"}); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("status %d %s", r.StatusCode, readBody(t, r))
+	}
+	if refreshed, _ := a.relay.snapshot(); !slices.Equal(refreshed, []string{"rdp"}) {
 		t.Fatalf("relay told %v", refreshed)
 	}
 }

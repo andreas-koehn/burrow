@@ -241,7 +241,7 @@ func (d Deps) SetAccessMode(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
-			d.afterAccessModeChange(r.Context(), before, in.AccessMode)
+			d.afterAccessModeChange(r.Context(), loc.ServiceID, before, in.AccessMode)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

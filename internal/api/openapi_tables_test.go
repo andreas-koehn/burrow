@@ -273,6 +273,9 @@ var openAPIMCPDisabled = map[string]string{
 	"serviceIpGrantsList":  "GET /api/v1/services/{serviceID}/ip-grants",
 	"serviceIpGrantCreate": "POST /api/v1/services/{serviceID}/ip-grants",
 	"serviceIpGrantDelete": "DELETE /api/v1/services/{serviceID}/ip-grants/{grantID}",
+	// Nor change who may reach a service: its ip rules and its role list.
+	"serviceIpGeoUpdate":        "PUT /api/v1/services/{serviceID}/ip-geo",
+	"serviceAccessPolicyUpdate": "PUT /api/v1/services/{serviceID}/access-policy",
 	// Nor widen access, grant privileges, put a data-plane secret into the
 	// model's context or plant an instruction in other users' requests.
 	"serviceAccessModeUpdate": "PUT /api/v1/services/{serviceID}/access-mode",

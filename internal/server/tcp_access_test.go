@@ -564,9 +564,11 @@ func TestTCPAccess_RepeatedRefusalsWriteOneRow(t *testing.T) {
 	}
 }
 
-// The control port refuses a source that keeps sending wrong tokens before
-// it looks at the token, until its bucket refills; other sources are not
-// held back.
+// The control port answers a source that keeps sending wrong tokens with
+// rate_limited until its bucket refills, but a client with a valid token
+// from that source (the same NAT, the same Docker gateway) still connects:
+// the token is checked first. A failure of the store, not of the token, is
+// no failed sign-in.
 func TestControl_FailedSignInsAreLimited(t *testing.T) {
 	r := newObservedRelay(t, 19510, nil)
 	now := time.Unix(1_700_000_000, 0)
@@ -582,9 +584,17 @@ func TestControl_FailedSignInsAreLimited(t *testing.T) {
 			t.Fatalf("attempt %d: %+v", i, ar)
 		}
 	}
+	// The attacker keeps the source limited.
+	for i := 0; i < 3; i++ {
+		conn, ar := r.dial("", "")
+		_ = conn.Close()
+		if ar.OK || ar.Code != proto.CodeRateLimited {
+			t.Fatalf("a bad token from a limited source: %+v", ar)
+		}
+	}
 	conn, ar := r.dial("secret", "")
 	_ = conn.Close()
-	if ar.OK || ar.Code != proto.CodeRateLimited {
+	if !ar.OK {
 		t.Fatalf("a good token from a limited source: %+v", ar)
 	}
 	if r.srv.authFails.limited("192.0.2.1") {
@@ -593,10 +603,22 @@ func TestControl_FailedSignInsAreLimited(t *testing.T) {
 	af.mu.Lock()
 	now = now.Add(authFailRefill)
 	af.mu.Unlock()
-	conn, ar = r.dial("secret", "")
+	conn, ar = r.dial("", "")
 	_ = conn.Close()
-	if !ar.OK {
-		t.Fatalf("after the refill: %+v", ar)
+	if ar.Code != proto.CodeInvalidToken {
+		t.Fatalf("after the refill a bad token is told it is invalid: %+v", ar)
+	}
+}
+
+// A store that fails (not the token) is not counted against the source.
+func TestControl_StoreFailuresAreNoFailedSignIns(t *testing.T) {
+	r := newObservedRelay(t, 19513, func(o *Options) { o.Auth = fakeAuth{err: errors.New("database is locked")} })
+	for i := 0; i < 2*authFailBurst; i++ {
+		conn, _ := r.dial("secret", "")
+		_ = conn.Close()
+	}
+	if r.srv.authFails.limited("127.0.0.1") {
+		t.Fatal("store failures limited the source")
 	}
 }
 
@@ -619,5 +641,18 @@ func TestControl_RelayCapabilities(t *testing.T) {
 	_ = refused.Close()
 	if ar.OK || ar.Capabilities != nil {
 		t.Fatalf("a refused client learns the capabilities: %+v", ar)
+	}
+}
+
+// An unnamed tunnel that asks for open gets open: nothing is reported as
+// ignored (a slug still is). A relay without tcp services still reports the
+// access (TestRegisterTCP_SlugAndAccessAreReportedAsIgnored).
+func TestTCPAccess_UnnamedOpenIsNotIgnored(t *testing.T) {
+	a := newAccessRelay(t, 19514, 19515, nil)
+	if rr := a.c.register(t, proto.TunnelRegister{Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK || len(rr.Ignored) != 0 {
+		t.Fatalf("unnamed open: %+v", rr)
+	}
+	if rr := a.c.register(t, proto.TunnelRegister{Type: "tcp", LocalAddr: "x", Access: "open", Slug: "nope"}); !rr.OK || !slices.Equal(rr.Ignored, []string{"slug"}) {
+		t.Fatalf("unnamed open with a slug: %+v", rr)
 	}
 }

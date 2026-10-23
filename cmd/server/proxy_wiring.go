@@ -36,6 +36,7 @@ import (
 	"github.com/ankoehn/burrow/internal/proto"
 	"github.com/ankoehn/burrow/internal/proxy"
 	"github.com/ankoehn/burrow/internal/server"
+	"github.com/ankoehn/burrow/internal/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -756,4 +757,23 @@ func (a tcpAccessAdapter) TCPAccess(ctx context.Context, serviceID string) (serv
 		acc.Grants = append(acc.Grants, server.TCPGrant{CIDR: g.CIDR, ExpiresAt: g.ExpiresAt})
 	}
 	return acc, nil
+}
+
+// ---------------------------------------------------------------------------
+// controlAuth (server.TokenAuthenticator)
+// ---------------------------------------------------------------------------
+
+// controlAuth is the store as the control port authenticates clients: a
+// token the store refused (store.ErrUnauthorized: unknown, expired, of a
+// suspended user) is also server.ErrTokenInvalid, which the control port
+// counts as a failed sign-in of the source. A failure of the store itself is
+// passed on unmarked and not counted.
+type controlAuth struct{ *store.Store }
+
+func (a controlAuth) AuthenticateToken(ctx context.Context, token string) (userID, tokenID, tokenName string, err error) {
+	userID, tokenID, tokenName, err = a.Store.AuthenticateToken(ctx, token)
+	if errors.Is(err, store.ErrUnauthorized) {
+		err = fmt.Errorf("%w: %w", server.ErrTokenInvalid, err)
+	}
+	return userID, tokenID, tokenName, err
 }

@@ -25,7 +25,7 @@ func (f fakeAuth) Authenticate(_ context.Context, tok string) (string, error) {
 		return "", f.err
 	}
 	if tok == "" {
-		return "", fmt.Errorf("empty token")
+		return "", fmt.Errorf("empty token: %w", ErrTokenInvalid)
 	}
 	return f.uid, nil
 }

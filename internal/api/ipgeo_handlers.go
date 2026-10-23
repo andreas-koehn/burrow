@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/proxy"
@@ -75,42 +76,54 @@ type geoStatusResp struct {
 // Returns true to continue; false to indicate the handler already wrote the
 // response (caller MUST return).
 func (d Deps) ensureIPGeoServiceAccess(w http.ResponseWriter, r *http.Request, serviceID string) bool {
+	_, ok := d.ipGeoService(w, r, serviceID)
+	return ok
+}
+
+// ipGeoService is ensureIPGeoServiceAccess that also returns the service it
+// read, so that a handler does not read it again.
+func (d Deps) ipGeoService(w http.ResponseWriter, r *http.Request, serviceID string) (db.Service, bool) {
+	fail := func(status int, msg string) (db.Service, bool) {
+		writeErr(w, status, msg)
+		return db.Service{}, false
+	}
 	if serviceID == "" {
-		writeErr(w, http.StatusBadRequest, "service id is required")
-		return false
+		return fail(http.StatusBadRequest, "service id is required")
 	}
 	role, err := d.callerRole(r)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return false
+		return fail(http.StatusInternalServerError, "internal error")
 	}
 	uid := userID(r.Context())
 
 	hasAny := effectivePerms(r.Context(), role, authz.PermIPGeoManageAny)
 	hasOwn := effectivePerms(r.Context(), role, authz.PermIPGeoManageOwn)
 	if !hasAny && !hasOwn {
-		writeErr(w, http.StatusForbidden, "forbidden")
-		return false
+		return fail(http.StatusForbidden, "forbidden")
 	}
 	if d.IPGeoServices == nil {
-		writeErr(w, http.StatusInternalServerError, "service lookup unavailable")
-		return false
+		return fail(http.StatusInternalServerError, "service lookup unavailable")
 	}
 	svc, err := d.IPGeoServices.GetServiceByID(r.Context(), serviceID)
 	if errors.Is(err, db.ErrNotFound) {
-		writeErr(w, http.StatusNotFound, "service not found")
-		return false
+		return fail(http.StatusNotFound, "service not found")
 	}
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "service lookup failed")
-		return false
+		return fail(http.StatusInternalServerError, "service lookup failed")
 	}
 	if !hasAny && svc.UserID != uid {
-		writeErr(w, http.StatusForbidden, "forbidden")
-		return false
+		return fail(http.StatusForbidden, "forbidden")
 	}
-	return true
+	return svc, true
 }
+
+// The widest allow entry of a tcp service: a /8 of IPv4, a /32 of IPv6. A
+// wider one is all but open mode, which is chosen as a mode, not as a list.
+// Block entries may be as wide as they like: they narrow access.
+const (
+	tcpAllowMinBits4 = 8
+	tcpAllowMinBits6 = 32
+)
 
 // GetServiceIPGeo handles GET /api/v1/services/{serviceID}/ip-geo.
 func (d Deps) GetServiceIPGeo(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +156,8 @@ func (d Deps) GetServiceIPGeo(w http.ResponseWriter, r *http.Request) {
 // subsequent GET returns the same shape.
 func (d Deps) PutServiceIPGeo(w http.ResponseWriter, r *http.Request) {
 	serviceID := chi.URLParam(r, "serviceID")
-	if !d.ensureIPGeoServiceAccess(w, r, serviceID) {
+	svc, ok := d.ipGeoService(w, r, serviceID)
+	if !ok {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
@@ -190,13 +204,25 @@ func (d Deps) PutServiceIPGeo(w http.ResponseWriter, r *http.Request) {
 	}
 	// A tcp service in mode ip compiles the lists on the relay, which must
 	// read every entry (a block entry left out would let in what it blocks).
-	if svc, err := d.IPGeoServices.GetServiceByID(r.Context(), serviceID); err == nil && svc.Type == "tcp" {
+	if svc.Type == "tcp" {
 		for _, c := range append(append([]string{}, in.AllowCIDRs...), in.BlockCIDRs...) {
 			if _, err := server.ParseTCPPrefix(c); err != nil {
 				writeErr(w, http.StatusBadRequest, err.Error())
 				return
 			}
 		}
+		for _, c := range in.AllowCIDRs {
+			p, _ := server.ParseTCPPrefix(c)
+			if (p.Addr().Is4() && p.Bits() < tcpAllowMinBits4) || (p.Addr().Is6() && p.Bits() < tcpAllowMinBits6) {
+				writeErr(w, http.StatusBadRequest, fmt.Sprintf("allow entry %q is too wide for a tcp service: at most a /8 of IPv4 or a /32 of IPv6; use the access mode open for a port open to all", c))
+				return
+			}
+		}
+	}
+	before, err := d.IPGeo.GetServiceIPGeo(r.Context(), serviceID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "load ip-geo failed")
+		return
 	}
 	if err := d.IPGeo.SetServiceIPGeo(r.Context(), db.ServiceIPGeoConfig{
 		ServiceID:      serviceID,
@@ -209,6 +235,7 @@ func (d Deps) PutServiceIPGeo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "save ip-geo failed")
 		return
 	}
+	d.auditIPGeo(r, svc, before, ipGeoResp(in))
 	// The lists are the permanent part of a tcp service's ip policy.
 	d.refreshTCP(r.Context(), serviceID)
 	w.WriteHeader(http.StatusNoContent)
@@ -241,4 +268,24 @@ func nonNilStrings(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+// auditIPGeo writes ipgeo.update with the rules before and after the change.
+func (d Deps) auditIPGeo(r *http.Request, svc db.Service, before db.ServiceIPGeoConfig, after ipGeoResp) {
+	if d.AuditAppender == nil {
+		return
+	}
+	from := ipGeoResp{
+		Enabled: before.Enabled, AllowCIDRs: nonNilStrings(before.AllowCIDRs), BlockCIDRs: nonNilStrings(before.BlockCIDRs),
+		AllowCountries: nonNilStrings(before.AllowCountries), BlockCountries: nonNilStrings(before.BlockCountries),
+	}
+	lc := audit.LogContextFrom(r.Context())
+	if err := d.AuditAppender.Append(r.Context(), audit.Event{
+		ActorID: lc.ActorID, ActorEmail: lc.ActorEmail, Action: audit.ActionIPGeoUpdate,
+		SubjectID: svc.ID, SubjectLabel: svc.Name, Result: "ok",
+		SourceIP: lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
+		Payload: audit.MustJSON(map[string]any{"from": from, "to": after}),
+	}); err != nil {
+		d.warn("audit write failed", "action", audit.ActionIPGeoUpdate, "err", err)
+	}
 }

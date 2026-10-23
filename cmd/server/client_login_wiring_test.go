@@ -131,7 +131,7 @@ const (
 // assertMCPKnowsTheAuthDomain checks, on the relay `serve` started with an
 // auth domain, that the MCP server replays its calls through the relay's own
 // router (main.go's SetAPIHandler): a write made with
-// service_access_policy_update is what service_get then reads, while a
+// service_slug_update is what service_get then reads, while a
 // server without the router answers "the relay is starting". (The access
 // mode, which needed the auth domain, is no management tool any more.)
 // Everything is done as an operator does it:
@@ -193,15 +193,15 @@ func assertMCPKnowsTheAuthDomain(t *testing.T, base string) {
 	}
 
 	cs := mcpConnect(t, base+"/mcp/burrow", bearer, "2026-07-28")
-	if got := mcpCall(t, cs, false, "service_access_policy_update", map[string]any{
-		"serviceID": serviceID, "body": map[string]any{"roles": []string{"admin"}},
-	}); got != `{"status":204}` {
-		t.Fatalf("service_access_policy_update through the relay's router: %s", got)
+	if got := mcpCall(t, cs, false, "service_slug_update", map[string]any{
+		"serviceID": serviceID, "body": map[string]any{"slug": "mcp-wired"},
+	}); !strings.Contains(got, `"slug":"mcp-wired"`) {
+		t.Fatalf("service_slug_update through the relay's router: %s", got)
 	}
 	var svc struct {
-		AccessPolicy []string `json:"access_policy"`
+		Slug string `json:"slug"`
 	}
-	if err := json.Unmarshal([]byte(mcpCall(t, cs, false, "service_get", map[string]any{"serviceID": serviceID})), &svc); err != nil || len(svc.AccessPolicy) != 1 || svc.AccessPolicy[0] != "admin" {
-		t.Fatalf("service_get after the change: access_policy %v, err %v", svc.AccessPolicy, err)
+	if err := json.Unmarshal([]byte(mcpCall(t, cs, false, "service_get", map[string]any{"serviceID": serviceID})), &svc); err != nil || svc.Slug != "mcp-wired" {
+		t.Fatalf("service_get after the change: slug %q, err %v", svc.Slug, err)
 	}
 }

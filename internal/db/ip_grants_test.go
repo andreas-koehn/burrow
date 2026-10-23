@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -76,5 +78,53 @@ func checkIPGrants(t *testing.T, x *DB, userID string) {
 	}
 	if err := x.SetServiceMaxConnections(ctx, "nope", 3); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing service: %v", err)
+	}
+}
+
+func TestIPGrantsCapped(t *testing.T) { checkIPGrantsCapped(t, testDB(t), "u-grantcap") }
+
+// checkIPGrantsCapped: a capped insert never leaves a service with more
+// active grants than the cap, also when many run at once; expired grants do
+// not count.
+func checkIPGrantsCapped(t *testing.T, x *DB, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	freshServiceUser(t, x, userID)
+	svc := Service{ID: "svc-cap-" + userID, UserID: userID, Name: "rdp", Type: "tcp", AccessMode: "ip"}
+	if err := x.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := x.CreateIPGrant(ctx, IPGrant{ID: "old-" + userID, ServiceID: svc.ID, CIDR: "192.0.2.1/32", ExpiresAt: now.Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	const limit = 3
+	var wg sync.WaitGroup
+	errs := make(chan error, 12)
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs <- x.CreateIPGrantCapped(ctx, IPGrant{ID: fmt.Sprintf("g%d-%s", i, userID), ServiceID: svc.ID,
+				CIDR: "192.0.2.1/32", ExpiresAt: now.Add(time.Hour)}, limit, now)
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	ok := 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case !errors.Is(err, ErrTooManyIPGrants):
+			t.Errorf("capped insert: %v", err)
+		}
+	}
+	list, err := x.ListIPGrants(ctx, svc.ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) > limit || len(list) != ok || ok == 0 {
+		t.Fatalf("%d active grants, %d inserts reported ok, cap %d", len(list), ok, limit)
 	}
 }

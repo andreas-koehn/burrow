@@ -628,7 +628,9 @@ func newRootCmd() *cobra.Command {
 			srv, err := server.New(server.Options{
 				Listen: cfg.Listen, TLSCert: cfg.TLSCert, TLSKey: cfg.TLSKey,
 				PublicBind: cfg.PublicBind, PortMin: cfg.PortMin, PortMax: cfg.PortMax,
-				Auth: st, Tunnels: tunnelStoreAdapter{st}, Events: bus, Logger: log,
+				// A refused token counts as a failed sign-in of its source;
+				// a failure of the store does not (controlAuth).
+				Auth: controlAuth{st}, Tunnels: tunnelStoreAdapter{st}, Events: bus, Logger: log,
 				SessionRecorder: st,
 				ServiceRecorder: st,
 				// v0.3.0: HTTP tunnel service identity + subdomain resolver;

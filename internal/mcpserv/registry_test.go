@@ -268,6 +268,10 @@ func TestRegistry_CredentialRoutingAndInspectionWritesAreNotTools(t *testing.T) 
 		// Native tcp: an agent must not let an address (its own) reach a
 		// port; the tcp modes go through serviceAccessModeUpdate.
 		"serviceIpGrantsList", "serviceIpGrantCreate", "serviceIpGrantDelete",
+		// Fix round 1 of native tcp: the ip lists of a tcp service in mode ip
+		// and the roles that may reach a service (burrow_login, and who may
+		// forward to a private tcp service) widen access too.
+		"serviceIpGeoUpdate", "serviceAccessPolicyUpdate",
 	} {
 		if _, ok := r.Lookup(id); ok {
 			t.Errorf("%s is a management tool", id)
@@ -278,7 +282,7 @@ func TestRegistry_CredentialRoutingAndInspectionWritesAreNotTools(t *testing.T) 
 		"serviceDomainsList", "serviceDomainGet", "webhooksList", "webhookDeliveriesList",
 		"guardrailSettingsGet", "redactionSettingsGet", "redactionRulesList", "serviceAiConfigGet",
 		"retentionSettingsGet", "redactionPreview", "guardrailPreview", "webhookPreview",
-		"serviceAccessPolicyUpdate", "serviceIpGeoUpdate", "automationTokenCreate",
+		"serviceIpGeoGet", "serviceAccessPolicyGet", "automationTokenCreate",
 		"aiModelsList", "gatewayKeysList", "usersList", "rolesList",
 	} {
 		if _, ok := r.Lookup(id); !ok {
@@ -323,12 +327,10 @@ var mcpExposedWrites = map[string]bool{
 	"rateLimitDelete":               true,
 	"rateLimitUpdate":               true,
 	"redactionPreview":              true,
-	"serviceAccessPolicyUpdate":     true,
 	"serviceApiKeyDelete":           true,
 	"serviceCacheEntriesDelete":     true,
 	"serviceDelete":                 true,
 	"serviceDomainDelete":           true,
-	"serviceIpGeoUpdate":            true,
 	"serviceMaxConnectionsUpdate":   true, // a cap of 1 to 256 visitors; widens nobody's access
 	"serviceSlugUpdate":             true,
 	"sessionDelete":                 true,

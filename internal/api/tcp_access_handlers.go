@@ -30,7 +30,9 @@ import (
 // IPGrantStore is the surface of the just-in-time grants. *db.DB satisfies
 // it.
 type IPGrantStore interface {
-	CreateIPGrant(ctx context.Context, g db.IPGrant) error
+	// CreateIPGrantCapped inserts the grant unless the service has max
+	// active ones (db.ErrTooManyIPGrants), counting and inserting as one step.
+	CreateIPGrantCapped(ctx context.Context, g db.IPGrant, max int, now time.Time) error
 	ListIPGrants(ctx context.Context, serviceID string, now time.Time) ([]db.IPGrant, error)
 	DeleteIPGrant(ctx context.Context, serviceID, id string) (db.IPGrant, error)
 	PruneIPGrants(ctx context.Context, serviceID string, now time.Time) (int64, error)
@@ -73,18 +75,18 @@ func (d Deps) refreshTCP(ctx context.Context, serviceID string) {
 	}
 }
 
-// afterAccessModeChange applies a new access mode of a tcp service to its
-// live tunnel: the session that serves it is closed, so that its client
-// registers again under the new mode (D14), and the relay is told, which
-// also covers a registration under way. before is the service as it was.
-func (d Deps) afterAccessModeChange(ctx context.Context, before store.ServiceDetail, mode string) {
-	if before.Type != "tcp" || before.AccessMode == mode {
-		return
+// afterAccessModeChange applies a successful access-mode write to the
+// service's live tunnel. A tcp service whose mode changed has the session
+// that serves it closed, so that its client registers again under the new
+// mode (D14). The relay is told in every case: it compares the mode it
+// reads with the tunnel's and closes on a difference, so a write whose
+// "before" could not be read (before is then empty) does not fail open, and
+// a registration under way reads the service again.
+func (d Deps) afterAccessModeChange(ctx context.Context, serviceID string, before store.ServiceDetail, mode string) {
+	if before.Type == "tcp" && before.AccessMode != mode && d.ServiceSessions != nil {
+		d.ServiceSessions.CloseByService(serviceID)
 	}
-	if d.ServiceSessions != nil {
-		d.ServiceSessions.CloseByService(before.ID)
-	}
-	d.refreshTCP(ctx, before.ID)
+	d.refreshTCP(ctx, serviceID)
 }
 
 // ipGrantResp is a grant on the wire. Family is "ipv4" or "ipv6".
@@ -218,21 +220,15 @@ func (d Deps) PostIPGrant(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "save ip grant failed")
 		return
 	}
-	active, err := d.IPGrants.ListIPGrants(ctx, svc.ID, now)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "save ip grant failed")
-		return
-	}
-	if len(active) >= MaxActiveIPGrants {
-		writeErr(w, http.StatusConflict, "the service has 32 grants; revoke one first")
-		return
-	}
 	g := db.IPGrant{
 		ID: uuid.NewString(), ServiceID: svc.ID, CIDR: prefix.String(),
 		ExpiresAt: now.Add(time.Duration(in.TTLHours) * time.Hour).UTC().Truncate(time.Second),
 		Note:      in.Note, CreatedBy: userID(ctx), CreatedAt: now.UTC(),
 	}
-	if err := d.IPGrants.CreateIPGrant(ctx, g); err != nil {
+	if err := d.IPGrants.CreateIPGrantCapped(ctx, g, MaxActiveIPGrants, now); errors.Is(err, db.ErrTooManyIPGrants) {
+		writeErr(w, http.StatusConflict, "the service has 32 grants; revoke one first")
+		return
+	} else if err != nil {
 		writeErr(w, http.StatusInternalServerError, "save ip grant failed")
 		return
 	}

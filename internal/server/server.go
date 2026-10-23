@@ -23,6 +23,10 @@ import (
 )
 
 // TokenAuthenticator validates a client's plaintext token, returning its user id.
+// An error that matches ErrTokenInvalid says the token itself is not valid
+// (unknown, expired, of a suspended user): the control port counts it as a
+// failed sign-in of the source. Any other error (the store failed) is not
+// counted.
 type TokenAuthenticator interface {
 	Authenticate(ctx context.Context, token string) (userID string, err error)
 }
@@ -74,6 +78,10 @@ type TCPPortHold struct {
 	// LastSeen is when a client last served the service; zero: never.
 	LastSeen time.Time
 }
+
+// ErrTokenInvalid marks an authenticator's refusal of the token itself (see
+// TokenAuthenticator).
+var ErrTokenInvalid = errors.New("invalid client token")
 
 // ErrTCPPortTaken is what SetServiceTCPPort returns when another service
 // holds the port (and it was not one that could be taken over).

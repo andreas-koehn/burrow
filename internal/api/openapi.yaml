@@ -3748,7 +3748,13 @@ paths:
       tags: [services]
       operationId: serviceAccessPolicyUpdate
       x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      x-burrow-mcp: false
       summary: Replace the role allowlist
+      description: |
+        The roles that may reach a burrow_login service (and, for a private
+        tcp service, forward to it).
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
         required: true
@@ -3783,14 +3789,19 @@ paths:
       tags: [services]
       operationId: serviceIpGeoUpdate
       x-burrow-permission: {kind: needs, any_of: ["ipgeo:manage:own", "ipgeo:manage:any"]}
+      x-burrow-mcp: false
       summary: Replace per-service IP / Geo rules
       description: |
         For a tcp service in access mode `ip` the CIDR lists are the
         permanent part of its policy (countries and `enabled` are not used):
         a visitor is let in when an allow entry or a just-in-time grant holds
         its address and no block entry does; an empty allow list without
-        grants lets nobody in. The relay applies a change to the next
-        visitor.
+        grants lets nobody in. An allow entry of a tcp service is at most a
+        /8 of IPv4 or a /32 of IPv6 (a 400 otherwise). The relay applies a
+        change to the next visitor. Audited as `ipgeo.update` with the lists
+        before and after.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
         required: true

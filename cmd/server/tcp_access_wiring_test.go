@@ -249,3 +249,27 @@ func TestServe_TCPAccessModes(t *testing.T) {
 		t.Fatalf("api_key on tcp: %d %s", code, body)
 	}
 }
+
+// The control port's authenticator marks a token the store refused as
+// server.ErrTokenInvalid (a failed sign-in of the source) and leaves any
+// other failure unmarked; a valid token passes.
+func TestControlAuth_MarksRefusedTokens(t *testing.T) {
+	ctx := context.Background()
+	x, uid := optionsDB(t)
+	st := store.New(x.DB())
+	tok, err := st.IssueClientToken(ctx, uid, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := controlAuth{st}
+	if got, _, _, err := a.AuthenticateToken(ctx, tok); err != nil || got != uid {
+		t.Fatalf("valid token: %q %v", got, err)
+	}
+	if _, _, _, err := a.AuthenticateToken(ctx, "bur_wrong_0000"); !errors.Is(err, server.ErrTokenInvalid) || !errors.Is(err, store.ErrUnauthorized) {
+		t.Fatalf("wrong token: %v", err)
+	}
+	_ = x.Close()
+	if _, _, _, err := a.AuthenticateToken(ctx, tok); err == nil || errors.Is(err, server.ErrTokenInvalid) {
+		t.Fatalf("a closed store: %v", err)
+	}
+}

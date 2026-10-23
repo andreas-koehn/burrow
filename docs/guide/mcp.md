@@ -233,7 +233,7 @@ every token.
 | `budgets_list` | List budgets | read |
 | `audit_events_list` | Query audit events | read |
 | `connection_logs_list` | List per-tunnel connection log entries, newest first | read |
-| `service_access_policy_update` | Replace a service's role allowlist | write |
+| `service_slug_update` | Change a service's slug | write |
 | `provider_models_sync` | Read the model list from a direct provider's upstream | delete (needs `confirm`) |
 | `budget_create` | Create a budget | write |
 | `provider_delete` | Delete a provider | delete |
