@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -141,13 +142,14 @@ func (a tunnelListerAdapter) ListUserTunnels(userID string) []api.TunnelView {
 // tunnelURL returns "https://<host>/svc/<slug>/" for the durable service
 // behind a tunnel, host being the services domain when set and the auth
 // domain otherwise, or "" when there is no auth domain, no service row or no
-// slug (tcp tunnels have none).
+// slug. A tcp service has a slug (the name a forward reaches it by), but no
+// /svc/ address: it gets none either.
 func (a tunnelListerAdapter) tunnelURL(serviceID string) string {
 	if a.slugs == nil || a.authDomain == "" || serviceID == "" {
 		return ""
 	}
 	svc, err := a.slugs.ServiceByID(context.Background(), serviceID)
-	if err != nil || svc.Subdomain == "" || svc.GatewayOnly {
+	if err != nil || svc.Subdomain == "" || svc.GatewayOnly || svc.Type == "tcp" {
 		return ""
 	}
 	host := a.authDomain
@@ -233,11 +235,20 @@ func (a clientsAdapter) serviceViews(ss server.SessionSnapshot) ([]api.ClientSer
 }
 
 func (a clientsAdapter) toView(ss server.SessionSnapshot, aggIn, aggOut int64, n int) api.ClientView {
+	fw := make([]api.ClientForwardView, 0, len(ss.Forwards))
+	for _, f := range ss.Forwards {
+		fw = append(fw, api.ClientForwardView{
+			ID: f.ID, ServiceID: f.ServiceID, Service: f.Service, Since: f.Since,
+			BytesIn: f.BytesIn, BytesOut: f.BytesOut,
+		})
+	}
+	slices.SortFunc(fw, func(x, y api.ClientForwardView) int { return x.Since.Compare(y.Since) })
 	return api.ClientView{
 		SessionID: ss.SessionID, UserID: ss.UserID, TokenName: ss.Token,
 		RemoteAddr: ss.RemoteAddr, OS: ss.OS, Arch: ss.Arch,
 		ClientVersion: ss.ClientVersion, ServiceCount: n,
 		TotalBytesIn: aggIn, TotalBytesOut: aggOut,
+		ForwardCount: len(fw), Forwards: fw,
 	}
 }
 
@@ -639,7 +650,10 @@ func newRootCmd() *cobra.Command {
 				ConnLog:  serverConnLogAdapter{sink: connLogSink},
 				// v0.13.0: the ip policy and cap of a tcp service, read when
 				// its tunnel registers and when the API says it changed.
-				TCPAccess:  tcpAccessAdapter{db: db.Wrap(database)},
+				TCPAccess: tcpAccessAdapter{db: db.Wrap(database)},
+				// v0.13.0: forward streams to tcp services (burrow forward),
+				// authorized on every open.
+				Forwards:   forwardAuthorizer{db: db.Wrap(database)},
 				AuthDomain: proxyAuthDomain,
 				// Tunnel addresses are on the services host when one is set.
 				ServicesDomain: cfg.ServicesDomain,
@@ -1057,6 +1071,7 @@ func newRootCmd() *cobra.Command {
 				// live tunnel; just-in-time grants are kept in the database.
 				TCPServices: srv,
 				IPGrants:    db.Wrap(database),
+				Connections: srv,
 				OnServiceDeleted: func(serviceID string) {
 					v04.InspectorMgr.Remove(serviceID)
 					_ = v05.SemanticCache.ClearService(context.Background(), serviceID)
@@ -1644,6 +1659,7 @@ func (a serverConnLogAdapter) RecordConnection(ctx context.Context, e server.Con
 		BytesOut:        e.BytesOut,
 		Status:          connlog.Status(e.Status),
 		Reason:          e.Reason,
+		TokenName:       e.TokenName,
 	})
 }
 

@@ -168,7 +168,7 @@ func TestHandshake_TellsTheRelayVersion(t *testing.T) {
 }
 
 func TestHandshake_BadTokenKeepsItsTextAndGainsACode(t *testing.T) {
-	ar, cs := handshake(t, fakeAuth{err: errors.New("nope")}, HandshakeOptions{}, proto.AuthRequest{ProtocolVersion: 1, Token: "bur_test_bad0"})
+	ar, cs := handshake(t, fakeAuth{err: fmt.Errorf("nope: %w", ErrTokenInvalid)}, HandshakeOptions{}, proto.AuthRequest{ProtocolVersion: 1, Token: "bur_test_bad0"})
 	if ar.OK || ar.Error != "invalid token" || ar.Code != proto.CodeInvalidToken || cs != nil {
 		t.Fatalf("answer: ok %v error %q code %q", ar.OK, ar.Error, ar.Code)
 	}
@@ -214,10 +214,20 @@ func TestHandshake_MinimumClientVersion(t *testing.T) {
 	}
 }
 
+// A store that fails is not the token's fault: the client is told to try
+// again (internal), never that its token is bad, which would make it stop.
+func TestHandshake_StoreFailureIsInternal(t *testing.T) {
+	ar, cs := handshake(t, fakeAuth{err: errors.New("database is locked")}, HandshakeOptions{RateLimited: true},
+		proto.AuthRequest{ProtocolVersion: 1, Token: "bur_test_0000"})
+	if ar.OK || ar.Code != proto.CodeInternal || cs != nil || strings.Contains(ar.Error, "database") || ar.Error == "invalid token" {
+		t.Fatalf("answer: ok %v error %q code %q", ar.OK, ar.Error, ar.Code)
+	}
+}
+
 // The version is checked after the token: only a client that may connect
 // learns that it is too old.
 func TestHandshake_BadTokenComesBeforeTheVersion(t *testing.T) {
-	ar, _ := handshake(t, fakeAuth{err: errors.New("nope")}, HandshakeOptions{MinClientVersion: "0.7.0"},
+	ar, _ := handshake(t, fakeAuth{err: fmt.Errorf("nope: %w", ErrTokenInvalid)}, HandshakeOptions{MinClientVersion: "0.7.0"},
 		proto.AuthRequest{ProtocolVersion: 1, Token: "bur_test_bad0", ClientVersion: "0.1.0"})
 	if ar.Code != proto.CodeInvalidToken {
 		t.Fatalf("code %q", ar.Code)

@@ -37,6 +37,10 @@ const (
 	// for a tunnel without a service). Reason is TCPPortTakeover or
 	// TCPPortReclaim.
 	TCPPortReclaimed = "tcp_port_reclaimed"
+	// ForwardOpened: the session (UserID, TokenID, TokenName, SourceIP: the
+	// one who forwards) opened a forward stream to the tcp service ServiceID,
+	// whose tunnel TunnelID belongs to OwnerID.
+	ForwardOpened = "forward_opened"
 )
 
 // The reasons of TCPPortReclaimed.
@@ -65,7 +69,7 @@ type Session struct {
 	// TunnelName is the client's name for the tunnel: a client's words, never
 	// a metric label.
 	TunnelName string
-	ServiceID  string // the durable service of an http tunnel; "" for tcp
+	ServiceID  string // the durable service of the tunnel; "" for a tcp tunnel without one
 	AccessMode string // of the service, when the registration reported it
 	// ServiceCreated: this registration created the service (TunnelOpened).
 	ServiceCreated bool
@@ -76,12 +80,21 @@ type Session struct {
 	FromServiceID string
 	Port          int
 	Reason        string
+	// TokenName, SourceIP and OwnerID describe a ForwardOpened: the name of
+	// the forwarder's client token (a user's words, never a metric label),
+	// the address the session comes from, and the owner of the service.
+	TokenName string
+	SourceIP  string
+	OwnerID   string
 }
 
 // The kinds of Traffic; they are the kinds of the connection log.
 const (
 	TrafficHTTP = "http_proxy"
 	TrafficTCP  = "tcp_proxy"
+	// TrafficTCPForward is a forward stream of a signed-in client to a tcp
+	// service; UserID and SessionID are then the forwarder's.
+	TrafficTCPForward = "tcp_forward"
 )
 
 // The outcomes of Traffic; they are the statuses of the connection log.

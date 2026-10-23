@@ -416,7 +416,7 @@ func oneOf(v string, allowed ...string) string {
 
 // connKind bounds the kind label of the connection families.
 func connKind(kind string) string {
-	return oneOf(kind, "control", "http_proxy", "tcp_proxy")
+	return oneOf(kind, "control", "http_proxy", "tcp_proxy", "tcp_forward")
 }
 
 // incCounter increments the counter named `name` with the given labels by

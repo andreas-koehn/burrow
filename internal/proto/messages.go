@@ -24,6 +24,13 @@ const (
 	// MsgRequestSummary travels from the relay to a client that announced
 	// CapRequestSummaries, and to no other.
 	MsgRequestSummary MessageType = "request_summary"
+	// MsgForwardOpen is the first frame of a stream a client opens to reach
+	// a tcp service through the relay (a relay that announces CapForward);
+	// the relay answers MsgForwardOpenResp on the same stream and, when it
+	// is OK, pipes the stream's bytes to the service from then on. An older
+	// relay closes such a stream without a word.
+	MsgForwardOpen     MessageType = "forward_open"
+	MsgForwardOpenResp MessageType = "forward_open_response"
 )
 
 // CapRequestSummaries is the capability (AuthRequest.Capabilities) of a client
@@ -122,6 +129,10 @@ type TunnelRegisterResponse struct {
 	Ignored []string `json:"ignored,omitempty"`
 	// Code names the reason of a refusal (see the Code constants).
 	Code string `json:"code,omitempty"`
+	// Slug is the slug of a tcp service: the global name a forward reaches
+	// it by (ForwardOpen.Target). It is no address; a tcp service has no
+	// URL.
+	Slug string `json:"slug,omitempty"`
 }
 
 // NewConnection notifies the client that a visitor has connected to a tunnel port.
@@ -192,7 +203,33 @@ const (
 	// CodeRateLimited: too many attempts from this address or session; the
 	// client waits and tries again.
 	CodeRateLimited = "rate_limited"
+	// CodeNotFound: a forward to a service that does not exist or that the
+	// caller may not reach; the two are told apart nowhere.
+	CodeNotFound = "not_found"
+	// CodeOffline: the service of a forward exists, but no client serves it
+	// now (or its client did not answer in time).
+	CodeOffline = "offline"
 )
+
+// ForwardOpen is the first frame of a forward stream. Target names a tcp
+// service: its slug, the name of one of the caller's own services, or its
+// id.
+type ForwardOpen struct {
+	Target string `json:"target"`
+}
+
+// ForwardOpenResponse answers a ForwardOpen. On OK the stream carries the
+// service's bytes from the next byte on; otherwise the relay closes it after
+// this frame. Code is one of CodeNotFound, CodeOffline, CodeRateLimited,
+// CodeBadRequest and CodeInternal. ServiceID and Name name the service that
+// was reached (OK only).
+type ForwardOpenResponse struct {
+	OK        bool   `json:"ok"`
+	Code      string `json:"code,omitempty"`
+	Error     string `json:"error,omitempty"`
+	ServiceID string `json:"service_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+}
 
 // StreamHeader is the first frame the client writes on a new data stream,
 // pairing it (by StreamID) to a pending visitor connection on the server.

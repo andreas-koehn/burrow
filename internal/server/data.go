@@ -340,19 +340,40 @@ func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn, source string) {
 	}
 	defer stream.Close()
 	// The tunnel's counters move while the connection is open (the stream
-	// counts what passes, as for http); in and out are the connection's own
-	// totals for its log row.
+	// counts what passes, as for http), and so do the connection's own,
+	// which the API shows while it lasts and its log row keeps.
+	c := &liveConn{
+		id: uuid.NewString(), kind: ConnKindVisitor, sourceIP: hostOf(visitor.RemoteAddr().String()),
+		serviceID: tun.ServiceID, started: started,
+	}
+	c.closeFn = func() { _ = visitor.Close(); endStream(stream) }
+	tun.addConn(c)
 	var in, out atomic.Uint64
-	bridge.Pipe(visitor, &countingStream{Conn: stream, in: &tun.BytesIn, out: &tun.BytesOut}, &in, &out)
-	s.tcpTraffic(tun, visitor, started, in.Load(), out.Load(), observe.OutcomeClean, "")
+	bridge.Pipe(visitor, &countingStream{
+		Conn: &countingStream{Conn: stream, in: &tun.BytesIn, out: &tun.BytesOut},
+		in:   &c.in, out: &c.out,
+	}, &in, &out)
+	tun.dropConn(c.id)
+	s.tcpTraffic(tun, visitor, started, c.in.Load(), c.out.Load(), observe.OutcomeClean, "")
 }
 
-// handleDataStream reads a freshly-accepted client stream's StreamHeader and
-// hands it to the waiting visitor; closes it if nobody is waiting.
+// handleDataStream reads the first frame of a freshly-accepted client
+// stream. A StreamHeader hands it to the waiting visitor (it is closed if
+// nobody is waiting); a forward_open is a forward stream (see handleForward)
+// on a relay that takes them. Anything else is closed, which is also what an
+// older relay does with a forward_open.
 func (s *Server) handleDataStream(cs *ClientSession, st *yamux.Stream) {
 	var env proto.Envelope
 	_ = st.SetReadDeadline(time.Now().Add(10 * time.Second))
-	if err := proto.ReadFrame(st, &env); err != nil || env.Type != proto.MsgStreamOpen {
+	if err := proto.ReadFrame(st, &env); err != nil {
+		_ = st.Close()
+		return
+	}
+	if env.Type == proto.MsgForwardOpen && s.forwarding() {
+		s.handleForward(cs, st, env)
+		return
+	}
+	if env.Type != proto.MsgStreamOpen {
 		_ = st.Close()
 		return
 	}

@@ -19,6 +19,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -108,7 +109,7 @@ func newRelay(t *testing.T, minClient string) (*Server, *x509.CertPool) {
 	}
 	auth := AuthFunc(func(_ context.Context, tok string) (string, error) {
 		if tok != "bur_test_0000" {
-			return "", errors.New("unknown token")
+			return "", fmt.Errorf("unknown token: %w", ErrTokenInvalid)
 		}
 		return "u1", nil
 	})

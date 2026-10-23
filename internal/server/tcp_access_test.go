@@ -169,7 +169,8 @@ func TestTCPAccess_NoPortThatWasNotAskedFor(t *testing.T) {
 		tr   proto.TunnelRegister
 		want string
 	}{
-		{"mode differs", proto.TunnelRegister{Name: "legacy", Type: "tcp", LocalAddr: "x", Access: "private"}, "is in access mode open, not private"},
+		{"wish stricter than the dashboard", proto.TunnelRegister{Name: "legacy", Type: "tcp", LocalAddr: "x", Access: "private"},
+			"service is open in the dashboard; restart with --access open to serve it"},
 		{"no name", proto.TunnelRegister{Type: "tcp", LocalAddr: "x", Access: "private"}, "needs a name"},
 		{"http mode", proto.TunnelRegister{Name: "web", Type: "tcp", LocalAddr: "x", Access: "api_key"}, "open, ip, private"},
 	}
@@ -654,5 +655,59 @@ func TestTCPAccess_UnnamedOpenIsNotIgnored(t *testing.T) {
 	}
 	if rr := a.c.register(t, proto.TunnelRegister{Type: "tcp", LocalAddr: "x", Access: "open", Slug: "nope"}); !rr.OK || !slices.Equal(rr.Ignored, []string{"slug"}) {
 		t.Fatalf("unnamed open with a slug: %+v", rr)
+	}
+}
+
+// The client's --access wish against the mode in the dashboard (open < ip <
+// private): a wish less strict than the stored mode is served in the stored
+// mode, and the answer says which; an equal wish is served; a stricter wish
+// is refused and nothing is opened.
+func TestTCPAccess_TheStricterOfWishAndDashboard(t *testing.T) {
+	a := newAccessRelay(t, 19530, 19530, nil)
+	cases := []struct {
+		stored, wish string
+		mode         string // served in; "" refused
+	}{
+		{"private", "open", "private"},
+		{"private", "ip", "private"},
+		{"ip", "open", "ip"},
+		{"private", "private", "private"},
+		{"ip", "ip", "ip"},
+		{"open", "open", "open"},
+		{"open", "ip", ""},
+		{"open", "private", ""},
+		{"ip", "private", ""},
+	}
+	for i, c := range cases {
+		name := fmt.Sprintf("svc%d", i)
+		id := a.res.setMode(name, c.stored)
+		if c.stored == "ip" {
+			a.access.set(id, TCPAccess{Mode: "ip", AllowCIDRs: []string{"192.0.2.0/24"}})
+		}
+		rr := a.c.register(t, proto.TunnelRegister{Name: name, Type: "tcp", LocalAddr: "x", Access: c.wish})
+		if c.mode == "" {
+			want := "service is " + c.stored + " in the dashboard; restart with --access " + c.stored + " to serve it"
+			if rr.OK || rr.Code != proto.CodeAccessInvalid || rr.Error != want {
+				t.Errorf("%s over %s: %+v", c.wish, c.stored, rr)
+			}
+			if _, ok := a.srv.LookupTunnelByServiceID(id); ok {
+				t.Errorf("%s over %s: a tunnel was added", c.wish, c.stored)
+			}
+			continue
+		}
+		if !rr.OK || rr.AccessMode != c.mode || slices.Contains(rr.Ignored, "access") {
+			t.Errorf("%s over %s: %+v", c.wish, c.stored, rr)
+			continue
+		}
+		if (c.mode == "private") != (rr.RemotePort == 0) {
+			t.Errorf("%s over %s: remote port %d", c.wish, c.stored, rr.RemotePort)
+		}
+		if rr.RemotePort != 0 {
+			// The one public port of the range goes to the next case.
+			if err := proto.WriteMessage(a.c.ctrl, proto.MsgTunnelUnregister, proto.TunnelUnregister{TunnelID: rr.TunnelID}); err != nil {
+				t.Fatal(err)
+			}
+			a.waitFor("the port is free", func() bool { _, ok := a.srv.LookupTunnelByServiceID(id); return !ok })
+		}
 	}
 }

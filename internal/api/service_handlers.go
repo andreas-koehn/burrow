@@ -81,7 +81,7 @@ func (d Deps) serviceView(sv store.ServiceView, providerSlug string) serviceResp
 		Name:         sv.Name,
 		Type:         sv.Type,
 		Slug:         sv.Subdomain,
-		URL:          d.serviceURL(sv.Subdomain, sv.GatewayOnly),
+		URL:          d.serviceURL(sv.Type, sv.Subdomain, sv.GatewayOnly),
 		GatewayOnly:  sv.GatewayOnly,
 		AccessMode:   sv.AccessMode,
 		APIKeyHeader: sv.APIKeyHeader,
@@ -151,9 +151,10 @@ type accessPolicyResp struct {
 }
 
 // serviceURL is the direct address of a service: "" for a gateway-only one,
-// which has no /svc/ address that works.
-func (d Deps) serviceURL(slug string, gatewayOnly bool) string {
-	if gatewayOnly {
+// which has no /svc/ address that works, and for a tcp service: its slug is
+// the name a forward reaches it by, never an address over HTTP.
+func (d Deps) serviceURL(typ, slug string, gatewayOnly bool) string {
+	if gatewayOnly || typ == "tcp" {
 		return ""
 	}
 	return composeServiceURL(slug, d.servicesHost())
@@ -838,7 +839,7 @@ func (d Deps) PutServiceSlug(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"slug": in.Slug,
-		"url":  d.serviceURL(in.Slug, gatewayOnly),
+		"url":  d.serviceURL("http", in.Slug, gatewayOnly), // only an http service has a slug to set
 	})
 }
 

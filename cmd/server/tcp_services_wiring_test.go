@@ -33,8 +33,8 @@ import (
 // The resolver is a TCPServiceResolver.
 var _ server.TCPServiceResolver = serviceResolverAdapter{}
 
-// A tcp registration creates a tcp service in mode open, without a slug, and
-// the next one finds it. The port it holds comes back with it, and Created
+// A tcp registration creates a tcp service in mode open, with a generated
+// slug (for forwards; TestResolveTCP_Slugs), and the next one finds it. The port it holds comes back with it, and Created
 // stays true until a client served the service once.
 func TestResolveTCP_CreatesAndReuses(t *testing.T) {
 	x, uid := optionsDB(t)
@@ -44,11 +44,11 @@ func TestResolveTCP_CreatesAndReuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !r.Created || r.ServiceID == "" || r.AccessMode != "open" || r.Slug != "" || r.TCPPort != 0 {
+	if !r.Created || r.ServiceID == "" || r.AccessMode != "open" || r.Slug == "" || r.TCPPort != 0 {
 		t.Fatalf("created: %+v", r)
 	}
 	row := servicesOf(t, x, uid)["rdp"]
-	if row.ID != r.ServiceID || row.Type != "tcp" || row.AccessMode != "open" || row.Subdomain != "" {
+	if row.ID != r.ServiceID || row.Type != "tcp" || row.AccessMode != "open" || row.Subdomain != r.Slug {
 		t.Fatalf("row %+v", row)
 	}
 	if err := a.SetServiceTCPPort(ctx, r.ServiceID, 9005, true, ""); err != nil {
@@ -143,14 +143,15 @@ func TestResolve_NameInUseAcrossTypes(t *testing.T) {
 	if _, err := a.ResolveWithOptions(ctx, uid, "web", "http", server.ResolveOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.ResolveTCP(ctx, uid, "rdp", server.ResolveOptions{}); err != nil {
+	rdp, err := a.ResolveTCP(ctx, uid, "rdp", server.ResolveOptions{})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := x.CreateService(ctx, db.Service{ID: "direct-1", UserID: uid, Name: "llm", Type: "direct", AccessMode: "api_key"}); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := a.ResolveTCP(ctx, uid, "web", server.ResolveOptions{})
+	_, err = a.ResolveTCP(ctx, uid, "web", server.ResolveOptions{})
 	if msg := refusal(t, err, proto.CodeNameInUse); msg != `the name "web" belongs to an http service; choose another name` {
 		t.Fatalf("tcp on an http name: %q", msg)
 	}
@@ -168,7 +169,7 @@ func TestResolve_NameInUseAcrossTypes(t *testing.T) {
 	refusal(t, err, proto.CodeNameInUse)
 
 	rows := servicesOf(t, x, uid)
-	if len(rows) != 3 || rows["web"].Type != "http" || rows["rdp"].Type != "tcp" || rows["rdp"].Subdomain != "" {
+	if len(rows) != 3 || rows["web"].Type != "http" || rows["rdp"].Type != "tcp" || rows["rdp"].Subdomain != rdp.Slug {
 		t.Fatalf("rows %+v", rows)
 	}
 }
@@ -378,32 +379,46 @@ func TestProxy_NeverResolvesATCPService(t *testing.T) {
 	if id == "" {
 		t.Fatal("the tcp tunnel never registered")
 	}
+	// The slug it was given (P04: every tcp service has one, for forwards),
+	// and one set by hand.
+	generated := servicesOf(t, x, s.userID)["rdpguard"].Subdomain
+	if generated == "" {
+		t.Fatal("the tcp service has no slug")
+	}
+	d := proxyDialerAdapter{st: s.store, srv: s.server}
+	refused := func(slug string) {
+		t.Helper()
+		for name, get := range map[string]func() (*http.Response, error){
+			"host": func() (*http.Response, error) {
+				return s.visitorClient(t).Get("https://" + slug + "." + e2eAuthDomain + ":" + s.proxyPort + "/")
+			},
+			"/svc/": func() (*http.Response, error) {
+				return s.pathClient(t).Get("https://" + e2eAuthDomain + "/svc/" + slug + "/")
+			},
+		} {
+			resp, err := get()
+			if err != nil {
+				t.Fatalf("%s %s: %v", slug, name, err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusNotFound || strings.Contains(string(body), "upstream got") {
+				t.Fatalf("%s %s: %d %s", slug, name, resp.StatusCode, body)
+			}
+		}
+		if _, err := d.Lookup(ctx, slug); !errors.Is(err, proxy.ErrNotFound) {
+			t.Fatalf("Lookup %s: %v", slug, err)
+		}
+		// The login gate looks services up by slug too: a tcp one is none.
+		if _, err := s.store.ServiceForSubdomain(ctx, slug); !errors.Is(err, db.ErrNotFound) {
+			t.Fatalf("ServiceForSubdomain %s: %v", slug, err)
+		}
+	}
+	refused(generated)
 	if err := x.SetServiceSubdomain(ctx, id, "tcpguard"); err != nil {
 		t.Fatal(err)
 	}
-
-	for name, get := range map[string]func() (*http.Response, error){
-		"host": func() (*http.Response, error) {
-			return s.visitorClient(t).Get("https://tcpguard." + e2eAuthDomain + ":" + s.proxyPort + "/")
-		},
-		"/svc/": func() (*http.Response, error) {
-			return s.pathClient(t).Get("https://" + e2eAuthDomain + "/svc/tcpguard/")
-		},
-	} {
-		resp, err := get()
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		body, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusNotFound || strings.Contains(string(body), "upstream got") {
-			t.Fatalf("%s: %d %s", name, resp.StatusCode, body)
-		}
-	}
-	d := proxyDialerAdapter{st: s.store, srv: s.server}
-	if _, err := d.Lookup(ctx, "tcpguard"); !errors.Is(err, proxy.ErrNotFound) {
-		t.Fatalf("Lookup: %v", err)
-	}
+	refused("tcpguard")
 	if _, err := d.LookupByServiceID(ctx, id); !errors.Is(err, proxy.ErrNotFound) {
 		t.Fatalf("LookupByServiceID: %v", err)
 	}

@@ -198,6 +198,8 @@ var routeAccess = map[string]access{
 	"POST /api/v1/services/{serviceID}/ip-grants":                               needs(ipGeoManage...),
 	"DELETE /api/v1/services/{serviceID}/ip-grants/{grantID}":                   needs(ipGeoManage...),
 	"PUT /api/v1/services/{serviceID}/max-connections":                          needs(servicesConfigure...),
+	"GET /api/v1/services/{serviceID}/connections":                              needs(servicesConfigure...),
+	"DELETE /api/v1/services/{serviceID}/connections/{connID}":                  needs(servicesConfigure...),
 	"GET /api/v1/services/{serviceID}/ai-config":                                needs(aiConfigure...),
 	"PUT /api/v1/services/{serviceID}/ai-config":                                needs(aiConfigure...),
 	"DELETE /api/v1/services/{serviceID}/cache/entries":                         needs(aiConfigure...),

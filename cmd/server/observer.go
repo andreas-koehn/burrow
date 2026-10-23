@@ -198,6 +198,8 @@ func (o *observer) ObserveSession(e observe.Session) {
 		})
 	case observe.TCPPortReclaimed:
 		o.tcpPortReclaimed(e)
+	case observe.ForwardOpened:
+		o.forwardOpened(e)
 	case observe.TunnelRefused:
 		// One per user and reason per minute: a client that keeps asking for
 		// a taken port must not fill the queue.
@@ -223,6 +225,29 @@ func (o *observer) tcpPortReclaimed(e observe.Session) {
 	o.enqueue(func(ctx context.Context) {
 		if err := o.Audit.Append(ctx, ev); err != nil {
 			o.log.Warn("observer: audit write failed", "action", audit.ActionServiceTCPPortReclaimed, "err", err)
+		}
+	})
+}
+
+// forwardOpened writes the audit entry of a forward stream, one per user and
+// service a minute: a remote desktop that reconnects, or a pool of database
+// connections, writes one entry, while the connection log keeps every
+// stream. The actor is the user who forwards, the subject the service.
+func (o *observer) forwardOpened(e observe.Session) {
+	if o.Audit == nil || !o.perMinute.allow("tcp.forward.open\x00"+e.UserID+"\x00"+e.ServiceID) {
+		return
+	}
+	ev := audit.Event{
+		ActorID: e.UserID, Action: audit.ActionTCPForwardOpen, SubjectID: e.ServiceID, Result: "ok",
+		SourceIP: e.SourceIP,
+		Payload: audit.MustJSON(map[string]any{
+			"service_id": e.ServiceID, "owner_id": e.OwnerID, "session_id": e.SessionID,
+			"token_id": e.TokenID, "token_name": e.TokenName, "tunnel_id": e.TunnelID,
+		}),
+	}
+	o.enqueue(func(ctx context.Context) {
+		if err := o.Audit.Append(ctx, ev); err != nil {
+			o.log.Warn("observer: audit write failed", "action", audit.ActionTCPForwardOpen, "err", err)
 		}
 	})
 }
@@ -333,7 +358,8 @@ func (o *observer) ObserveTraffic(e observe.Traffic) {
 		// login page and the 500 of a misconfigured service are not. A tcp
 		// visitor the relay closed before the home client was told (its ip
 		// policy, a limit) is one too; it has no status.
-		if e.Kind != observe.TrafficTCP && e.Status != http.StatusUnauthorized && e.Status != http.StatusForbidden {
+		tcp := e.Kind == observe.TrafficTCP || e.Kind == observe.TrafficTCPForward
+		if !tcp && e.Status != http.StatusUnauthorized && e.Status != http.StatusForbidden {
 			break
 		}
 		// One per service and reason per minute, however many are refused.

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -76,7 +77,7 @@ func (r *tcpResolver) ResolveTCP(_ context.Context, userID, name string, o Resol
 	if m, ok := r.modes[id]; ok {
 		mode = m
 	}
-	res := Resolved{ServiceID: id, AccessMode: mode, Created: !served, TCPPortLimit: r.limit, MaxConnections: r.maxConns[id]}
+	res := Resolved{ServiceID: id, Slug: "s-" + name, AccessMode: mode, Created: !served, TCPPortLimit: r.limit, MaxConnections: r.maxConns[id]}
 	for p, h := range r.holds {
 		if h.ServiceID == id {
 			res.TCPPort, res.TCPPortPinned = p, h.Pinned
@@ -244,6 +245,7 @@ func TestRegisterTCP_ServiceAndStickyPort(t *testing.T) {
 	for _, v := range r.srv.ListUserTunnels("u1") {
 		serviceIDs = append(serviceIDs, v.ServiceID)
 	}
+	slices.Sort(serviceIDs) // the tunnels of a session come in no order
 	if !sameStrings(serviceIDs, []string{"svc-first", "svc-rdp"}) {
 		t.Fatalf("tunnel service ids %v", serviceIDs)
 	}

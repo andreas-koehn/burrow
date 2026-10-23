@@ -385,6 +385,9 @@ type ConnectionLog struct {
 	Status          string
 	Reason          string
 	CreatedAt       time.Time
+	// TokenName is the client token name of the user who forwards (kind
+	// tcp_forward); empty otherwise.
+	TokenName string
 }
 
 // ConnectionLogRollup is a row of the connection_log_rollups table.

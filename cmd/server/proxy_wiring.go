@@ -283,13 +283,15 @@ func (a serviceResolverAdapter) create(ctx context.Context, userID, name, typ st
 // ResolveTCP implements server.TCPServiceResolver: the user's tcp service of
 // that name, created in mode o.Access (open when empty) when there is none.
 // An access that is no tcp mode is refused with proto.CodeAccessInvalid; an
-// existing service is returned with the mode it has (the relay refuses a
-// registration that asked for another). A tcp service has no slug. As for
-// http, any client token's owner may create one: a tcp tunnel has always
-// been open to every token, and the modes ip and private only narrow who
-// may reach it, so choosing them needs no permission.
+// existing service is returned with the mode it has (the relay serves the
+// stricter of the two, or refuses a wish stricter than it). As for http, any
+// client token's owner may create one: a tcp tunnel has always been open to
+// every token, and the modes ip and private only narrow who may reach it, so
+// choosing them needs no permission.
 //
-// Created is true until a client served the service once (last_seen is
+// A tcp service has a generated slug, the global name a forward reaches it
+// by (never an http address); a row without one (from before) gets one
+// here. Created is true until a client served the service once (last_seen is
 // set when a registration succeeds), so a registration that created the row
 // and then failed for want of a port does not use up the announcement.
 func (a serviceResolverAdapter) ResolveTCP(ctx context.Context, userID, name string, o server.ResolveOptions) (server.Resolved, error) {
@@ -304,30 +306,61 @@ func (a serviceResolverAdapter) ResolveTCP(ctx context.Context, userID, name str
 	if err != nil {
 		return server.Resolved{}, err
 	}
-	// Two rounds: when another registration creates the service between the
-	// lookup and the insert, the second round finds it.
-	for round := 0; round < 2; round++ {
+	// Each round looks the service up and, when there is none, inserts it
+	// with a fresh slug. A duplicate is another registration that created it
+	// meanwhile (the next round finds it) or a slug that was taken (the next
+	// round draws another).
+	for round := 0; round <= subdomainRetries; round++ {
 		svc, found, err := a.findService(ctx, userID, name, "tcp")
 		if err != nil {
 			return server.Resolved{}, err
 		}
 		if found {
+			slug := svc.Subdomain
+			if slug == "" {
+				if slug, err = a.giveSlug(ctx, svc.ID); err != nil {
+					return server.Resolved{}, err
+				}
+			}
 			return server.Resolved{
-				ServiceID: svc.ID, AccessMode: svc.AccessMode, Created: svc.LastSeen == nil,
+				ServiceID: svc.ID, Slug: slug, AccessMode: svc.AccessMode, Created: svc.LastSeen == nil,
 				TCPPort: svc.TCPPort, TCPPortPinned: svc.TCPPortPinned, TCPPortLimit: limit,
 				MaxConnections: svc.MaxConnections,
 			}, nil
 		}
+		slug, err := auth.GenerateSlug()
+		if err != nil {
+			return server.Resolved{}, fmt.Errorf("resolve service: generate slug: %w", err)
+		}
 		id := uuid.NewString()
-		err = a.db.CreateService(ctx, db.Service{ID: id, UserID: userID, Name: name, Type: "tcp", AccessMode: mode})
+		err = a.db.CreateService(ctx, db.Service{ID: id, UserID: userID, Name: name, Type: "tcp", Subdomain: slug, AccessMode: mode})
 		if err == nil {
-			return server.Resolved{ServiceID: id, AccessMode: mode, Created: true, TCPPortLimit: limit}, nil
+			return server.Resolved{ServiceID: id, Slug: slug, AccessMode: mode, Created: true, TCPPortLimit: limit}, nil
 		}
 		if !errors.Is(err, db.ErrDuplicateService) {
 			return server.Resolved{}, fmt.Errorf("resolve service: create: %w", err)
 		}
 	}
-	return server.Resolved{}, fmt.Errorf("resolve service: %q was created and removed while registering", name)
+	return server.Resolved{}, fmt.Errorf("resolve service: %q could not be created (raced or all slugs collided)", name)
+}
+
+// giveSlug gives the service a generated slug, drawing again while the one
+// drawn is taken.
+func (a serviceResolverAdapter) giveSlug(ctx context.Context, serviceID string) (string, error) {
+	for i := 0; i < subdomainRetries; i++ {
+		slug, err := auth.GenerateSlug()
+		if err != nil {
+			return "", fmt.Errorf("resolve service: generate slug: %w", err)
+		}
+		serr := a.db.SetServiceSubdomain(ctx, serviceID, slug)
+		if serr == nil {
+			return slug, nil
+		}
+		if !isUNIQUESubdomainError(serr) && !strings.Contains(serr.Error(), "unique constraint") {
+			return "", fmt.Errorf("resolve service: set slug: %w", serr)
+		}
+	}
+	return "", fmt.Errorf("resolve service: exhausted %d slug attempts (all collided)", subdomainRetries)
 }
 
 // tcpPortLimit is how many ports the user's tcp services may hold: the

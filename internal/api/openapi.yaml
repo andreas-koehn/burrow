@@ -1111,6 +1111,25 @@ components:
           maximum: 168
           description: How long the grant lasts; the dashboard offers 1, 8 and 24.
         note: { type: string, maxLength: 200 }
+    ServiceConnection:
+      type: object
+      description: >
+        One live connection of a tcp service: a visitor of its public port
+        (kind visitor) or a forward stream of a signed-in client (kind
+        forward). user_id, user_email, token_name and session_id name the
+        one who forwards and are "" for a visitor.
+      required: [id, kind, source_ip, user_id, user_email, token_name, session_id, since, bytes_in, bytes_out]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [visitor, forward] }
+        source_ip: { type: string, description: 'The address the connection comes from, as the relay saw it.' }
+        user_id: { type: string }
+        user_email: { type: string }
+        token_name: { type: string }
+        session_id: { type: string, description: 'The forwarding client session (GET /api/v1/clients/{sessionID}).' }
+        since: { type: string, format: date-time }
+        bytes_in: { type: integer, format: int64, description: What reached the service so far. }
+        bytes_out: { type: integer, format: int64, description: What the service sent back so far. }
     MaxConnectionsReq:
       type: object
       required: [max_connections]
@@ -1137,14 +1156,18 @@ components:
         connected: { type: boolean }
         service_id:
           type: string
-          description: Id of the durable service of an http tunnel, for the /api/v1/services/{serviceID} routes; omitted for tcp.
+          description: >
+            Id of the durable service of the tunnel (http or tcp), for the
+            /api/v1/services/{serviceID} routes; omitted only for a tcp
+            tunnel without a service (an old client that sent no name, or a
+            relay that keeps no tcp services).
         url:
           type: string
-          description: Public address of an http tunnel, `https://<auth_domain>/svc/<slug>/`; omitted for tcp and for a gateway-only service.
+          description: Public address of an http tunnel, `https://<auth_domain>/svc/<slug>/`; omitted for tcp (a tcp service's slug is for `burrow forward`, never an address) and for a gateway-only service.
         access_mode:
           type: string
-          enum: [open, api_key, burrow_login, mtls]
-          description: The access mode in effect; omitted for tcp.
+          enum: [open, api_key, burrow_login, mtls, ip, private]
+          description: The access mode in effect; ip and private are modes of a tcp service.
     Session:
       type: object
       required: [id, ip, user_agent, created_at, expires_at, current]
@@ -1234,10 +1257,16 @@ components:
             trust anchor client certificates are verified against.
     ConnectionLog:
       type: object
-      required: [id, kind, service_id, tunnel_id, user_id, client_session_id, source_ip, user_agent, started_at, ended_at, duration_ms, bytes_in, bytes_out, status, reason]
+      required: [id, kind, service_id, tunnel_id, user_id, client_session_id, source_ip, user_agent, started_at, ended_at, duration_ms, bytes_in, bytes_out, status, reason, token_name]
       properties:
         id: { type: string }
-        kind: { type: string, enum: [control, http_proxy, tcp_proxy] }
+        kind:
+          type: string
+          enum: [control, http_proxy, tcp_proxy, tcp_forward]
+          description: >
+            tcp_forward is a forward stream (`burrow forward`) of a signed-in
+            client to a tcp service; its user_id is the user who forwards,
+            client_session_id their session and token_name their token.
         service_id: { type: string }
         tunnel_id: { type: string }
         user_id: { type: string }
@@ -1251,6 +1280,9 @@ components:
         bytes_out: { type: integer, format: int64 }
         status: { type: string, enum: [closed_clean, closed_error, closed_idle, rejected] }
         reason: { type: string }
+        token_name:
+          type: string
+          description: The client token name of the user who forwards (kind tcp_forward); "" otherwise.
     ConnectionLogRollup:
       type: object
       required: [day, service_id, kind, sessions, bytes_in, bytes_out, avg_duration_ms, p95_duration_ms]
@@ -1387,7 +1419,7 @@ components:
     Client:
       type: object
       description: One live client, that is one control session of a connected burrow client.
-      required: [session_id, user_id, token_name, remote_addr, os, arch, client_version, service_count, total_bytes_in, total_bytes_out]
+      required: [session_id, user_id, token_name, remote_addr, os, arch, client_version, service_count, total_bytes_in, total_bytes_out, forward_count, forwards]
       properties:
         session_id: { type: string }
         user_id: { type: string }
@@ -1399,6 +1431,26 @@ components:
         service_count: { type: integer }
         total_bytes_in: { type: integer, format: int64 }
         total_bytes_out: { type: integer, format: int64 }
+        forward_count:
+          type: integer
+          description: How many forward streams (`burrow forward`) the session has open.
+        forwards:
+          type: array
+          description: >
+            The forward streams the session has open, the oldest first. A
+            session that only forwards serves no service (service_count 0).
+          items: { $ref: '#/components/schemas/ClientForward' }
+    ClientForward:
+      type: object
+      description: One open forward stream of a client session to a tcp service.
+      required: [id, service_id, service, since, bytes_in, bytes_out]
+      properties:
+        id: { type: string, description: 'Id of the live connection, as GET /api/v1/services/{serviceID}/connections names it.' }
+        service_id: { type: string }
+        service: { type: string, description: The name of the service. }
+        since: { type: string, format: date-time }
+        bytes_in: { type: integer, format: int64, description: What the client sent to the service so far. }
+        bytes_out: { type: integer, format: int64, description: What the service sent back so far. }
     ClientService:
       type: object
       description: One service (tunnel) of a live client.
@@ -1409,7 +1461,7 @@ components:
         type: { type: string, enum: [http, tcp] }
         service_id:
           type: string
-          description: Id of the durable service of an http tunnel; omitted for tcp.
+          description: Id of the durable service of the tunnel (http or tcp); omitted only for a tcp tunnel without a service.
         remote_port: { type: integer }
         local_addr: { type: string }
         access_mode: { type: string }
@@ -3920,6 +3972,56 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not a tcp service. }
+
+  /api/v1/services/{serviceID}/connections:
+    get:
+      tags: [services]
+      operationId: serviceConnectionsList
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      summary: List the live connections of a tcp service
+      description: |
+        The connections the relay carries for the service now, the oldest
+        first, with their bytes so far: the visitors of its public port
+        (modes open and ip) and the forward streams of signed-in clients
+        (`burrow forward`, every mode). Empty when no client serves it. A
+        connection that ended is a row of the connection log.
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      responses:
+        '200':
+          description: The live connections.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ServiceConnection' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not a tcp service. }
+
+  /api/v1/services/{serviceID}/connections/{connID}:
+    delete:
+      tags: [services]
+      operationId: serviceConnectionDelete
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      x-burrow-mcp: false
+      summary: Close a live connection of a tcp service
+      description: |
+        Closes the connection at once: a visitor's socket, or a forward
+        stream (the forwarding client stays signed in and may open another
+        one while it is allowed). Audited as `service.connection.close`.
+        Needs a recent sign-in confirmation.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not cut off the people who use a service.
+      parameters:
+        - { $ref: '#/components/parameters/PathServiceID' }
+        - { name: connID, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Closed. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { description: The service is not a tcp service. }
 
@@ -6706,7 +6808,7 @@ paths:
       parameters:
         - name: kind
           in: query
-          schema: { type: string, enum: [control, http_proxy, tcp_proxy] }
+          schema: { type: string, enum: [control, http_proxy, tcp_proxy, tcp_forward] }
         - name: service_id
           in: query
           schema: { type: string }
@@ -6751,7 +6853,7 @@ paths:
           schema: { type: string }
         - name: kind
           in: query
-          schema: { type: string, enum: [control, http_proxy, tcp_proxy] }
+          schema: { type: string, enum: [control, http_proxy, tcp_proxy, tcp_forward] }
         - name: since
           in: query
           description: Only rows from this time on. RFC 3339, or a plain date YYYY-MM-DD.

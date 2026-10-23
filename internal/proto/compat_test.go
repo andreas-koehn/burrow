@@ -124,7 +124,7 @@ func TestOlderPeerReadsNewMessages(t *testing.T) {
 		t.Errorf("register response: %+v", rr)
 	}
 	var tcp oldTunnelRegisterResponse
-	decode(TunnelRegisterResponse{OK: true, TunnelID: "t", AccessMode: "private", Created: true}, &tcp)
+	decode(TunnelRegisterResponse{OK: true, TunnelID: "t", AccessMode: "private", Created: true, Slug: "k7p2qx"}, &tcp)
 	if tcp != (oldTunnelRegisterResponse{OK: true, TunnelID: "t"}) {
 		t.Errorf("private tcp register response: %+v", tcp)
 	}
@@ -179,5 +179,43 @@ func TestRelayCapabilityNames(t *testing.T) {
 	}
 	if string(b) != `{"ok":true,"session_id":"s","capabilities":["tcp_access"]}` {
 		t.Errorf("got %s", b)
+	}
+}
+
+// The forward stream is new: its messages travel as they are named, and a
+// refusal carries nothing it does not need.
+func TestForwardMessages(t *testing.T) {
+	if MsgForwardOpen != "forward_open" || MsgForwardOpenResp != "forward_open_response" {
+		t.Fatalf("message names changed: %q %q", MsgForwardOpen, MsgForwardOpenResp)
+	}
+	if CodeNotFound != "not_found" || CodeOffline != "offline" {
+		t.Fatalf("code names changed: %q %q", CodeNotFound, CodeOffline)
+	}
+	cases := []struct {
+		name string
+		val  any
+		want string
+	}{
+		{"open", ForwardOpen{Target: "rdp"}, `{"target":"rdp"}`},
+		{"refusal", ForwardOpenResponse{Code: CodeNotFound, Error: "no such service"},
+			`{"ok":false,"code":"not_found","error":"no such service"}`},
+		{"accepted", ForwardOpenResponse{OK: true, ServiceID: "s1", Name: "rdp"},
+			`{"ok":true,"service_id":"s1","name":"rdp"}`},
+	}
+	for _, c := range cases {
+		b, err := json.Marshal(c.val)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if string(b) != c.want {
+			t.Errorf("%s:\n got %s\nwant %s", c.name, b, c.want)
+		}
+	}
+	// A forward_open is a frame like any other: a relay that reads it as a
+	// data stream header finds no stream id, and closes the stream.
+	var sh StreamHeader
+	raw, _ := json.Marshal(ForwardOpen{Target: "rdp"})
+	if err := DecodePayload(Envelope{Type: MsgForwardOpen, Payload: raw}, &sh); err != nil || sh.StreamID != "" {
+		t.Errorf("as a stream header: %+v, %v", sh, err)
 	}
 }

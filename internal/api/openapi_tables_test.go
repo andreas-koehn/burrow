@@ -55,6 +55,8 @@ var openAPIOperationIDs = map[string]string{
 	"POST /api/v1/services/{serviceID}/ip-grants":                               "serviceIpGrantCreate",
 	"DELETE /api/v1/services/{serviceID}/ip-grants/{grantID}":                   "serviceIpGrantDelete",
 	"PUT /api/v1/services/{serviceID}/max-connections":                          "serviceMaxConnectionsUpdate",
+	"GET /api/v1/services/{serviceID}/connections":                              "serviceConnectionsList",
+	"DELETE /api/v1/services/{serviceID}/connections/{connID}":                  "serviceConnectionDelete",
 	"DELETE /api/v1/services/{serviceID}/cache/entries":                         "serviceCacheEntriesDelete",
 	"GET /api/v1/services/{serviceID}/ai-config":                                "serviceAiConfigGet",
 	"PUT /api/v1/services/{serviceID}/ai-config":                                "serviceAiConfigUpdate",
@@ -273,6 +275,8 @@ var openAPIMCPDisabled = map[string]string{
 	"serviceIpGrantsList":  "GET /api/v1/services/{serviceID}/ip-grants",
 	"serviceIpGrantCreate": "POST /api/v1/services/{serviceID}/ip-grants",
 	"serviceIpGrantDelete": "DELETE /api/v1/services/{serviceID}/ip-grants/{grantID}",
+	// Nor cut off the people who use a tcp service.
+	"serviceConnectionDelete": "DELETE /api/v1/services/{serviceID}/connections/{connID}",
 	// Nor change who may reach a service: its ip rules and its role list.
 	"serviceIpGeoUpdate":        "PUT /api/v1/services/{serviceID}/ip-geo",
 	"serviceAccessPolicyUpdate": "PUT /api/v1/services/{serviceID}/access-policy",
@@ -493,6 +497,7 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"serviceAccessPolicyGet":   {status: "200", typ: oaType[accessPolicyResp]()},
 	"serviceIpGeoGet":          {status: "200", typ: oaType[ipGeoResp]()},
 	"serviceIpGrantsList":      {status: "200", typ: oaType[ipGrantResp](), list: true},
+	"serviceConnectionsList":   {status: "200", typ: oaType[serviceConnectionResp](), list: true},
 	"serviceIpGrantCreate":     {status: "201", typ: oaType[ipGrantCreatedResp]()},
 	// The one answer that stays an exception: the handler writes the stored
 	// blob, a JSON object with no closed key set and no type to name. The nine

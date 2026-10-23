@@ -202,6 +202,9 @@ type ConnLogEntry struct {
 	BytesOut        int64
 	Status          string
 	Reason          string
+	// TokenName is the client token name of the user who forwards (kind
+	// tcp_forward); "" for a visitor.
+	TokenName string
 }
 
 // ConnLogReasonNoStream is the reason of a visitor whose client did not open
@@ -287,6 +290,10 @@ type Options struct {
 	// TCPAccess reads the ip policy of a tcp service in mode ip. nil: a tcp
 	// registration in mode ip is refused, since nobody could be let in.
 	TCPAccess TCPAccessLoader
+	// Forwards authorizes forward streams to tcp services. nil: the relay
+	// takes none (it closes such a stream, as an older relay does) and does
+	// not announce proto.CapForward.
+	Forwards ForwardAuthorizer
 }
 
 // Server is the burrowd relay control server.
@@ -480,13 +487,23 @@ func yamuxConfig() *yamux.Config {
 
 // Capabilities are what this relay announces to a client it lets in
 // (proto.Cap… for a relay): tcp_access when it keeps tcp services, whose
-// access modes it then applies.
+// access modes it then applies, and forward when it also takes forward
+// streams to them.
 func (s *Server) Capabilities() []string {
 	var out []string
 	if _, ok := s.opts.Services.(TCPServiceResolver); ok {
 		out = append(out, proto.CapTCPAccess)
+		if s.opts.Forwards != nil {
+			out = append(out, proto.CapForward)
+		}
 	}
 	return out
+}
+
+// forwarding reports whether the relay takes forward streams.
+func (s *Server) forwarding() bool {
+	_, ok := s.opts.Services.(TCPServiceResolver)
+	return ok && s.opts.Forwards != nil
 }
 
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
@@ -644,6 +661,9 @@ type SessionSnapshot struct {
 	TokenID     string
 	ConnectedAt time.Time
 	Tunnels     []TunnelView
+	// Forwards are the forward streams the session has open; a session that
+	// only forwards holds no tunnel.
+	Forwards []ForwardView
 }
 
 // recordSession writes what the session looks like now on the client token it
@@ -731,6 +751,7 @@ func (s *Server) SnapshotSessions() []SessionSnapshot {
 			SessionID: cs.SessionID, UserID: cs.UserID, RemoteAddr: cs.RemoteAddr,
 			OS: cs.OS, Arch: cs.Arch, ClientVersion: cs.ClientVersion, Token: cs.TokenName,
 			TokenID: cs.TokenID, ConnectedAt: cs.ConnectedAt,
+			Forwards: cs.forwardViews(),
 		}
 		for _, tn := range s.reg.snapshotTunnels(cs) {
 			ss.Tunnels = append(ss.Tunnels, TunnelView{

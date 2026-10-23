@@ -72,9 +72,13 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 	}
 	if err != nil {
 		// Only a token the authenticator rejected is a failed sign-in; a
-		// failure of the store is not the client's, and is not counted.
+		// failure of the store is not the client's: it is not counted, and
+		// the client is told to try again rather than that its token is bad
+		// (which would make it stop).
 		if !errors.Is(err, ErrTokenInvalid) {
-			_ = proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{OK: false, Error: "invalid token", Code: proto.CodeInvalidToken})
+			_ = proto.WriteMessage(conn, proto.MsgAuthResponse, proto.AuthResponse{
+				OK: false, Code: proto.CodeInternal, Error: "the relay could not check the token; try again later",
+			})
 			return nil, fmt.Errorf("token auth: %w", err)
 		}
 		if o.RateLimited {
@@ -378,8 +382,13 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 			refuseWith(proto.CodeAccessInvalid, fmt.Sprintf("the service %q has the access mode %q, which a tcp service cannot have; change it in the dashboard", tr.Name, mode))
 			return
 		}
-		if tr.Access != "" && tr.Access != mode {
-			refuseWith(proto.CodeAccessInvalid, fmt.Sprintf("the service %q is in access mode %s, not %s; change the mode in the dashboard or ask for %s", tr.Name, mode, tr.Access, mode))
+		// The mode in the dashboard wins over the client's wish when it is
+		// stricter (open < ip < private): a service tightened in the
+		// dashboard is served so, and the answer names the mode. A wish
+		// stricter than the stored mode is refused: serving it would open
+		// more than the client asked for.
+		if tr.Access != "" && tcpAccessRank(tr.Access) > tcpAccessRank(mode) {
+			refuseWith(proto.CodeAccessInvalid, "service is "+mode+" in the dashboard; restart with --access "+mode+" to serve it")
 			return
 		}
 	}
@@ -414,6 +423,8 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 		ServiceID: serviceID, accessMode: mode, created: svc.res.Created,
 	}
 	if mode == TCPAccessPrivate {
+		// Forward streams count against the cap and the pending pairings.
+		tn.limits = newTCPLimits(maxConns)
 		// No listener and no port. An automatic hold the service kept from
 		// an earlier mode is given back to the pool. A pinned hold (the
 		// client asked for that port with --remote) is kept on purpose: it
@@ -445,7 +456,7 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 		"access_mode", mode, "session_id", cs.SessionID)
 	resp := proto.TunnelRegisterResponse{OK: true, TunnelID: tn.ID, RemotePort: tn.RemotePort}
 	if serviceID != "" {
-		resp.AccessMode, resp.Created = mode, svc.res.Created
+		resp.AccessMode, resp.Created, resp.Slug = mode, svc.res.Created, svc.res.Slug
 		if s.opts.AuthDomain != "" {
 			resp.DashboardURL = "https://" + s.opts.AuthDomain + "/services/" + serviceID
 		}

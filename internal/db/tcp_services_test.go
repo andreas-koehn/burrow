@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"errors"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -156,5 +158,69 @@ func checkServiceIPGrantsCascade(t *testing.T, x *DB, userID string) {
 	}
 	if n != 0 {
 		t.Fatalf("%d grants outlived their service", n)
+	}
+}
+
+func TestMigration0041_TCPSlugsAndTokenName(t *testing.T) {
+	checkMigration0041(t, testDB(t), "u-tcpslug", "0041_v0.13.0_tcp_forwards.sql")
+}
+
+// Migration 0041 gives every tcp service without a slug one (a valid slug,
+// each its own) and leaves http services as they are; connection_logs gets
+// token_name. Down takes the tcp slugs and the column away again.
+func checkMigration0041(t *testing.T, x *DB, userID, file string) {
+	t.Helper()
+	ctx := context.Background()
+	freshServiceUser(t, x, userID)
+	raw, err := migrationFS.ReadFile("migrations/" + file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, down, _ := strings.Cut(string(raw), "-- +goose Down")
+	if _, err := x.sqlDB.ExecContext(ctx, down); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	rows := []Service{
+		{ID: "svc-t1-" + userID, UserID: userID, Name: "rdp", Type: "tcp", AccessMode: "private"},
+		{ID: "svc-t2-" + userID, UserID: userID, Name: "ssh", Type: "tcp", AccessMode: "open"},
+		{ID: "svc-h1-" + userID, UserID: userID, Name: "web", Type: "http", AccessMode: "open", Subdomain: "web-" + userID},
+		{ID: "svc-h2-" + userID, UserID: userID, Name: "api", Type: "http", AccessMode: "open"},
+	}
+	for _, s := range rows {
+		if err := x.CreateService(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := x.sqlDB.ExecContext(ctx, upBlock(string(raw))); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	got := map[string]string{}
+	for _, s := range rows {
+		svc, err := x.GetServiceByID(ctx, s.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got[s.Name] = svc.Subdomain
+	}
+	for _, name := range []string{"rdp", "ssh"} {
+		if !regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$`).MatchString(got[name]) {
+			t.Errorf("tcp service %s got slug %q", name, got[name])
+		}
+	}
+	if got["rdp"] == got["ssh"] {
+		t.Errorf("two tcp services share the slug %q", got["rdp"])
+	}
+	if got["web"] != "web-"+userID || got["api"] != "" {
+		t.Errorf("http services changed: %v", got)
+	}
+	// A database that outlives the run (Postgres) may hold the row of the
+	// last one.
+	if _, err := x.sqlDB.ExecContext(ctx, `DELETE FROM connection_logs WHERE id = ?`, "cl-"+userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := x.sqlDB.ExecContext(ctx,
+		`INSERT INTO connection_logs(id, kind, source_ip, started_at, ended_at, duration_ms, status, token_name)
+		 VALUES(?,?,?,?,?,?,?,?)`, "cl-"+userID, "tcp_forward", "127.0.0.1", time.Now(), time.Now(), 0, "closed_clean", "laptop"); err != nil {
+		t.Fatalf("token_name: %v", err)
 	}
 }

@@ -34,6 +34,9 @@ const (
 	KindControl   Kind = "control"
 	KindHTTPProxy Kind = "http_proxy"
 	KindTCPProxy  Kind = "tcp_proxy"
+	// KindTCPForward is a forward stream of a signed-in client to a tcp
+	// service; its user is the one who forwards.
+	KindTCPForward Kind = "tcp_forward"
 )
 
 // Status describes how the connection ended.
@@ -65,6 +68,9 @@ type Entry struct {
 	BytesOut        int64
 	Status          Status
 	Reason          string
+	// TokenName is the client token name of the user who forwards (kind
+	// tcp_forward); empty otherwise.
+	TokenName string
 }
 
 // Sink is the connection-log recording surface.
@@ -147,8 +153,8 @@ func (s *SQLSink) Record(ctx context.Context, e Entry) error {
 			`INSERT INTO connection_logs
 			  (id, kind, service_id, tunnel_id, user_id, client_session_id,
 			   source_ip, user_agent, started_at, ended_at, duration_ms,
-			   bytes_in, bytes_out, status, reason)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			   bytes_in, bytes_out, status, reason, token_name)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			e.ID,
 			string(e.Kind),
 			nullableStr(e.ServiceID),
@@ -164,6 +170,7 @@ func (s *SQLSink) Record(ctx context.Context, e Entry) error {
 			e.BytesOut,
 			string(e.Status),
 			nullableStr(e.Reason),
+			nullableStr(e.TokenName),
 		)
 		if err != nil {
 			s.log.Warn("connlog: insert failed",
@@ -262,7 +269,8 @@ func ListConnectionLogs(ctx context.Context, x *db.DB, q ConnLogQuery) ([]db.Con
 		COALESCE(user_id,''), COALESCE(client_session_id,''),
 		source_ip, COALESCE(user_agent,''),
 		started_at, ended_at, duration_ms,
-		bytes_in, bytes_out, status, COALESCE(reason,''), created_at
+		bytes_in, bytes_out, status, COALESCE(reason,''), created_at,
+		COALESCE(token_name,'')
 		FROM connection_logs`
 	if len(where) > 0 {
 		sql += " WHERE " + strings.Join(where, " AND ")
@@ -285,6 +293,7 @@ func ListConnectionLogs(ctx context.Context, x *db.DB, q ConnLogQuery) ([]db.Con
 			&r.SourceIP, &r.UserAgent,
 			&r.StartedAt, &r.EndedAt, &r.DurationMs,
 			&r.BytesIn, &r.BytesOut, &r.Status, &r.Reason, &r.CreatedAt,
+			&r.TokenName,
 		); err != nil {
 			return nil, fmt.Errorf("scan connection_log: %w", err)
 		}

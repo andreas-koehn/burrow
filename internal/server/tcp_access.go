@@ -41,6 +41,18 @@ func ValidTCPAccessMode(mode string) bool {
 	return false
 }
 
+// tcpAccessRank orders the tcp access modes from the most open: open < ip <
+// private.
+func tcpAccessRank(mode string) int {
+	switch mode {
+	case TCPAccessIP:
+		return 1
+	case TCPAccessPrivate:
+		return 2
+	}
+	return 0
+}
+
 // Limits of the visitors of one tcp tunnel (modes open and ip).
 const (
 	// DefaultTCPMaxConnections is how many visitors may be connected at once
@@ -287,6 +299,24 @@ func (l *tcpLimits) admit(source string) string {
 	}
 	src.tokens--
 	src.active++
+	l.active++
+	l.pending++
+	return ""
+}
+
+// admitForward lets a forward stream in, or names why not: it counts against
+// the tunnel's cap and its pending pairings like a visitor, and against no
+// source (a forward is limited per session, see forwardLimits). It ends with
+// paired and done("").
+func (l *tcpLimits) admitForward() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.active >= l.max {
+		return TCPRefusedTunnelFull
+	}
+	if l.pending >= tcpMaxPending {
+		return TCPRefusedPendingFull
+	}
 	l.active++
 	l.pending++
 	return ""

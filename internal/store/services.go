@@ -550,10 +550,16 @@ func (s *Store) ValidateAPIKey(ctx context.Context, serviceID, presented string)
 }
 
 // ServiceForSubdomain returns the service registered for the given subdomain.
-// This is a hot-path helper used by the proxy router; it has NO permission gate.
-// Delegates directly to db.GetServiceBySubdomain; propagates db.ErrNotFound.
+// This is a hot-path helper used by the proxy router and the login gate; it
+// has NO permission gate. A tcp service's slug names it for forwards only:
+// it is never an address over HTTP, so it is not found here (db.ErrNotFound,
+// as for a slug nobody has). Propagates db.ErrNotFound.
 func (s *Store) ServiceForSubdomain(ctx context.Context, sub string) (db.Service, error) {
-	return s.q.GetServiceBySubdomain(ctx, sub)
+	svc, err := s.q.GetServiceBySubdomain(ctx, sub)
+	if err == nil && svc.Type == "tcp" {
+		return db.Service{}, db.ErrNotFound
+	}
+	return svc, err
 }
 
 // ServiceByID returns the service row for id. Hot-path helper used by the

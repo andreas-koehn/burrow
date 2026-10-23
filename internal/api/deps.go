@@ -154,6 +154,22 @@ type ClientView struct {
 	ServiceCount  int    `json:"service_count"`
 	TotalBytesIn  int64  `json:"total_bytes_in"`
 	TotalBytesOut int64  `json:"total_bytes_out"`
+	// ForwardCount and Forwards are the forward streams (burrow forward) the
+	// session has open. A session that only forwards serves no service.
+	ForwardCount int                 `json:"forward_count"`
+	Forwards     []ClientForwardView `json:"forwards"`
+}
+
+// ClientForwardView is one open forward stream of a client session: the tcp
+// service it reaches, since when, and its bytes so far (in: what the client
+// sent to the service).
+type ClientForwardView struct {
+	ID        string    `json:"id"`
+	ServiceID string    `json:"service_id"`
+	Service   string    `json:"service"`
+	Since     time.Time `json:"since"`
+	BytesIn   uint64    `json:"bytes_in"`
+	BytesOut  uint64    `json:"bytes_out"`
 }
 
 // ClientServiceView is one service (tunnel) under a client: live + persisted
@@ -162,9 +178,10 @@ type ClientServiceView struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Type string `json:"type"`
-	// ServiceID is the durable-service id for http services (omitted for tcp).
-	// The dashboard links to /services/{service_id} with it — the per-session
-	// tunnel ID in "id" is not routable there.
+	// ServiceID is the durable-service id (omitted for a tcp tunnel of a
+	// relay that keeps no tcp services, or of an old client that sent no
+	// name). The dashboard links to /services/{service_id} with it — the
+	// per-session tunnel ID in "id" is not routable there.
 	ServiceID     string `json:"service_id,omitempty"`
 	RemotePort    int    `json:"remote_port"`
 	LocalAddr     string `json:"local_addr"`
@@ -250,8 +267,10 @@ type TunnelView struct {
 	BytesIn    uint64 `json:"bytes_in"`
 	BytesOut   uint64 `json:"bytes_out"`
 	Connected  bool   `json:"connected"`
-	// ServiceID is the durable-service id for http tunnels (omitted for tcp).
-	// The dashboard's Configure dialog routes per-service endpoints
+	// ServiceID is the durable-service id of the tunnel, http or tcp (omitted
+	// only for a tcp tunnel without a service: an unnamed one, or one of a
+	// relay that keeps no tcp services). The dashboard's Configure dialog
+	// routes per-service endpoints
 	// (/services/{service_id}/access-mode, /api-keys) through this ID — using
 	// the tunnel.id for http tunnels yields 404 because per-session tunnel
 	// UUIDs differ from the persisted service UUID.
@@ -645,6 +664,9 @@ type Deps struct {
 	// IPGrants holds the just-in-time grants of tcp services in mode ip
 	// (*db.DB). nil: the grant routes answer 500.
 	IPGrants IPGrantStore
+	// Connections are the live connections of tcp services (the relay):
+	// GET and DELETE /services/{id}/connections. nil: none are listed.
+	Connections ServiceConnections
 	// TCPServices is told when the access of a tcp service changed (its
 	// mode, ip lists, grants or cap), so that its live tunnel applies it
 	// (*server.Server). nil: a change applies when the tunnel registers

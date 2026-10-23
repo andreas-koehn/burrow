@@ -637,6 +637,10 @@ func newRouter(d Deps) http.Handler {
 			r.Delete("/services/{serviceID}/ip-grants/{grantID}", d.DeleteIPGrant)
 			// The cap on connected visitors of a tcp service.
 			r.Put("/services/{serviceID}/max-connections", d.PutServiceMaxConnections)
+			// The live connections of a tcp service (visitors and forwards).
+			// Closing one cuts someone off: it asks for a recent confirmation.
+			r.Get("/services/{serviceID}/connections", d.ListServiceConnections)
+			r.With(recent).Delete("/services/{serviceID}/connections/{connID}", d.DeleteServiceConnection)
 			// v0.4.0 Task 15: editable custom roles + permission matrix
 			// (spec Part I). The permission catalog is open to who reads or
 			// manages roles and to who manages automation tokens (a token

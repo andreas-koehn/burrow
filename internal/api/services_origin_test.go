@@ -196,17 +196,21 @@ func TestServicesOrigin_UnsetKeepsOneHost(t *testing.T) {
 func TestServicesOrigin_ServiceURL(t *testing.T) {
 	for _, tc := range []struct {
 		d    Deps
+		typ  string
 		slug string
 		gw   bool
 		want string
 	}{
-		{Deps{AuthDomain: originDash, ServicesDomain: originSvc}, "k7p2qx", false, "https://" + originSvc + "/svc/k7p2qx/"},
-		{Deps{AuthDomain: originDash}, "k7p2qx", false, "https://" + originDash + "/svc/k7p2qx/"},
-		{Deps{AuthDomain: originDash, ServicesDomain: originSvc}, "k7p2qx", true, ""},
-		{Deps{AuthDomain: originDash, ServicesDomain: originSvc}, "", false, ""},
-		{Deps{}, "k7p2qx", false, ""},
+		{Deps{AuthDomain: originDash, ServicesDomain: originSvc}, "http", "k7p2qx", false, "https://" + originSvc + "/svc/k7p2qx/"},
+		{Deps{AuthDomain: originDash}, "http", "k7p2qx", false, "https://" + originDash + "/svc/k7p2qx/"},
+		{Deps{AuthDomain: originDash, ServicesDomain: originSvc}, "http", "k7p2qx", true, ""},
+		{Deps{AuthDomain: originDash, ServicesDomain: originSvc}, "http", "", false, ""},
+		{Deps{}, "http", "k7p2qx", false, ""},
+		// A tcp service's slug is for forwards: it is no address.
+		{Deps{AuthDomain: originDash, ServicesDomain: originSvc}, "tcp", "k7p2qx", false, ""},
+		{Deps{AuthDomain: originDash}, "tcp", "k7p2qx", false, ""},
 	} {
-		if got := tc.d.serviceURL(tc.slug, tc.gw); got != tc.want {
+		if got := tc.d.serviceURL(tc.typ, tc.slug, tc.gw); got != tc.want {
 			t.Errorf("%+v slug %q gw %v: %q, want %q", tc.d.ServicesDomain, tc.slug, tc.gw, got, tc.want)
 		}
 	}

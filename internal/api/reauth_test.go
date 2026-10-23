@@ -49,6 +49,7 @@ var reauthGuarded = []apiRoute{
 	{http.MethodPut, "/api/v1/services/{serviceID}/ip-geo"},
 	// Native tcp: a just-in-time grant widens who may reach a port.
 	{http.MethodPost, "/api/v1/services/{serviceID}/ip-grants"},
+	{http.MethodDelete, "/api/v1/services/{serviceID}/connections/{connID}"},
 	{http.MethodPut, "/api/v1/services/{serviceID}/gateway-only"},
 	{http.MethodPut, "/api/v1/redaction/settings"},
 	{http.MethodPost, "/api/v1/redaction/rules"},

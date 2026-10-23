@@ -80,6 +80,9 @@ type connectionLogResp struct {
 	BytesOut        int64     `json:"bytes_out"`
 	Status          string    `json:"status"`
 	Reason          string    `json:"reason"`
+	// TokenName is the client token name of the user who forwards (kind
+	// tcp_forward); "" otherwise.
+	TokenName string `json:"token_name"`
 }
 
 func toConnectionLogResp(r db.ConnectionLog) connectionLogResp {
@@ -99,6 +102,7 @@ func toConnectionLogResp(r db.ConnectionLog) connectionLogResp {
 		BytesOut:        r.BytesOut,
 		Status:          r.Status,
 		Reason:          r.Reason,
+		TokenName:       r.TokenName,
 	}
 }
 
@@ -371,7 +375,7 @@ func (d Deps) GetConnectionLogsExport(w http.ResponseWriter, r *http.Request) {
 		_ = cw.Write([]string{
 			"id", "kind", "service_id", "tunnel_id", "user_id", "client_session_id",
 			"source_ip", "user_agent", "started_at", "ended_at", "duration_ms",
-			"bytes_in", "bytes_out", "status", "reason",
+			"bytes_in", "bytes_out", "status", "reason", "token_name",
 		})
 		for _, row := range rows {
 			_ = cw.Write([]string{
@@ -383,7 +387,7 @@ func (d Deps) GetConnectionLogsExport(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("%d", row.DurationMs),
 				fmt.Sprintf("%d", row.BytesIn),
 				fmt.Sprintf("%d", row.BytesOut),
-				row.Status, row.Reason,
+				row.Status, row.Reason, row.TokenName,
 			})
 		}
 		cw.Flush()

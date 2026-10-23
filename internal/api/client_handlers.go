@@ -44,7 +44,18 @@ func (d Deps) ListClients(w http.ResponseWriter, r *http.Request) {
 	if out == nil {
 		out = []ClientView{}
 	}
+	for i := range out {
+		out[i].Forwards = nonNilForwards(out[i].Forwards)
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// nonNilForwards is fw, or [] for none, so that forwards is always a list.
+func nonNilForwards(fw []ClientForwardView) []ClientForwardView {
+	if fw == nil {
+		return []ClientForwardView{}
+	}
+	return fw
 }
 
 // GetClient returns one client + its services (tunnels:read:any).
@@ -63,6 +74,7 @@ func (d Deps) GetClient(w http.ResponseWriter, r *http.Request) {
 	if cd.Services == nil {
 		cd.Services = []ClientServiceView{}
 	}
+	cd.Forwards = nonNilForwards(cd.Forwards)
 	writeJSON(w, http.StatusOK, cd)
 }
 
@@ -87,6 +99,9 @@ func (d Deps) ListKnownClients(w http.ResponseWriter, r *http.Request) {
 		}
 		if out[i].Sessions == nil {
 			out[i].Sessions = []ClientView{}
+		}
+		for j := range out[i].Sessions {
+			out[i].Sessions[j].Forwards = nonNilForwards(out[i].Sessions[j].Forwards)
 		}
 	}
 	writeJSON(w, http.StatusOK, out)

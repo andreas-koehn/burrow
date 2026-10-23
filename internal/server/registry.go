@@ -61,6 +61,11 @@ type Tunnel struct {
 	// nobody in); limits are the limits of a tcp tunnel with a public port.
 	policy atomic.Pointer[tcpPolicy]
 	limits *tcpLimits
+
+	// conns are the live connections of a tcp tunnel (visitors and
+	// forwards), by id, under connMu.
+	connMu sync.Mutex
+	conns  map[string]*liveConn
 }
 
 // ClientSession is one authenticated client connection.
@@ -95,6 +100,11 @@ type ClientSession struct {
 	summaries        chan proto.RequestSummary
 	summariesDropped atomic.Uint64
 	summariesOff     atomic.Bool // the sender has ended
+
+	// fwdLimits limit the forward streams this session opens; forwards are
+	// the open ones, by id (both under mu).
+	fwdLimits *forwardLimits
+	forwards  map[string]*liveConn
 }
 
 // summaryQueue is how many request summaries may wait for one client.
