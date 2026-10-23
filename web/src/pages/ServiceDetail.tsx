@@ -6,6 +6,7 @@ import { Badge, Button, ErrorNotice, PageHeader, SkeletonRows, Switch, Tabs } fr
 import { ServiceUrl } from "@/components/ServiceUrl";
 import { EditSlugDialog } from "@/components/EditSlugDialog";
 import { AccessModePanel } from "@/components/AccessModePanel";
+import { TcpAccessPanel } from "@/components/TcpAccessPanel";
 import { ApiKeysPanel } from "@/components/ApiKeysPanel";
 import { UpstreamCredentialsPanel } from "@/pages/UpstreamCredentials";
 import { ServiceClientPanel } from "@/components/ServiceClientPanel";
@@ -14,14 +15,9 @@ import { useCan } from "@/auth/useCan";
 import { P } from "@/auth/permissions";
 import { serviceState } from "@/lib/status";
 import { useServicesDomain } from "@/lib/useServicesDomain";
-import type { ServiceDetail as ServiceDetailType, AccessMode, AiProvider } from "@/lib/contract";
+import { ACCESS_LABEL } from "@/lib/tcpAccess";
+import type { ServiceDetail as ServiceDetailType, AiProvider } from "@/lib/contract";
 
-const ACCESS_LABEL: Record<AccessMode, string> = {
-  open: "Open",
-  api_key: "API key",
-  burrow_login: "Burrow login",
-  mtls: "mTLS",
-};
 
 const BACK = { to: "/services", label: "Services" } as const;
 const TAB_VALUES = ["access", "api-keys", "upstream-key"];
@@ -190,7 +186,7 @@ export default function ServiceDetail() {
       {/* Only what a client serves: the hidden service of a hosted provider has no machine behind it. */}
       {svc.type !== "direct" && <ServiceClientPanel service={svc} />}
 
-      <Tabs
+      {svc.type === "tcp" ? <TcpAccessPanel service={svc} /> : <Tabs
         value={tab}
         onChange={setTab}
         tabs={[
@@ -272,7 +268,7 @@ export default function ServiceDetail() {
             ),
           },
         ]}
-      />
+      />}
       {canDelete && (
         <section className="danger-zone" aria-labelledby="danger-zone-title">
           <h2 id="danger-zone-title" className="danger-zone-title">Danger zone</h2>

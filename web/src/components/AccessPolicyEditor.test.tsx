@@ -57,3 +57,13 @@ describe("AccessPolicyEditor", () => {
     );
   });
 });
+
+describe("AccessPolicyEditor for forwarding", () => {
+  it("explains an empty policy as owner only and names who may forward", async () => {
+    renderApp(<AccessPolicyEditor serviceId="svc_pg001" forward />);
+    expect(await screen.findByRole("heading", { name: "Who may forward" })).toBeInTheDocument();
+    expect(screen.getByText("Empty policy: only the owner can forward to this service.")).toBeInTheDocument();
+    expect(screen.getByText(/Signed-in users whose role is listed may forward to this service/)).toBeInTheDocument();
+    expect(screen.queryByText(/nobody can reach/i)).toBeNull();
+  });
+});

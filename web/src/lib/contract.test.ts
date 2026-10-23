@@ -19,7 +19,7 @@ import { ACCESS_MODES, isAccessMode, WEBHOOK_EVENT_FIELDS } from "@/lib/contract
 
 describe("contract", () => {
   it("exposes the access-mode enum and guard", () => {
-    expect(ACCESS_MODES).toEqual(["open", "api_key", "burrow_login", "mtls"]);
+    expect(ACCESS_MODES).toEqual(["open", "api_key", "burrow_login", "mtls", "ip", "private"]);
     expect(isAccessMode("open")).toBe(true);
     expect(isAccessMode("mtls")).toBe(true);
     expect(isAccessMode("nope")).toBe(false);
@@ -49,7 +49,7 @@ describe("contract", () => {
       client_session_id: "sess_abc", provider_slug: "",
     };
     expectTypeOf(s.status).toEqualTypeOf<"online" | "offline" | "never_connected">();
-    expectTypeOf(s.access_mode).toEqualTypeOf<"open" | "api_key" | "burrow_login" | "mtls">();
+    expectTypeOf(s.access_mode).toEqualTypeOf<"open" | "api_key" | "burrow_login" | "mtls" | "ip" | "private">();
     const d: ServiceDetail = { ...s, api_key_count: 2, access_policy: ["user"] };
     const k: ServiceApiKey = { id: "k1", name: "ci", last_used: null, created_at: "2026-05-19T00:00:00Z" };
     const p: AccessPolicy = { roles: ["user"] };

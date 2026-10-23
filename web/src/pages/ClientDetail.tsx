@@ -5,14 +5,9 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { Badge, PageHeader, SkeletonRows, TableEmptyRow } from "@/components/ds";
 import { StatusBadge } from "@/components/StatusBadge";
+import { ACCESS_LABEL } from "@/lib/tcpAccess";
 import type { AccessMode, ClientDetail as ClientDetailT } from "@/lib/contract";
 
-const ACCESS_LABEL: Record<AccessMode, string> = {
-  open: "Open",
-  api_key: "API key",
-  burrow_login: "Burrow login",
-  mtls: "mTLS",
-};
 
 const BACK = { to: "/clients", label: "Clients" } as const;
 

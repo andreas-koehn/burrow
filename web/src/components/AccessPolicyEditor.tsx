@@ -6,7 +6,12 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import type { RoleSummary, AccessPolicy } from "@/lib/contract";
 
-export function AccessPolicyEditor({ serviceId }: { serviceId: string }) {
+/**
+ * `forward` is the policy of a tcp service: the roles besides the owner that may
+ * forward to it with `burrow forward`. The owner always may, so an empty policy is
+ * not a locked door.
+ */
+export function AccessPolicyEditor({ serviceId, forward = false }: { serviceId: string; forward?: boolean }) {
   const qc = useQueryClient();
 
   const { data: roles } = useQuery({
@@ -54,7 +59,7 @@ export function AccessPolicyEditor({ serviceId }: { serviceId: string }) {
 
   return (
     <div className="access-policy-editor">
-      <h3>Access policy</h3>
+      <h3>{forward ? "Who may forward" : "Access policy"}</h3>
       <div className="chip-row" role="group" aria-label="Allowed roles">
         {(roles ?? []).map((r) => {
           const on = current.includes(r.name);
@@ -73,14 +78,19 @@ export function AccessPolicyEditor({ serviceId }: { serviceId: string }) {
       </div>
 
       {current.length === 0 && (
-        <p className="notice-inline warn" role="status">
-          Empty policy — nobody can reach this service until a role is added.
-        </p>
+        forward ? (
+          <p className="muted" role="status">Empty policy: only the owner can forward to this service.</p>
+        ) : (
+          <p className="notice-inline warn" role="status">
+            Empty policy — nobody can reach this service until a role is added.
+          </p>
+        )
       )}
 
       <p className="muted">
-        Signed-in users whose role is listed may reach this service — SSO: one
-        Burrow login covers every protected service their role allows.
+        {forward
+          ? "Signed-in users whose role is listed may forward to this service with burrow forward. The owner always may."
+          : "Signed-in users whose role is listed may reach this service — SSO: one Burrow login covers every protected service their role allows."}
       </p>
 
       {err && <p role="alert" className="notice-inline">{err}</p>}

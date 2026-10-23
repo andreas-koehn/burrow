@@ -45,7 +45,9 @@ export interface Session {
 export type SettingsMap = Record<string, string>;
 export type SmtpTls = "none" | "starttls" | "implicit";
 
-export const ACCESS_MODES = ["open", "api_key", "burrow_login", "mtls"] as const;
+// "ip" and "private" belong to tcp services; the http modes to http services.
+export const ACCESS_MODES = ["open", "api_key", "burrow_login", "mtls", "ip", "private"] as const;
+export type TcpAccessMode = "open" | "ip" | "private";
 export type AccessMode = (typeof ACCESS_MODES)[number];
 export function isAccessMode(v: string): v is AccessMode {
   return (ACCESS_MODES as readonly string[]).includes(v);
@@ -173,6 +175,28 @@ export interface Service {
   client_session_id: string;
   /** Slug of the tunnel provider this service backs; "" when it backs none. */
   provider_slug: string;
+  /** Cap on connected visitors of a tcp service; 0 is the relay's default (32). Absent on a relay that predates it. */
+  max_connections?: number;
+}
+
+/** One just-in-time grant of a tcp service (GET /services/{id}/ip-grants). */
+export interface IpGrant {
+  id: string;
+  /** The range, masked; one address is a /32 or a /128. */
+  cidr: string;
+  family: "ipv4" | "ipv6";
+  expires_at: string;
+  note: string;
+  created_by: string;
+  created_at: string;
+}
+
+/** The answer to POST /services/{id}/ip-grants. */
+export interface IpGrantCreated extends IpGrant {
+  /** The grant is for the caller's own address (no cidr was sent). */
+  from_caller: boolean;
+  /** Set when the address is not a public one: the relay may see a proxy instead of the visitor. */
+  warning?: string;
 }
 
 export interface ServiceDetail extends Service {

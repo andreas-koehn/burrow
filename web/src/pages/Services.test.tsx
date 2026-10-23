@@ -1175,7 +1175,8 @@ describe("Services page — All | Online", () => {
       mount();
       await screen.findByRole("table", { name: "Services" });
       expect(asked).toContain("/api/v1/services");
-      expect(asked.filter((p) => /\/(tunnels|clients)/.test(p))).toEqual([]);
+      // The relay's host is asked for once a tcp service is listed, to write its address.
+      expect(asked.filter((p) => /\/(tunnels|clients)/.test(p) && !p.endsWith("/clients/connect-info"))).toEqual([]);
     } finally {
       server.events.removeAllListeners();
     }

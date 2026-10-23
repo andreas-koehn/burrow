@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Dialog, Input, Select } from "@/components/ds";
@@ -11,13 +11,19 @@ interface GeoStatus {
 }
 
 const CIDR_RE = /^[0-9.]+\/\d{1,2}$|^[0-9a-f:]+\/\d{1,3}$/i;
+// A tcp service takes a bare address as well; the relay masks it.
+const ADDR_OR_CIDR_RE = /^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$|^[0-9a-f]*:[0-9a-f:]*(\/\d{1,3})?$/i;
 
 const LIST_OPTIONS = [
   { value: "allow_cidrs", label: "Allow CIDR" },
   { value: "block_cidrs", label: "Block CIDR" },
 ];
 
-export function IPGeoPanel({ serviceId }: { serviceId: string }) {
+/**
+ * `tcp` turns it into the permanent list of a tcp service in IP allowlist mode: addresses and
+ * ranges only (a bare address is allowed), with no countries, which the relay does not enforce for tcp.
+ */
+export function IPGeoPanel({ serviceId, tcp = false }: { serviceId: string; tcp?: boolean }) {
   const qc = useQueryClient();
   const cfg = useQuery({
     queryKey: ["service", serviceId, "ipgeo"],
@@ -28,6 +34,7 @@ export function IPGeoPanel({ serviceId }: { serviceId: string }) {
     queryKey: ["geo", "status"],
     queryFn: () => apiFetch<GeoStatus>("/geo/status"),
     retry: false,
+    enabled: !tcp,
   });
 
   const [open, setOpen] = useState(false);
@@ -51,8 +58,10 @@ export function IPGeoPanel({ serviceId }: { serviceId: string }) {
       && data.block_countries.length === 0);
 
   function submitCidr() {
-    if (!CIDR_RE.test(cidr.trim())) {
-      setError("Invalid CIDR. Use form 10.0.0.0/8 or fe80::/10.");
+    if (tcp ? !ADDR_OR_CIDR_RE.test(cidr.trim()) : !CIDR_RE.test(cidr.trim())) {
+      setError(tcp
+        ? "That is not an address or range. Use 203.0.113.9, 10.0.0.0/8 or 2001:db8::/32."
+        : "Invalid CIDR. Use form 10.0.0.0/8 or fe80::/10.");
       return;
     }
     if (!data) return;
@@ -65,6 +74,16 @@ export function IPGeoPanel({ serviceId }: { serviceId: string }) {
     setOpen(false);
     setCidr("");
     setError(null);
+  }
+
+  if (tcp) {
+    return (
+      <TcpList
+        data={data}
+        open={open} setOpen={setOpen} list={list} setList={setList} cidr={cidr} setCidr={setCidr}
+        error={error} setError={setError} submit={submitCidr}
+      />
+    );
   }
 
   return (
@@ -125,5 +144,77 @@ export function IPGeoPanel({ serviceId }: { serviceId: string }) {
         </div>
       </Dialog>
     </div>
+  );
+}
+
+interface TcpListProps {
+  data: IpGeoConfig | undefined;
+  open: boolean; setOpen: (v: boolean) => void;
+  list: "allow_cidrs" | "block_cidrs"; setList: (v: "allow_cidrs" | "block_cidrs") => void;
+  cidr: string; setCidr: (v: string) => void;
+  error: string | null; setError: (v: string | null) => void;
+  submit: () => void;
+}
+
+function TcpList({ data, open, setOpen, list, setList, cidr, setCidr, error, setError, submit }: TcpListProps) {
+  const titleId = useId();
+  const allow = data?.allow_cidrs ?? [];
+  const block = data?.block_cidrs ?? [];
+  return (
+    <section className="ipgeo-panel card col gap-2" aria-labelledby={titleId}>
+      <h2 id={titleId}>Allowed addresses</h2>
+      <p className="muted small">
+        The permanent list of the IP allowlist. An address on the block list is always refused.
+      </p>
+      {allow.length === 0 && block.length === 0 ? (
+        <p className="muted">
+          The list is empty: only a grant lets an address in. With no grant, nobody can connect.
+        </p>
+      ) : (
+        <div className="chip-row">
+          {allow.map((c) => <span key={`a-${c}`} className="chip allow">allow {c}</span>)}
+          {block.map((c) => <span key={`b-${c}`} className="chip block">block {c}</span>)}
+        </div>
+      )}
+      <div className="actions">
+        <Button type="button" variant="secondary" size="sm" onClick={() => { setOpen(true); setError(null); }}>
+          Add address
+        </Button>
+      </div>
+      {error && !open && <p role="alert" className="notice-inline error">{error}</p>}
+
+      <Dialog
+        open={open}
+        onOpenChange={(o) => { setOpen(o); if (!o) setError(null); }}
+        title="Add address"
+        footer={
+          <>
+            <Button type="button" variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button type="button" variant="primary" onClick={submit}>Add</Button>
+          </>
+        }
+      >
+        <div className="field">
+          <label htmlFor="tcp-list">List</label>
+          <Select
+            id="tcp-list"
+            value={list}
+            onChange={(v) => setList(v as "allow_cidrs" | "block_cidrs")}
+            options={[{ value: "allow_cidrs", label: "Allow" }, { value: "block_cidrs", label: "Block" }]}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="tcp-address">Address or range</label>
+          <Input
+            id="tcp-address"
+            className="mono"
+            value={cidr}
+            onChange={(e) => setCidr(e.target.value)}
+            placeholder="203.0.113.9 or 10.0.0.0/8"
+          />
+        </div>
+        {error && <p role="alert" className="notice-inline error">{error}</p>}
+      </Dialog>
+    </section>
   );
 }

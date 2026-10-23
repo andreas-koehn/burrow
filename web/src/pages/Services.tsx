@@ -7,6 +7,8 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Badge, Dialog, Disclosure, EmptyState, ErrorNotice, FormField, FormFieldGroup, Input, PageHeader, Segmented, Select, SkeletonRows, SubmitHint, firstMissing } from "@/components/ds";
 import { Toaster } from "@/components/ui/sonner";
 import { formatBytes } from "@/lib/format";
+import { ACCESS_LABEL, forwardCommand } from "@/lib/tcpAccess";
+import { useRelayHost } from "@/lib/useRelayHost";
 import type { Service, AccessMode, ClientDetail, ClientView } from "@/lib/contract";
 import { ServiceUrl } from "@/components/ServiceUrl";
 import { SlugField, slugError } from "@/components/SlugField";
@@ -19,20 +21,12 @@ import { useCan } from "@/auth/useCan";
 import { useServicesDomain } from "@/lib/useServicesDomain";
 import { P } from "@/auth/permissions";
 
-const ACCESS_LABEL: Record<AccessMode, string> = {
-  open: "Open",
-  api_key: "API key",
-  burrow_login: "Burrow login",
-  mtls: "mTLS",
-};
 
 const ACCESS_MODE_OPTIONS = [
   { value: "open",         label: "Open" },
   { value: "api_key",     label: "API key" },
   { value: "burrow_login", label: "Burrow login" },
 ];
-
-interface ConnectInfo { server: string }
 
 /** One live tunnel: what a client is holding open right now. */
 interface Tunnel {
@@ -96,22 +90,10 @@ export default function Services() {
     retry: false,
     enabled: live,
   });
-  // The relay's host, so a tcp row can copy a real host:port. A 404 is tolerated:
-  // the dashboard's own hostname stands in.
-  const connectInfo = useQuery({
-    queryKey: ["connect-info"],
-    queryFn: () => apiFetch<ConnectInfo>("/clients/connect-info"),
-    retry: false,
-    staleTime: 5 * 60_000,
-    enabled: live,
-  });
-  const relayHost = (() => {
-    const winHost = typeof window !== "undefined" ? window.location.hostname : "";
-    const s = connectInfo.data?.server ?? "";
-    // ":7000" (port only, relay bound to all interfaces) carries no host.
-    const i = s.lastIndexOf(":");
-    return i <= 0 ? winHost : s.slice(0, i);
-  })();
+  // The relay's host, so a tcp row can copy a real host:port. Asked for in the
+  // Online view, and in All once a tcp service is listed.
+  const hasTcp = (data ?? []).some((x) => x.type === "tcp");
+  const relayHost = useRelayHost(live || hasTcp);
   // Who holds each connection. A tunnel does not name its client; a client's detail
   // lists its tunnels by id. Both endpoints need tunnels:read:any, so nobody without it asks
   // (same gate as the sidebar's count in Layout) and sees "—" instead.
@@ -192,7 +174,10 @@ export default function Services() {
     const byId = new Map(services.map((s) => [s.id, s]));
     const rows: Row[] = live
       ? (tunnelList ?? []).map((t) => {
-          const s = t.service_id ? byId.get(t.service_id) : undefined;
+          // An http tunnel names its service; a tcp one is matched by name, as the relay matches them.
+          const s = t.service_id
+            ? byId.get(t.service_id)
+            : t.type === "tcp" ? services.find((x) => x.type === "tcp" && x.name === t.name) : undefined;
           return {
             key: t.id, name: s?.name || t.name || s?.id || "", type: t.type, service: s, tunnel: t,
             // A live tunnel is held by a client right now.
@@ -482,7 +467,9 @@ export default function Services() {
                 </td>
                 <td><Badge kind={`type-${type}`} nodot>{type}</Badge></td>
                 <td>
-                  {type !== "http"
+                  {type === "tcp" && s
+                    ? <TcpAddress service={s} host={relayHost} showPort={!t} />
+                    : type !== "http"
                     ? <span className="muted">—</span>
                     : s?.gateway_only
                       ? (
@@ -505,7 +492,7 @@ export default function Services() {
                     </td>
                     <td className="col-local">{t.local_addr}</td>
                     <td className="col-remote">
-                      {type === "http" ? <span className="muted">—</span> : (
+                      {type === "http" || !t.remote_port ? <span className="muted">—</span> : (
                         <span className="row row-center gap-2">
                           <span className="mono">:{t.remote_port}</span>
                           <button
@@ -536,7 +523,9 @@ export default function Services() {
                     : <Link to={ai ? "/services?live=1&ai=1" : "/services?live=1"} aria-label={`Online: show ${name} in the Online view`}><StatusBadge state={state} /></Link>}
                 </td>
                 <td className="col-actions">
-                  {target && <Button variant="secondary" size="sm" onClick={() => setConfigure(target)}>Configure</Button>}
+                  {s?.type === "tcp"
+                    ? <Link className="btn btn-secondary btn-sm" to={`/services/${encodeURIComponent(s.id)}`}>Configure</Link>
+                    : target && <Button variant="secondary" size="sm" onClick={() => setConfigure(target)}>Configure</Button>}
                 </td>
               </tr>
                 );
@@ -551,9 +540,7 @@ export default function Services() {
         onOpenChange={(o) => { if (!o) setConfigure(null); }}
         size="lg"
         title={configure ? `Access · ${configure.name || configure.id}` : ""}
-        description={configure?.type === "tcp"
-          ? "Raw TCP service — only Open passthrough applies."
-          : "Choose how Burrow gates requests before proxying to this service."}
+        description="Choose how Burrow gates requests before proxying to this service."
         footer={
           <>
             <Button variant="secondary" onClick={() => setConfigure(null)}>Cancel</Button>
@@ -683,5 +670,33 @@ export default function Services() {
       </Dialog>
       <Toaster />
     </div>
+  );
+}
+
+/** The address of a tcp service: the command that reaches a private one, else host:port. */
+function TcpAddress({ service, host, showPort }: { service: Service; host: string; showPort: boolean }) {
+  if (service.access_mode === "private") {
+    const cmd = forwardCommand(service.name || service.id);
+    return <CopyAddress text={cmd} label={`Copy command ${cmd}`} />;
+  }
+  // The live view has the port in its own column.
+  if (!showPort || !service.remote_port) return <span className="muted">—</span>;
+  const addr = `${host}:${service.remote_port}`;
+  return <CopyAddress text={addr} label={`Copy address ${addr}`} />;
+}
+
+function CopyAddress({ text, label }: { text: string; label: string }) {
+  return (
+    <span className="row row-center gap-2">
+      <span className="mono">{text}</span>
+      <button
+        type="button"
+        className="icon-btn"
+        aria-label={label}
+        onClick={() => { void navigator.clipboard?.writeText(text); toast.success("Copied."); }}
+      >
+        <Copy size={13} />
+      </button>
+    </span>
   );
 }

@@ -77,13 +77,13 @@ describe("AccessModePanel (v0.3.0)", () => {
     expect((await screen.findAllByText(/access settings saved/i)).length).toBeGreaterThan(0);
   });
 
-  it("a 409 on a tcp service surfaces the v0.4.0 contract message verbatim", async () => {
+  it("a 409 on a tcp service surfaces the relay's message verbatim", async () => {
     renderApp(<AccessModePanel serviceId="svc_pg001" serviceName="postgres" mode="open" />);
     await userEvent.click(screen.getByRole("radio", { name: /api key/i }));
     await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
     await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent(
-        "api_key, burrow_login, and mtls require an http service",
+        "a tcp service takes the access modes open, ip and private",
       ),
     );
   });
@@ -116,7 +116,7 @@ describe("AccessModePanel (v0.3.0)", () => {
   it("says what a title used to say after its dash in the description line", () => {
     renderApp(<AccessModePanel serviceId="svc_web01" serviceName="web" mode="open" />);
     expect(screen.getByRole("radio", { name: "Open" })).toHaveAccessibleDescription(
-      "Raw passthrough: Burrow adds no auth — visitor traffic flows straight through. The safe default for TCP services.",
+      "Raw passthrough: Burrow adds no auth — visitor traffic flows straight through, and anyone who can reach the address can use the service.",
     );
     expect(screen.getByRole("radio", { name: "API key" })).toHaveAccessibleDescription(
       "Header check: Burrow verifies an API key header before proxying.",

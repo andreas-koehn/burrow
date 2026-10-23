@@ -899,10 +899,14 @@ export const handlers = [
     if (!canConfigure(svc)) return err(403, "forbidden");
     const b = await body<{ access_mode?: string; api_key_header?: string; mtls_ca_pem?: string }>(request);
     if (!b?.access_mode) return err(400, "access_mode is required");
-    if (!["open", "api_key", "burrow_login", "mtls"].includes(b.access_mode))
-      return err(400, "access_mode must be 'open', 'api_key', 'burrow_login', or 'mtls'");
-    if (b.access_mode !== "open" && svc.type === "tcp")
-      return err(409, "api_key, burrow_login, and mtls require an http service");
+    if (!["open", "api_key", "burrow_login", "mtls", "ip", "private"].includes(b.access_mode))
+      return err(400, "access_mode must be 'open', 'api_key', 'burrow_login', 'mtls', 'ip' or 'private'");
+    if (svc.type === "tcp" && !["open", "ip", "private"].includes(b.access_mode))
+      return err(409, "a tcp service takes the access modes open, ip and private");
+    if (svc.type !== "tcp" && ["ip", "private"].includes(b.access_mode))
+      return err(409, "ip and private are access modes of a tcp service");
+    // A tcp mode change closes the serving session, and the client re-registers: the port follows the mode.
+    if (svc.type === "tcp") svc.remote_port = b.access_mode === "private" ? 0 : svc.remote_port || 9100;
     svc.access_mode = b.access_mode as typeof svc.access_mode;
     if (b.access_mode === "api_key" && b.api_key_header) svc.api_key_header = b.api_key_header;
     return noContent();
@@ -1330,6 +1334,9 @@ export const handlers = [
     const g = gate(request); if (g) return g;
     const svc = db.services.find((s) => s.id === params.id);
     if (!svc) return err(404, "service not found");
+    if (svc.type === "tcp") {
+      return json(db.tcpIpGeo[svc.id] ?? { enabled: false, allow_cidrs: [], block_cidrs: [], allow_countries: [], block_countries: [] });
+    }
     const cfg = db.aiConfigs[svc.id];
     return json(
       cfg?.ip_geo ?? { enabled: false, allow_cidrs: [], block_cidrs: [], allow_countries: [], block_countries: [] },
@@ -1342,8 +1349,56 @@ export const handlers = [
     if (!canConfigure(svc)) return err(403, "forbidden");
     const b = await body<MockDb["aiConfigs"][string]["ip_geo"]>(request);
     if (!b) return err(400, "invalid ipgeo body");
+    if (svc.type === "tcp") {
+      for (const c of [...b.allow_cidrs, ...b.block_cidrs]) {
+        if (!/^[0-9.]+(\/\d{1,2})?$|^[0-9a-f:]+(\/\d{1,3})?$/i.test(c)) return err(400, `invalid cidr "${c}"`);
+      }
+      db.tcpIpGeo[svc.id] = b;
+      return noContent();
+    }
     const existing = db.aiConfigs[svc.id];
     if (existing) existing.ip_geo = b;
+    return noContent();
+  }),
+
+  // ---- just-in-time grants of a tcp service ----
+  http.get("/api/v1/services/:id/ip-grants", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = db.services.find((s) => s.id === params.id);
+    if (!svc || !canConfigure(svc)) return err(404, "service not found");
+    if (svc.type !== "tcp") return err(409, "ip grants are for a tcp service");
+    const now = Date.now();
+    return json((db.ipGrants[svc.id] ?? []).filter((x) => Date.parse(x.expires_at) > now));
+  }),
+  http.post("/api/v1/services/:id/ip-grants", async ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = db.services.find((s) => s.id === params.id);
+    if (!svc || !canConfigure(svc)) return err(404, "service not found");
+    if (svc.type !== "tcp") return err(409, "ip grants are for a tcp service");
+    const b = await body<{ cidr?: string; ttl_hours?: number; note?: string }>(request);
+    if (!b || !Number.isInteger(b.ttl_hours) || b.ttl_hours! < 1 || b.ttl_hours! > 168) return err(400, "ttl_hours must be 1 to 168");
+    const fromCaller = !b.cidr;
+    const raw = (b.cidr || db.callerIp).trim();
+    const family = raw.includes(":") ? "ipv6" : "ipv4";
+    const cidr = raw.includes("/") ? raw : `${raw}/${family === "ipv6" ? 128 : 32}`;
+    const grants = (db.ipGrants[svc.id] ??= []);
+    if (grants.length >= 32) return err(409, "the service has 32 grants");
+    const grant = {
+      id: `grant_${grants.length + 1}_${Date.now()}`, cidr, family: family as "ipv4" | "ipv6",
+      expires_at: new Date(Date.now() + b.ttl_hours! * 3600_000).toISOString(),
+      note: b.note ?? "", created_by: db.me.id, created_at: new Date().toISOString(),
+    };
+    grants.push(grant);
+    return json({ ...grant, from_caller: fromCaller }, 201);
+  }),
+  http.delete("/api/v1/services/:id/ip-grants/:grantId", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = db.services.find((s) => s.id === params.id);
+    if (!svc || !canConfigure(svc)) return err(404, "service not found");
+    const grants = db.ipGrants[svc.id] ?? [];
+    const i = grants.findIndex((x) => x.id === params.grantId);
+    if (i < 0) return err(404, "grant not found");
+    grants.splice(i, 1);
     return noContent();
   }),
   http.get("/api/v1/geo/status", ({ request }) =>

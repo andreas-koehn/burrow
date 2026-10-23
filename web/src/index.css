@@ -522,7 +522,9 @@ select.input { height: 32px; padding-right: 8px; cursor: pointer; }
 .badge.access-open,
 .badge.access-api_key,
 .badge.access-burrow_login,
-.badge.access-mtls {
+.badge.access-mtls,
+.badge.access-ip,
+.badge.access-private {
   height: 18px;
   padding: 0 6px;
   border: 1px solid transparent;
@@ -547,6 +549,16 @@ select.input { height: 32px; padding-right: 8px; cursor: pointer; }
   background: color-mix(in oklch, var(--warning) 18%, transparent);
   color: color-mix(in oklch, var(--warning) 70%, var(--foreground));
 }
+.badge.access-ip {
+  background: color-mix(in oklch, var(--primary) 14%, transparent);
+  color: var(--primary);
+}
+.badge.access-private {
+  background: color-mix(in oklch, var(--success) 14%, transparent);
+  color: color-mix(in oklch, var(--success) 80%, var(--foreground));
+}
+.dark .badge.access-ip,
+.dark .badge.access-private,
 .dark .badge.access-open,
 .dark .badge.access-api_key,
 .dark .badge.access-burrow_login,
