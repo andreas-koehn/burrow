@@ -107,7 +107,7 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 		return nil, err
 	}
 	cs := &ClientSession{
-		SessionID: sessionID, UserID: userID, RemoteAddr: conn.RemoteAddr().String(),
+		SessionID: sessionID, UserID: userID, RemoteAddr: conn.RemoteAddr().String(), LocalAddr: conn.LocalAddr().String(),
 		OS: ar.OS, Arch: ar.Arch, ClientVersion: ar.ClientVersion, TokenName: tokenName,
 		TokenID: tokenID, ConnectedAt: time.Now(),
 		Tunnels: map[string]*Tunnel{},
@@ -427,6 +427,10 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 		ID: uuid.NewString(), Name: tr.Name, Type: tr.Type, LocalAddr: tr.LocalAddr, sess: cs,
 		ServiceID: serviceID, accessMode: mode, created: svc.res.Created,
 	}
+	tn.setTCPSettings(svc.res.ProxyProtocol, svc.res.IdleTimeout)
+	if tr.ProxyProtocol == proto.ProxyProtocolV2 {
+		tn.clientProxy = proto.ProxyProtocolV2
+	}
 	if mode == TCPAccessPrivate {
 		// Forward streams count against the cap and the pending pairings.
 		tn.limits = newTCPLimits(maxConns)
@@ -618,6 +622,7 @@ func (s *Server) reconcileTCP(ctx context.Context, tn *Tunnel) error {
 	if tn.limits != nil {
 		tn.limits.setMax(acc.MaxConnections)
 	}
+	tn.setTCPSettings(acc.ProxyProtocol, acc.IdleTimeout)
 	if mode == TCPAccessIP {
 		p, err := compileTCPPolicy(acc)
 		if err != nil {

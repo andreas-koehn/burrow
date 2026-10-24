@@ -333,10 +333,13 @@ var mcpExposedWrites = map[string]bool{
 	"serviceDomainDelete":           true,
 	"serviceMaxConnectionsUpdate":   true, // a cap of 1 to 256 visitors; widens nobody's access
 	"serviceSlugUpdate":             true,
-	"sessionDelete":                 true,
-	"sessionsRevokeAll":             true,
-	"settingsTestEmail":             true,
-	"webhookPreview":                true,
+	// The PROXY protocol header the home client writes and the idle timeout
+	// of a tcp service: they shape connections, not who may make them.
+	"serviceTcpSettingsUpdate": true,
+	"sessionDelete":            true,
+	"sessionsRevokeAll":        true,
+	"settingsTestEmail":        true,
+	"webhookPreview":           true,
 }
 
 // mcpSensitiveAllowed are exposed writes the heuristic below flags that stay

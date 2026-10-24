@@ -40,11 +40,15 @@ type tcpResolver struct {
 	modes     map[string]string
 	maxConns  map[string]int
 	onResolve func()
+	// proxy and idle are the PROXY protocol and idle timeout of each
+	// service id that has one (tcp complete, E2/E4).
+	proxy map[string]string
+	idle  map[string]time.Duration
 }
 
 func newTCPResolver() *tcpResolver {
 	return &tcpResolver{ids: map[string]string{}, holds: map[int]TCPPortHold{}, seen: map[string]time.Time{}, httpName: map[string]bool{},
-		modes: map[string]string{}, maxConns: map[string]int{}}
+		modes: map[string]string{}, maxConns: map[string]int{}, proxy: map[string]string{}, idle: map[string]time.Duration{}}
 }
 
 func (r *tcpResolver) Resolve(context.Context, string, string, string) (string, string, error) {
@@ -81,7 +85,8 @@ func (r *tcpResolver) ResolveTCP(_ context.Context, userID, name string, o Resol
 	if m, ok := r.modes[id]; ok {
 		mode = m
 	}
-	res := Resolved{ServiceID: id, Slug: "s-" + name, AccessMode: mode, Created: !served, TCPPortLimit: r.limit, MaxConnections: r.maxConns[id]}
+	res := Resolved{ServiceID: id, Slug: "s-" + name, AccessMode: mode, Created: !served, TCPPortLimit: r.limit, MaxConnections: r.maxConns[id],
+		ProxyProtocol: r.proxy[id], IdleTimeout: r.idle[id]}
 	for p, h := range r.holds {
 		if h.ServiceID == id {
 			res.TCPPort, res.TCPPortPinned = p, h.Pinned

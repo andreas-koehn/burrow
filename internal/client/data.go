@@ -11,8 +11,10 @@ import (
 )
 
 // handleNewConnection opens a data stream, announces it, dials the local
-// target for the tunnel, and bridges the two until either side closes.
-func (c *Client) handleNewConnection(sess *yamux.Session, nc proto.NewConnection, localAddr string) {
+// target for the tunnel, and bridges the two until either side closes. With
+// proxyV2 the target is first sent a PROXY protocol v2 header that names the
+// visitor (or the forwarder) and the address it connected to.
+func (c *Client) handleNewConnection(sess *yamux.Session, nc proto.NewConnection, localAddr string, proxyV2 bool) {
 	if c.events != nil {
 		at := time.Now()
 		c.events.emitLine(func(o Observer) { o.Connection(nc.TunnelID, at, nc.SourceIP) })
@@ -40,6 +42,14 @@ func (c *Client) handleNewConnection(sess *yamux.Session, nc proto.NewConnection
 	}
 	defer local.Close()
 	c.localTarget(localAddr, true)
+	if proxyV2 {
+		_ = local.SetWriteDeadline(time.Now().Add(proxyHeaderTimeout))
+		if _, err := local.Write(proxyV2Header(nc.SourceIP, nc.DestAddr)); err != nil {
+			c.log.Warn("proxy protocol header not written", "tunnel_id", nc.TunnelID, "local", localAddr, "err", err)
+			return
+		}
+		_ = local.SetWriteDeadline(time.Time{})
+	}
 	var dummyIn, dummyOut atomicCounter
 	bridge.Pipe(local, st, &dummyIn.v, &dummyOut.v)
 }

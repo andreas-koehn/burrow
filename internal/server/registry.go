@@ -66,6 +66,13 @@ type Tunnel struct {
 	// forwards), by id, under connMu.
 	connMu sync.Mutex
 	conns  map[string]*liveConn
+
+	// settings are the tcp service's PROXY protocol and idle timeout as the
+	// relay applies them now (see tcp_settings.go); nil is none.
+	// clientProxy is the PROXY protocol the client said it writes by
+	// itself (TunnelRegister.ProxyProtocol), for the dashboard.
+	settings    atomic.Pointer[tcpSettings]
+	clientProxy string
 }
 
 // ClientSession is one authenticated client connection.
@@ -73,6 +80,9 @@ type ClientSession struct {
 	SessionID  string
 	UserID     string
 	RemoteAddr string
+	// LocalAddr is the relay's address the session connected to: the
+	// destination of the PROXY protocol header of its forward streams.
+	LocalAddr string
 	// Handshake metadata (best-effort, from AuthRequest). Zero values when a
 	// client predates these fields. Hostname is reserved (v0.3) and unused.
 	OS            string

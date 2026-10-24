@@ -679,3 +679,29 @@ func TestRollupDay_ReturnsWhatItWrote(t *testing.T) {
 		t.Fatalf("%+v", g)
 	}
 }
+
+// A tcp row keeps what its first bytes were and the TLS server name; other
+// rows read them as "" (tcp complete, E3).
+func TestConnLogSinkKeepsProtocolAndSNI(t *testing.T) {
+	x := testDB(t)
+	sink := NewSQLSink(x, nil)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	_ = sink.Record(ctx, Entry{Kind: KindTCPProxy, SourceIP: "10.0.0.1", StartedAt: now, EndedAt: now,
+		Status: StatusClosedClean, Protocol: "tls", SNI: "rdp.example.com"})
+	_ = sink.Record(ctx, Entry{Kind: KindHTTPProxy, SourceIP: "10.0.0.2", StartedAt: now.Add(-time.Second), EndedAt: now,
+		Status: StatusClosedClean})
+	waitForRows(t, x, 2)
+	rows, err := ListConnectionLogs(ctx, x, ConnLogQuery{Limit: 10})
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows %+v %v", rows, err)
+	}
+	if rows[0].Protocol != "tls" || rows[0].SNI != "rdp.example.com" || rows[1].Protocol != "" || rows[1].SNI != "" {
+		t.Fatalf("rows %+v", rows)
+	}
+	var nulls int
+	_ = x.DB().QueryRow(`SELECT COUNT(*) FROM connection_logs WHERE sni IS NULL AND protocol IS NULL`).Scan(&nulls)
+	if nulls != 1 {
+		t.Fatalf("an http row stores sni/protocol: %d NULL rows", nulls)
+	}
+}

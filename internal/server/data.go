@@ -331,6 +331,7 @@ func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn, source string) {
 	stream, err := tun.sess.Pending().Await(streamID, tcpPairTimeout, func() error {
 		return tun.sess.SendControl(proto.MsgNewConnection, proto.NewConnection{
 			TunnelID: tun.ID, StreamID: streamID, SourceIP: visitor.RemoteAddr().String(),
+			DestAddr: visitor.LocalAddr().String(), ProxyProtocol: tun.tcpSettings().proxyProtocol,
 		})
 	})
 	if tun.limits != nil {
@@ -338,7 +339,7 @@ func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn, source string) {
 	}
 	if err != nil {
 		s.log.Warn("client did not open stream", "tunnel_id", tun.ID, "err", err)
-		s.tcpTraffic(tun, visitor, started, 0, 0, observe.OutcomeError, ConnLogReasonNoStream)
+		s.tcpTraffic(tun, visitor, nil, started, 0, 0, observe.OutcomeError, ConnLogReasonNoStream)
 		return
 	}
 	defer stream.Close()
@@ -352,12 +353,14 @@ func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn, source string) {
 	c.closeFn = func() { _ = visitor.Close(); endStream(stream) }
 	tun.addConn(c)
 	var in, out atomic.Uint64
-	bridge.Pipe(visitor, &countingStream{
+	stopIdle := s.watchIdle(tun, c)
+	bridge.Pipe(c.watched(visitor), &countingStream{
 		Conn: &countingStream{Conn: stream, in: &tun.BytesIn, out: &tun.BytesOut},
 		in:   &c.in, out: &c.out,
 	}, &in, &out)
+	stopIdle()
 	tun.dropConn(c.id)
-	s.tcpTraffic(tun, visitor, started, c.in.Load(), c.out.Load(), observe.OutcomeClean, c.endReason(tun.sess))
+	s.tcpTraffic(tun, visitor, c, started, c.in.Load(), c.out.Load(), observe.OutcomeClean, c.endReason(tun.sess))
 }
 
 // The first frame of a client-opened stream (stream_open or forward_open) is

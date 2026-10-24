@@ -105,6 +105,12 @@ type TunnelRegister struct {
 	// exists keeps its stored mode and nothing is refused or ignored. A relay
 	// without it creates the service open. Optional.
 	AccessDefault string `json:"access_default,omitempty"`
+	// ProxyProtocol (tcp only) is ProxyProtocolV2 when the client writes a
+	// PROXY protocol v2 header to its local target for every connection
+	// because its own configuration says so (burrow.yaml proxy_protocol, the
+	// --proxy-protocol flag), whatever the service's setting. The relay only
+	// shows it; it changes nothing on the relay. Optional.
+	ProxyProtocol string `json:"proxy_protocol,omitempty"`
 }
 
 // TunnelRegisterResponse is the server's reply to a TunnelRegister message.
@@ -146,7 +152,21 @@ type NewConnection struct {
 	TunnelID string `json:"tunnel_id"`
 	StreamID string `json:"stream_id"` // uuid; client opens a yamux stream with this id in its first frame
 	SourceIP string `json:"source_ip"`
+	// DestAddr is the address (host:port) the visitor connected to, as the
+	// relay saw it: the destination of a PROXY protocol header. Optional;
+	// an older relay sends none.
+	DestAddr string `json:"dest_addr,omitempty"`
+	// ProxyProtocol is ProxyProtocolV2 when the service asks for a PROXY
+	// protocol v2 header: the client writes one, with SourceIP (without a
+	// "forward:" prefix) as the source and DestAddr as the destination, to
+	// its local target before any byte of the connection. Optional; "" is
+	// none.
+	ProxyProtocol string `json:"proxy_protocol,omitempty"`
 }
+
+// ProxyProtocolV2 is the PROXY protocol version a tcp service may ask for
+// (NewConnection.ProxyProtocol, TunnelRegister.ProxyProtocol).
+const ProxyProtocolV2 = "v2"
 
 // TunnelUnregister asks the server to drop a previously registered tunnel.
 type TunnelUnregister struct {

@@ -46,6 +46,9 @@ type rawService struct {
 	// Slug and Access are read by `burrow up` only (see loadFileConfig).
 	Slug   string `yaml:"slug"`
 	Access string `yaml:"access"`
+	// ProxyProtocol (tcp, `burrow up` only): v2 writes a PROXY protocol v2
+	// header to the target before the bytes of every connection.
+	ProxyProtocol string `yaml:"proxy_protocol"`
 	// Command, Args, Env and URL describe the local MCP server of a service
 	// of type mcp (`burrow up` only).
 	Command string            `yaml:"command"`
@@ -242,6 +245,15 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 				spec.Access = mode
 			}
 			spec.Slug = svc.Slug
+			if svc.ProxyProtocol != "" {
+				if typ != "tcp" {
+					return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: proxy_protocol applies to tcp services", i, svc.Name)
+				}
+				if svc.ProxyProtocol != ProxyProtocolV2 {
+					return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: proxy_protocol must be v2", i, svc.Name)
+				}
+				spec.ProxyProtocol = ProxyProtocolV2
+			}
 		}
 		tunnels = append(tunnels, spec)
 	}

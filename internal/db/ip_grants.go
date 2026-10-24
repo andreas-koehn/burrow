@@ -172,3 +172,15 @@ func (x *DB) SetServiceMaxConnections(ctx context.Context, id string, n int) err
 	}
 	return notFoundIfNoRows(res, "set service max connections")
 }
+
+// SetServiceTCPSettings sets the PROXY protocol ("" or "v2") and the idle
+// timeout in seconds (0: never) of a tcp service. The caller validates both.
+// ErrNotFound when there is no such service.
+func (x *DB) SetServiceTCPSettings(ctx context.Context, id, proxyProtocol string, idleTimeoutS int) error {
+	res, err := x.sqlDB.ExecContext(ctx, `UPDATE services SET proxy_protocol=?, idle_timeout_s=? WHERE id=?`,
+		proxyProtocol, idleTimeoutS, id)
+	if err != nil {
+		return fmt.Errorf("set service tcp settings: %w", err)
+	}
+	return notFoundIfNoRows(res, "set service tcp settings")
+}

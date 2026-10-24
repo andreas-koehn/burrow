@@ -236,3 +236,54 @@ func TestForwardMessages(t *testing.T) {
 		t.Errorf("as a stream header: %+v, %v", sh, err)
 	}
 }
+
+// new_connection may tell the home client to write a PROXY protocol v2 header
+// and the address the visitor reached (tcp complete, E2); a tcp register may
+// say that the client writes one by itself. All of it is optional: without it
+// the bytes are what they were, and an older peer reads its own fields.
+func TestProxyProtocolFields(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		val  any
+		want string
+	}{
+		{"new_connection without proxy protocol", NewConnection{TunnelID: "t", StreamID: "s", SourceIP: "203.0.113.7:50000"},
+			`{"tunnel_id":"t","stream_id":"s","source_ip":"203.0.113.7:50000"}`},
+		{"new_connection with proxy protocol", NewConnection{TunnelID: "t", StreamID: "s", SourceIP: "203.0.113.7:50000",
+			DestAddr: "198.51.100.1:9001", ProxyProtocol: ProxyProtocolV2},
+			`{"tunnel_id":"t","stream_id":"s","source_ip":"203.0.113.7:50000","dest_addr":"198.51.100.1:9001","proxy_protocol":"v2"}`},
+		{"tcp register with proxy protocol", TunnelRegister{Name: "web", Type: "tcp", LocalAddr: "127.0.0.1:8443", ProxyProtocol: ProxyProtocolV2},
+			`{"name":"web","type":"tcp","remote_port":0,"local_addr":"127.0.0.1:8443","proxy_protocol":"v2"}`},
+	} {
+		b, err := json.Marshal(c.val)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != c.want {
+			t.Errorf("%s:\n got %s\nwant %s", c.name, b, c.want)
+		}
+	}
+	type oldNewConnection struct {
+		TunnelID string `json:"tunnel_id"`
+		StreamID string `json:"stream_id"`
+		SourceIP string `json:"source_ip"`
+	}
+	raw, _ := json.Marshal(NewConnection{TunnelID: "t", StreamID: "s", SourceIP: "forward:192.0.2.4:4000", DestAddr: "x", ProxyProtocol: ProxyProtocolV2})
+	var old oldNewConnection
+	if err := DecodePayload(Envelope{Payload: raw}, &old); err != nil || old != (oldNewConnection{"t", "s", "forward:192.0.2.4:4000"}) {
+		t.Errorf("older client: %+v %v", old, err)
+	}
+	raw, _ = json.Marshal(TunnelRegister{Name: "web", Type: "tcp", LocalAddr: "x", ProxyProtocol: ProxyProtocolV2})
+	var oldReg oldTunnelRegister
+	if err := DecodePayload(Envelope{Payload: raw}, &oldReg); err != nil || oldReg != (oldTunnelRegister{"web", "tcp", 0, "x"}) {
+		t.Errorf("older relay: %+v %v", oldReg, err)
+	}
+	var nc NewConnection
+	if err := DecodePayload(Envelope{Payload: json.RawMessage(`{"tunnel_id":"t","stream_id":"s","source_ip":"1.2.3.4:5"}`)}, &nc); err != nil ||
+		nc != (NewConnection{TunnelID: "t", StreamID: "s", SourceIP: "1.2.3.4:5"}) {
+		t.Errorf("older relay's new_connection: %+v %v", nc, err)
+	}
+	if ProxyProtocolV2 != "v2" {
+		t.Errorf("ProxyProtocolV2 = %q", ProxyProtocolV2)
+	}
+}

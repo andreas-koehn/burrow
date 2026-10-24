@@ -83,6 +83,11 @@ type connectionLogResp struct {
 	// TokenName is the client token name of the user who forwards (kind
 	// tcp_forward); "" otherwise.
 	TokenName string `json:"token_name"`
+	// Protocol is what the first bytes of a tcp connection were (tls, ssh,
+	// rdp, http, unknown) and SNI the server name of its TLS ClientHello;
+	// "" for other rows and for connections that were never looked at.
+	Protocol string `json:"protocol"`
+	SNI      string `json:"sni"`
 }
 
 func toConnectionLogResp(r db.ConnectionLog) connectionLogResp {
@@ -103,6 +108,8 @@ func toConnectionLogResp(r db.ConnectionLog) connectionLogResp {
 		Status:          r.Status,
 		Reason:          r.Reason,
 		TokenName:       r.TokenName,
+		Protocol:        r.Protocol,
+		SNI:             r.SNI,
 	}
 }
 
@@ -375,7 +382,7 @@ func (d Deps) GetConnectionLogsExport(w http.ResponseWriter, r *http.Request) {
 		_ = cw.Write([]string{
 			"id", "kind", "service_id", "tunnel_id", "user_id", "client_session_id",
 			"source_ip", "user_agent", "started_at", "ended_at", "duration_ms",
-			"bytes_in", "bytes_out", "status", "reason", "token_name",
+			"bytes_in", "bytes_out", "status", "reason", "token_name", "protocol", "sni",
 		})
 		for _, row := range rows {
 			_ = cw.Write([]string{
@@ -387,7 +394,7 @@ func (d Deps) GetConnectionLogsExport(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("%d", row.DurationMs),
 				fmt.Sprintf("%d", row.BytesIn),
 				fmt.Sprintf("%d", row.BytesOut),
-				row.Status, row.Reason, row.TokenName,
+				row.Status, row.Reason, row.TokenName, row.Protocol, row.SNI,
 			})
 		}
 		cw.Flush()

@@ -1661,6 +1661,8 @@ func (a serverConnLogAdapter) RecordConnection(ctx context.Context, e server.Con
 		Status:          connlog.Status(e.Status),
 		Reason:          e.Reason,
 		TokenName:       e.TokenName,
+		Protocol:        e.Protocol,
+		SNI:             e.SNI,
 	})
 }
 

@@ -51,6 +51,12 @@ type TunnelSpec struct {
 	// command that runs it starts a bridge (internal/client/mcpbridge) and
 	// sets LocalAddr to the bridge's address before the client starts.
 	MCP *MCPSpec
+	// ProxyProtocol (tcp only) is proto.ProxyProtocolV2 to write a PROXY
+	// protocol v2 header to the local target before the bytes of every
+	// connection, whatever the service's setting on the relay (which can ask
+	// for the header too). "" leaves it to the relay. The relay is told, to
+	// show it.
+	ProxyProtocol string
 }
 
 // Options configures a Client.
@@ -103,6 +109,7 @@ type Client struct {
 
 	mu             sync.Mutex
 	tunnelLocal    map[string]string      // tunnelID → localAddr
+	tunnelProxy    map[string]bool        // tunnelID → the client writes a PROXY v2 header by itself
 	live           map[string]*liveTunnel // the tunnels of the current session
 	lastRemotePort int
 	pingSent       time.Time       // when the ping that is still unanswered was sent
@@ -137,6 +144,7 @@ func New(o Options) *Client {
 		bo:            backoff.New(500*time.Millisecond, 30*time.Second),
 		pingInterval:  60 * time.Second,
 		tunnelLocal:   map[string]string{},
+		tunnelProxy:   map[string]bool{},
 		localReported: map[string]bool{},
 	}
 	if o.Observer != nil {
@@ -331,7 +339,7 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		}
 		if err := proto.WriteMessage(ctrl, proto.MsgTunnelRegister, proto.TunnelRegister{
 			Name: tn.Name, Type: tn.Type, RemotePort: tn.RemotePort, LocalAddr: tn.LocalAddr,
-			Slug: tn.Slug, Access: tn.Access, AccessDefault: accessDefault,
+			Slug: tn.Slug, Access: tn.Access, AccessDefault: accessDefault, ProxyProtocol: tcpProxyProtocol(tn),
 		}); err != nil {
 			return err
 		}
@@ -427,6 +435,7 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		c.events.emit(func(o Observer) { o.Registered(reg) })
 		c.mu.Lock()
 		c.tunnelLocal[rr.TunnelID] = tn.LocalAddr
+		c.tunnelProxy[rr.TunnelID] = tcpProxyProtocol(tn) == proto.ProxyProtocolV2
 		c.live[rr.TunnelID] = &liveTunnel{http: tn.Type == "http"}
 		c.lastRemotePort = rr.RemotePort
 		c.mu.Unlock()
@@ -537,11 +546,12 @@ func (c *Client) controlReadLoop(sess *yamux.Session, ctrl io.Reader) error {
 			}
 			c.mu.Lock()
 			local := c.tunnelLocal[nc.TunnelID]
+			ownProxy := c.tunnelProxy[nc.TunnelID]
 			c.mu.Unlock()
 			if local == "" {
 				continue
 			}
-			go c.handleNewConnection(sess, nc, local)
+			go c.handleNewConnection(sess, nc, local, ownProxy || nc.ProxyProtocol == proto.ProxyProtocolV2)
 		case proto.MsgRequestSummary:
 			c.requestSummary(env)
 		case proto.MsgPong, proto.MsgError:

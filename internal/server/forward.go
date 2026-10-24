@@ -32,6 +32,7 @@ import (
 	"github.com/ankoehn/burrow/internal/bridge"
 	"github.com/ankoehn/burrow/internal/observe"
 	"github.com/ankoehn/burrow/internal/proto"
+	"github.com/ankoehn/burrow/internal/tcpsniff"
 )
 
 // ForwardTarget is the tcp service a forward reaches.
@@ -165,6 +166,10 @@ type liveConn struct {
 	closeOnce sync.Once
 	closeFn   func()
 	reason    atomic.Pointer[string] // why the relay ended it; nil when a side did
+	// sniff watches the first bytes of the visitor or forwarder, once
+	// sniffed is set (see watched).
+	sniff   tcpsniff.Sniffer
+	sniffed atomic.Bool
 }
 
 func (c *liveConn) close() { c.closeOnce.Do(c.closeFn) }
@@ -198,6 +203,9 @@ type ConnView struct {
 	SessionID          string // forward only: the forwarding session
 	Since              time.Time
 	BytesIn, BytesOut  uint64
+	// Protocol and SNI are what its first bytes were so far (see
+	// ConnLogEntry).
+	Protocol, SNI string
 }
 
 // ForwardView is an open forward stream of a session.
@@ -208,9 +216,11 @@ type ForwardView struct {
 }
 
 func (c *liveConn) view() ConnView {
+	p, sni := c.protocol()
 	return ConnView{
 		ID: c.id, Kind: c.kind, SourceIP: c.sourceIP, UserID: c.userID, TokenName: c.tokenName,
 		SessionID: c.sessionID, Since: c.started, BytesIn: c.in.Load(), BytesOut: c.out.Load(),
+		Protocol: p, SNI: sni,
 	}
 }
 
@@ -390,6 +400,7 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 	home, err := tn.sess.Pending().Await(streamID, tcpPairTimeout, func() error {
 		return tn.sess.SendControl(proto.MsgNewConnection, proto.NewConnection{
 			TunnelID: tn.ID, StreamID: streamID, SourceIP: "forward:" + cs.RemoteAddr,
+			DestAddr: cs.LocalAddr, ProxyProtocol: tn.tcpSettings().proxyProtocol,
 		})
 	})
 	if tn.limits != nil {
@@ -436,10 +447,12 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 	// What the forwarder writes goes to the home client (BytesIn); the
 	// service's tunnel counts it, and so does the connection.
 	var in, out atomic.Uint64
-	bridge.Pipe(st, &countingStream{
+	stopIdle := s.watchIdle(tn, c)
+	bridge.Pipe(c.watched(st), &countingStream{
 		Conn: &countingStream{Conn: home, in: &tn.BytesIn, out: &tn.BytesOut},
 		in:   &c.in, out: &c.out,
 	}, &in, &out)
+	stopIdle()
 	tn.dropConn(c.id)
 	cs.dropForward(c.id)
 	s.forwardTraffic(tn, c, observe.OutcomeClean, c.endReason(cs, tn.sess))
@@ -461,6 +474,7 @@ func (s *Server) forwardsChanged(cs *ClientSession, tn *Tunnel) {
 func (s *Server) forwardTraffic(tn *Tunnel, c *liveConn, outcome, reason string) {
 	ended := time.Now()
 	in, out := int64(c.in.Load()), int64(c.out.Load())
+	protocol, sni := c.protocol()
 	s.reg.observer().ObserveTraffic(observe.Traffic{
 		Kind: TrafficTCPForward, ServiceID: c.serviceID, TunnelID: tn.ID,
 		UserID: c.userID, SessionID: c.sessionID, Outcome: outcome, SourceIP: c.sourceIP,
@@ -471,7 +485,7 @@ func (s *Server) forwardTraffic(tn *Tunnel, c *liveConn, outcome, reason string)
 			Kind: TrafficTCPForward, ServiceID: c.serviceID, TunnelID: tn.ID,
 			UserID: c.userID, ClientSessionID: c.sessionID, SourceIP: c.sourceIP, TokenName: c.tokenName,
 			StartedAt: c.started, EndedAt: ended, BytesIn: in, BytesOut: out,
-			Status: outcome, Reason: reason,
+			Status: outcome, Reason: reason, Protocol: protocol, SNI: sni,
 		})
 	}
 }

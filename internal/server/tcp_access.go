@@ -96,12 +96,16 @@ type TCPGrant struct {
 // TCPAccess is what decides who may reach a tcp service: its mode and, for
 // mode ip, the permanent lists (service_ip_geo; countries are not used) and
 // the grants that have not expired. MaxConnections is the service's cap on
-// connected visitors, 0 for the default.
+// connected visitors, 0 for the default. ProxyProtocol and IdleTimeout are
+// the service's settings of the same names in Resolved; they are read with
+// the access so that a change applies without a new registration.
 type TCPAccess struct {
 	Mode                   string
 	AllowCIDRs, BlockCIDRs []string
 	Grants                 []TCPGrant
 	MaxConnections         int
+	ProxyProtocol          string
+	IdleTimeout            time.Duration
 }
 
 // TCPAccessLoader reads the access of a tcp service. The relay reads it when

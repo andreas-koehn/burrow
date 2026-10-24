@@ -72,6 +72,11 @@ type fakeServiceStore struct {
 	maxConnsErr  error
 	lastMaxConns int
 
+	// ServiceTCPSettings / SetServiceTCPSettings
+	tcpSettings    store.TCPSettings
+	tcpSettingsErr error
+	lastTCPUpdate  store.TCPSettingsUpdate
+
 	// last args captured for inspection
 	lastMode   string
 	lastHeader string
@@ -125,6 +130,23 @@ func (f *fakeServiceStore) SetServiceGatewayOnly(_ context.Context, callerID, ro
 func (f *fakeServiceStore) SetServiceMaxConnections(_ context.Context, _, _, _ string, n int) (int, error) {
 	f.lastMaxConns = n
 	return 0, f.maxConnsErr
+}
+func (f *fakeServiceStore) ServiceTCPSettings(_ context.Context, _, _, _ string) (store.TCPSettings, error) {
+	return f.tcpSettings, f.tcpSettingsErr
+}
+func (f *fakeServiceStore) SetServiceTCPSettings(_ context.Context, _, _, _ string, u store.TCPSettingsUpdate) (store.TCPSettings, store.TCPSettings, error) {
+	if f.tcpSettingsErr != nil {
+		return store.TCPSettings{}, store.TCPSettings{}, f.tcpSettingsErr
+	}
+	f.lastTCPUpdate = u
+	before := f.tcpSettings
+	if u.ProxyProtocol != nil {
+		f.tcpSettings.ProxyProtocol = *u.ProxyProtocol
+	}
+	if u.IdleTimeoutS != nil {
+		f.tcpSettings.IdleTimeoutS = *u.IdleTimeoutS
+	}
+	return before, f.tcpSettings, nil
 }
 func (f *fakeServiceStore) DeleteService(_ context.Context, _, _, _ string) (string, error) {
 	return "", nil

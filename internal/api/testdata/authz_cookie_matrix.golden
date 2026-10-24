@@ -172,6 +172,8 @@ admin GET /api/v1/services/{serviceID}/ip-grants 409
 admin POST /api/v1/services/{serviceID}/ip-grants 409
 admin DELETE /api/v1/services/{serviceID}/ip-grants/{grantID} 409
 admin PUT /api/v1/services/{serviceID}/max-connections 400
+admin GET /api/v1/services/{serviceID}/tcp-settings 409
+admin PUT /api/v1/services/{serviceID}/tcp-settings 400
 admin GET /api/v1/services/{serviceID}/connections 409
 admin DELETE /api/v1/services/{serviceID}/connections/{connID} 409
 admin PUT /api/v1/services/{serviceID}/slug 400
@@ -354,6 +356,8 @@ user GET /api/v1/services/{serviceID}/ip-grants 409
 user POST /api/v1/services/{serviceID}/ip-grants 409
 user DELETE /api/v1/services/{serviceID}/ip-grants/{grantID} 409
 user PUT /api/v1/services/{serviceID}/max-connections 400
+user GET /api/v1/services/{serviceID}/tcp-settings 409
+user PUT /api/v1/services/{serviceID}/tcp-settings 400
 user GET /api/v1/services/{serviceID}/connections 409
 user DELETE /api/v1/services/{serviceID}/connections/{connID} 409
 user PUT /api/v1/services/{serviceID}/slug 400
@@ -536,6 +540,8 @@ cr-none GET /api/v1/services/{serviceID}/ip-grants 403
 cr-none POST /api/v1/services/{serviceID}/ip-grants 403
 cr-none DELETE /api/v1/services/{serviceID}/ip-grants/{grantID} 403
 cr-none PUT /api/v1/services/{serviceID}/max-connections 403
+cr-none GET /api/v1/services/{serviceID}/tcp-settings 403
+cr-none PUT /api/v1/services/{serviceID}/tcp-settings 403
 cr-none GET /api/v1/services/{serviceID}/connections 403
 cr-none DELETE /api/v1/services/{serviceID}/connections/{connID} 403
 cr-none PUT /api/v1/services/{serviceID}/slug 403
@@ -718,6 +724,8 @@ cr-legacy GET /api/v1/services/{serviceID}/ip-grants 409
 cr-legacy POST /api/v1/services/{serviceID}/ip-grants 409
 cr-legacy DELETE /api/v1/services/{serviceID}/ip-grants/{grantID} 409
 cr-legacy PUT /api/v1/services/{serviceID}/max-connections 400
+cr-legacy GET /api/v1/services/{serviceID}/tcp-settings 409
+cr-legacy PUT /api/v1/services/{serviceID}/tcp-settings 400
 cr-legacy GET /api/v1/services/{serviceID}/connections 409
 cr-legacy DELETE /api/v1/services/{serviceID}/connections/{connID} 409
 cr-legacy PUT /api/v1/services/{serviceID}/slug 400

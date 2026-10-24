@@ -55,6 +55,8 @@ var openAPIOperationIDs = map[string]string{
 	"POST /api/v1/services/{serviceID}/ip-grants":                               "serviceIpGrantCreate",
 	"DELETE /api/v1/services/{serviceID}/ip-grants/{grantID}":                   "serviceIpGrantDelete",
 	"PUT /api/v1/services/{serviceID}/max-connections":                          "serviceMaxConnectionsUpdate",
+	"GET /api/v1/services/{serviceID}/tcp-settings":                             "serviceTcpSettingsGet",
+	"PUT /api/v1/services/{serviceID}/tcp-settings":                             "serviceTcpSettingsUpdate",
 	"GET /api/v1/services/{serviceID}/connections":                              "serviceConnectionsList",
 	"DELETE /api/v1/services/{serviceID}/connections/{connID}":                  "serviceConnectionDelete",
 	"DELETE /api/v1/services/{serviceID}/cache/entries":                         "serviceCacheEntriesDelete",
@@ -373,6 +375,7 @@ var openAPIRequestBodies = map[string]openAPIRequestBody{
 	"serviceIpGeoUpdate":              {typ: oaType[ipGeoReq]()},
 	"serviceIpGrantCreate":            {typ: oaType[ipGrantReq]()},
 	"serviceMaxConnectionsUpdate":     {typ: oaType[maxConnectionsReq]()},
+	"serviceTcpSettingsUpdate":        {typ: oaType[tcpSettingsReq]()},
 	"serviceUpstreamCredentialUpdate": {typ: oaType[putCredReq]()},
 	"serviceDomainCreate":             {typ: oaType[postDomainReq]()},
 	"serviceDomainUpdate":             {typ: oaType[putDomainReq]()},
@@ -498,6 +501,8 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"serviceIpGeoGet":          {status: "200", typ: oaType[ipGeoResp]()},
 	"serviceIpGrantsList":      {status: "200", typ: oaType[ipGrantResp](), list: true},
 	"serviceConnectionsList":   {status: "200", typ: oaType[serviceConnectionResp](), list: true},
+	"serviceTcpSettingsGet":    {status: "200", typ: oaType[tcpSettingsResp]()},
+	"serviceTcpSettingsUpdate": {status: "200", typ: oaType[tcpSettingsResp]()},
 	"serviceIpGrantCreate":     {status: "201", typ: oaType[ipGrantCreatedResp]()},
 	// The one answer that stays an exception: the handler writes the stored
 	// blob, a JSON object with no closed key set and no type to name. The nine

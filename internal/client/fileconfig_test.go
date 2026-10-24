@@ -568,3 +568,36 @@ func TestLoadFileConfig_Forwards(t *testing.T) {
 		t.Fatalf("connect with forwards alone: %v", err)
 	}
 }
+
+// proxy_protocol: v2 on a tcp service of `burrow up` makes the client write
+// a PROXY v2 header; any other value, and the key on another type, is an
+// error. `connect --config` reads past it, as past any key it never had.
+func TestLoadFileConfig_ProxyProtocol(t *testing.T) {
+	yml := filepath.Join(t.TempDir(), "burrow.yaml")
+	os.WriteFile(yml, []byte("server: relay.example.com:7000\ntoken: mytoken\nservices:\n"+
+		"  - { name: web, local: 127.0.0.1:8443, access: open, proxy_protocol: v2 }\n"+
+		"  - { name: ssh, local: 127.0.0.1:22 }\n"), 0o600)
+	c, err := LoadFileConfig(yml)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Tunnels[0].ProxyProtocol != "v2" || c.Tunnels[1].ProxyProtocol != "" {
+		t.Fatalf("tunnels %+v", c.Tunnels)
+	}
+	cc, err := LoadCompleteFileConfig(yml)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cc.Tunnels[0].ProxyProtocol != "" {
+		t.Fatalf("connect --config applied proxy_protocol: %+v", cc.Tunnels[0])
+	}
+	for _, bad := range []struct{ yml, want string }{
+		{"  - { name: web, local: 127.0.0.1:8443, proxy_protocol: v1 }\n", "proxy_protocol must be v2"},
+		{"  - { name: web, local: 127.0.0.1:8080, type: http, proxy_protocol: v2 }\n", "proxy_protocol applies to tcp services"},
+	} {
+		os.WriteFile(yml, []byte("services:\n"+bad.yml), 0o600)
+		if _, err := LoadFileConfig(yml); err == nil || !strings.Contains(err.Error(), bad.want) {
+			t.Errorf("%s: %v, want %q", bad.yml, err, bad.want)
+		}
+	}
+}

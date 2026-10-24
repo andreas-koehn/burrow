@@ -1121,7 +1121,7 @@ components:
         (kind visitor) or a forward stream of a signed-in client (kind
         forward). user_id, user_email, token_name and session_id name the
         one who forwards and are "" for a visitor.
-      required: [id, kind, source_ip, user_id, user_email, token_name, session_id, since, bytes_in, bytes_out]
+      required: [id, kind, source_ip, user_id, user_email, token_name, session_id, since, bytes_in, bytes_out, protocol, sni]
       properties:
         id: { type: string }
         kind: { type: string, enum: [visitor, forward] }
@@ -1133,6 +1133,11 @@ components:
         since: { type: string, format: date-time }
         bytes_in: { type: integer, format: int64, description: What reached the service so far. }
         bytes_out: { type: integer, format: int64, description: What the service sent back so far. }
+        protocol:
+          type: string
+          enum: [tls, ssh, rdp, http, unknown]
+          description: What the first bytes of the visitor or forwarder were so far; unknown until they tell.
+        sni: { type: string, description: 'The server name of its TLS ClientHello; "" for none.' }
     MaxConnectionsReq:
       type: object
       required: [max_connections]
@@ -1142,6 +1147,46 @@ components:
           minimum: 0
           maximum: 256
           description: 0 for the relay's default (32).
+    TcpSettings:
+      type: object
+      description: >
+        The settings of a tcp service that shape its connections. Neither
+        changes who may connect.
+      required: [proxy_protocol, idle_timeout_s, client_proxy_protocol]
+      properties:
+        proxy_protocol:
+          type: string
+          enum: ['', v2]
+          description: >
+            v2: the client that serves the service writes a PROXY protocol
+            v2 header to its target before the bytes of every connection,
+            naming the visitor's address (a forward: the forwarder's) and the
+            address it connected to. The target must expect the header.
+        idle_timeout_s:
+          type: integer
+          minimum: 0
+          maximum: 86400
+          description: >
+            A connection with no byte in either direction for this many
+            seconds is closed (connection-log reason idle_timeout); 0 is
+            never, otherwise 60 to 86400.
+        client_proxy_protocol:
+          type: string
+          enum: ['', v2]
+          description: >
+            v2 while the client that serves the service writes the header by
+            its own configuration (burrow.yaml proxy_protocol,
+            --proxy-protocol), whatever proxy_protocol says; "" when it does
+            not, or no client serves the service.
+    TcpSettingsInput:
+      type: object
+      description: The settings to change; at least one. A field left out is kept.
+      additionalProperties: false
+      properties:
+        proxy_protocol: { type: string, enum: ['', v2] }
+        idle_timeout_s:
+          type: integer
+          description: 0 (never) or 60 to 86400.
     Tunnel:
       type: object
       description: One live tunnel of the caller.
@@ -1262,7 +1307,7 @@ components:
             trust anchor client certificates are verified against.
     ConnectionLog:
       type: object
-      required: [id, kind, service_id, tunnel_id, user_id, client_session_id, source_ip, user_agent, started_at, ended_at, duration_ms, bytes_in, bytes_out, status, reason, token_name]
+      required: [id, kind, service_id, tunnel_id, user_id, client_session_id, source_ip, user_agent, started_at, ended_at, duration_ms, bytes_in, bytes_out, status, reason, token_name, protocol, sni]
       properties:
         id: { type: string }
         kind:
@@ -1288,6 +1333,17 @@ components:
         token_name:
           type: string
           description: The client token name of the user who forwards (kind tcp_forward); "" otherwise.
+        protocol:
+          type: string
+          enum: ['', tls, ssh, rdp, http, unknown]
+          description: >
+            What the first bytes of a tcp connection (kinds tcp_proxy and
+            tcp_forward) were, watched as they passed without holding them
+            back; "" for other rows and for connections whose bytes were
+            never looked at (refused, or never paired).
+        sni:
+          type: string
+          description: The server name of the connection's TLS ClientHello (protocol tls); "" for none.
     ConnectionLogRollup:
       type: object
       required: [day, service_id, kind, sessions, bytes_in, bytes_out, avg_duration_ms, p95_duration_ms]
@@ -3976,6 +4032,52 @@ paths:
             schema: { $ref: '#/components/schemas/MaxConnectionsReq' }
       responses:
         '204': { description: Set. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not a tcp service. }
+
+  /api/v1/services/{serviceID}/tcp-settings:
+    get:
+      tags: [services]
+      operationId: serviceTcpSettingsGet
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      summary: Read the PROXY protocol and idle timeout of a tcp service
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      responses:
+        '200':
+          description: The settings.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TcpSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not a tcp service. }
+    put:
+      tags: [services]
+      operationId: serviceTcpSettingsUpdate
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      summary: Set the PROXY protocol or idle timeout of a tcp service
+      description: |
+        Changes the settings named in the body and keeps the others. The
+        relay applies them without a new registration: the PROXY protocol
+        to the next connection, the idle timeout to the open ones as well.
+        Neither widens who may connect. Audited as
+        `service.tcp_settings.update` with both settings before and after.
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TcpSettingsInput' }
+      responses:
+        '200':
+          description: The settings after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TcpSettings' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }

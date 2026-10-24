@@ -637,6 +637,9 @@ func newRouter(d Deps) http.Handler {
 			r.Delete("/services/{serviceID}/ip-grants/{grantID}", d.DeleteIPGrant)
 			// The cap on connected visitors of a tcp service.
 			r.Put("/services/{serviceID}/max-connections", d.PutServiceMaxConnections)
+			// The PROXY protocol and idle timeout of a tcp service.
+			r.Get("/services/{serviceID}/tcp-settings", d.GetServiceTCPSettings)
+			r.Put("/services/{serviceID}/tcp-settings", d.PutServiceTCPSettings)
 			// The live connections of a tcp service (visitors and forwards).
 			// Closing one cuts someone off: it asks for a recent confirmation.
 			r.Get("/services/{serviceID}/connections", d.ListServiceConnections)

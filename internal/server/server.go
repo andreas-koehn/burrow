@@ -69,6 +69,12 @@ type Resolved struct {
 	// MaxConnections is a tcp service's cap on connected visitors; 0 is the
 	// relay's default (DefaultTCPMaxConnections).
 	MaxConnections int
+	// ProxyProtocol is proto.ProxyProtocolV2 when the home client is to
+	// write a PROXY protocol v2 header to its target, "" for none.
+	// IdleTimeout closes a connection of the tcp service that carried no
+	// byte for that long; 0 is never.
+	ProxyProtocol string
+	IdleTimeout   time.Duration
 }
 
 // TCPPortHold is a service's hold on a public port.
@@ -207,6 +213,11 @@ type ConnLogEntry struct {
 	// TokenName is the client token name of the user who forwards (kind
 	// tcp_forward); "" for a visitor.
 	TokenName string
+	// Protocol is what the first bytes of the visitor or forwarder were
+	// (tcpsniff: tls, ssh, rdp, http or unknown), and SNI the server name of
+	// a TLS ClientHello; both "" for a connection whose bytes were never
+	// looked at (refused, or not paired).
+	Protocol, SNI string
 }
 
 // ConnLogReasonNoStream is the reason of a visitor whose client did not open
@@ -312,6 +323,9 @@ type Server struct {
 	// tcpServing maps the tcp services a live tunnel serves to the client
 	// token of its session (under mu): one tunnel per service.
 	tcpServing map[string]string
+	// idleTick is how often a live tcp connection is checked against its
+	// service's idle timeout (tests make it short).
+	idleTick time.Duration
 	// unnamedWarned: the warning about a tcp tunnel without a name was
 	// logged.
 	unnamedWarned atomic.Bool
@@ -367,6 +381,7 @@ func New(o Options) (*Server, error) {
 		tlsC:      tlsCfg,
 		refusals:  &refusalSampler{log: o.Logger},
 		authFails: newAuthFailures(),
+		idleTick:  defaultIdleTick,
 	}
 	s.ports = newPortAllocator(o.PortMin, o.PortMax)
 	return s, nil

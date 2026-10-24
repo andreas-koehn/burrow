@@ -291,6 +291,80 @@ func (s *Store) SetServiceMaxConnections(ctx context.Context, callerID, callerRo
 	return svc.MaxConnections, nil
 }
 
+// The idle timeout a tcp service may set, in seconds: 0 (never) or
+// MinTCPIdleTimeoutS to MaxTCPIdleTimeoutS. They mirror
+// server.MinTCPIdleTimeout and server.MaxTCPIdleTimeout.
+const (
+	MinTCPIdleTimeoutS = 60
+	MaxTCPIdleTimeoutS = 86400
+)
+
+// TCPSettings are the per-service settings of a tcp service that shape its
+// connections: the PROXY protocol header its client writes ("" or "v2") and
+// the idle timeout in seconds (0: never).
+type TCPSettings struct {
+	ProxyProtocol string `json:"proxy_protocol"`
+	IdleTimeoutS  int    `json:"idle_timeout_s"`
+}
+
+// TCPSettingsUpdate names the settings to change; a nil field is kept.
+type TCPSettingsUpdate struct {
+	ProxyProtocol *string
+	IdleTimeoutS  *int
+}
+
+// ServiceTCPSettings reads the tcp settings of a service. Same permission
+// rule as SetServiceMaxConnections; ErrServiceNotTCP for any other type.
+func (s *Store) ServiceTCPSettings(ctx context.Context, callerID, callerRole, serviceID string) (TCPSettings, error) {
+	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
+	if err != nil {
+		return TCPSettings{}, err
+	}
+	if svc.Type != "tcp" {
+		return TCPSettings{}, ErrServiceNotTCP
+	}
+	return TCPSettings{ProxyProtocol: svc.ProxyProtocol, IdleTimeoutS: svc.IdleTimeoutS}, nil
+}
+
+// SetServiceTCPSettings changes the tcp settings of a service named in u and
+// keeps the others. Same permission rule as SetServiceMaxConnections.
+// ErrServiceNotTCP for any other type, ErrInvalidProxyProtocol and
+// ErrInvalidIdleTimeout for a value out of range (nothing is written then).
+// Every write is audited as service.tcp_settings.update with both settings
+// before and after. It returns them.
+func (s *Store) SetServiceTCPSettings(ctx context.Context, callerID, callerRole, serviceID string, u TCPSettingsUpdate) (before, after TCPSettings, err error) {
+	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
+	if err != nil {
+		return TCPSettings{}, TCPSettings{}, err
+	}
+	if svc.Type != "tcp" {
+		return TCPSettings{}, TCPSettings{}, ErrServiceNotTCP
+	}
+	before = TCPSettings{ProxyProtocol: svc.ProxyProtocol, IdleTimeoutS: svc.IdleTimeoutS}
+	after = before
+	if u.ProxyProtocol != nil {
+		if p := *u.ProxyProtocol; p != "" && p != "v2" {
+			return TCPSettings{}, TCPSettings{}, ErrInvalidProxyProtocol
+		}
+		after.ProxyProtocol = *u.ProxyProtocol
+	}
+	if u.IdleTimeoutS != nil {
+		if n := *u.IdleTimeoutS; n != 0 && (n < MinTCPIdleTimeoutS || n > MaxTCPIdleTimeoutS) {
+			return TCPSettings{}, TCPSettings{}, ErrInvalidIdleTimeout
+		}
+		after.IdleTimeoutS = *u.IdleTimeoutS
+	}
+	if err := s.q.SetServiceTCPSettings(ctx, serviceID, after.ProxyProtocol, after.IdleTimeoutS); err != nil {
+		return TCPSettings{}, TCPSettings{}, err
+	}
+	s.emitAudit(withAuditDeadline(ctx), audit.ActionServiceTCPSettingsUpdate, func(e *audit.Event) {
+		e.SubjectID = serviceID
+		e.SubjectLabel = svc.Name
+		e.Payload = audit.MustJSON(map[string]TCPSettings{"from": before, "to": after})
+	})
+	return before, after, nil
+}
+
 // MaxTCPMaxConnections is the most visitors a tcp service may let connect at
 // once; it is server.MaxTCPMaxConnections (the store does not import the
 // relay).

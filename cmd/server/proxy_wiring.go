@@ -332,6 +332,8 @@ func (a serviceResolverAdapter) ResolveTCP(ctx context.Context, userID, name str
 				ServiceID: svc.ID, Slug: slug, AccessMode: svc.AccessMode, Created: svc.LastSeen == nil,
 				TCPPort: svc.TCPPort, TCPPortPinned: svc.TCPPortPinned, TCPPortLimit: limit,
 				MaxConnections: svc.MaxConnections,
+				ProxyProtocol:  svc.ProxyProtocol,
+				IdleTimeout:    time.Duration(svc.IdleTimeoutS) * time.Second,
 			}, nil
 		}
 		slug, err := auth.GenerateSlug()
@@ -775,7 +777,10 @@ func (a tcpAccessAdapter) TCPAccess(ctx context.Context, serviceID string) (serv
 	if svc.Type != "tcp" {
 		return server.TCPAccess{}, fmt.Errorf("tcp access: service %s is of type %s", serviceID, svc.Type)
 	}
-	acc := server.TCPAccess{Mode: svc.AccessMode, MaxConnections: svc.MaxConnections}
+	acc := server.TCPAccess{
+		Mode: svc.AccessMode, MaxConnections: svc.MaxConnections,
+		ProxyProtocol: svc.ProxyProtocol, IdleTimeout: time.Duration(svc.IdleTimeoutS) * time.Second,
+	}
 	if acc.Mode != server.TCPAccessIP {
 		return acc, nil
 	}

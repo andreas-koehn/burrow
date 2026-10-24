@@ -29,6 +29,7 @@ import (
 type svcRelay struct {
 	mu    sync.Mutex
 	modes map[string]string // name → stored mode
+	proxy map[string]string // name → the service's PROXY protocol setting
 }
 
 func (r *svcRelay) Resolve(context.Context, string, string, string) (string, string, error) {
@@ -49,7 +50,7 @@ func (r *svcRelay) ResolveTCP(_ context.Context, _, name string, o server.Resolv
 		}
 		r.modes[name] = mode
 	}
-	return server.Resolved{ServiceID: "svc-" + name, Slug: "s-" + name, AccessMode: mode, Created: !ok}, nil
+	return server.Resolved{ServiceID: "svc-" + name, Slug: "s-" + name, AccessMode: mode, Created: !ok, ProxyProtocol: r.proxy[name]}, nil
 }
 
 func (r *svcRelay) TCPPortReservations(context.Context) (map[int]server.TCPPortHold, error) {
@@ -66,6 +67,15 @@ func (r *svcRelay) AuthorizeForward(_ context.Context, _, target string) (server
 		return server.ForwardTarget{}, server.ErrForwardNotFound
 	}
 	return server.ForwardTarget{ServiceID: "svc-" + name, Name: name}, nil
+}
+
+func (r *svcRelay) setProxyProtocol(name, pp string) {
+	r.mu.Lock()
+	if r.proxy == nil {
+		r.proxy = map[string]string{}
+	}
+	r.proxy[name] = pp
+	r.mu.Unlock()
 }
 
 func (r *svcRelay) set(name, mode string) {

@@ -71,6 +71,10 @@ type Entry struct {
 	// TokenName is the client token name of the user who forwards (kind
 	// tcp_forward); empty otherwise.
 	TokenName string
+	// Protocol is what the first bytes of a tcp connection were (tls, ssh,
+	// rdp, http, unknown) and SNI the server name of its TLS ClientHello;
+	// empty (NULL) otherwise.
+	Protocol, SNI string
 }
 
 // Sink is the connection-log recording surface.
@@ -153,8 +157,8 @@ func (s *SQLSink) Record(ctx context.Context, e Entry) error {
 			`INSERT INTO connection_logs
 			  (id, kind, service_id, tunnel_id, user_id, client_session_id,
 			   source_ip, user_agent, started_at, ended_at, duration_ms,
-			   bytes_in, bytes_out, status, reason, token_name)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			   bytes_in, bytes_out, status, reason, token_name, protocol, sni)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			e.ID,
 			string(e.Kind),
 			nullableStr(e.ServiceID),
@@ -171,6 +175,8 @@ func (s *SQLSink) Record(ctx context.Context, e Entry) error {
 			string(e.Status),
 			nullableStr(e.Reason),
 			nullableStr(e.TokenName),
+			nullableStr(e.Protocol),
+			nullableStr(e.SNI),
 		)
 		if err != nil {
 			s.log.Warn("connlog: insert failed",
@@ -270,7 +276,7 @@ func ListConnectionLogs(ctx context.Context, x *db.DB, q ConnLogQuery) ([]db.Con
 		source_ip, COALESCE(user_agent,''),
 		started_at, ended_at, duration_ms,
 		bytes_in, bytes_out, status, COALESCE(reason,''), created_at,
-		COALESCE(token_name,'')
+		COALESCE(token_name,''), COALESCE(protocol,''), COALESCE(sni,'')
 		FROM connection_logs`
 	if len(where) > 0 {
 		sql += " WHERE " + strings.Join(where, " AND ")
@@ -293,7 +299,7 @@ func ListConnectionLogs(ctx context.Context, x *db.DB, q ConnLogQuery) ([]db.Con
 			&r.SourceIP, &r.UserAgent,
 			&r.StartedAt, &r.EndedAt, &r.DurationMs,
 			&r.BytesIn, &r.BytesOut, &r.Status, &r.Reason, &r.CreatedAt,
-			&r.TokenName,
+			&r.TokenName, &r.Protocol, &r.SNI,
 		); err != nil {
 			return nil, fmt.Errorf("scan connection_log: %w", err)
 		}

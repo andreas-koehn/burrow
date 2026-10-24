@@ -71,6 +71,10 @@ type serviceConnectionResp struct {
 	Since     time.Time `json:"since"`
 	BytesIn   uint64    `json:"bytes_in"`
 	BytesOut  uint64    `json:"bytes_out"`
+	// Protocol and SNI are what its first bytes were so far (see the
+	// connection log); "unknown" until they tell.
+	Protocol string `json:"protocol"`
+	SNI      string `json:"sni"`
 }
 
 // tcpServiceForConnections gates a connections route as the service routes
@@ -122,7 +126,7 @@ func (d Deps) ListServiceConnections(w http.ResponseWriter, r *http.Request) {
 		out = append(out, serviceConnectionResp{
 			ID: c.ID, Kind: c.Kind, SourceIP: c.SourceIP, UserID: c.UserID, UserEmail: email,
 			TokenName: c.TokenName, SessionID: c.SessionID, Since: c.Since,
-			BytesIn: c.BytesIn, BytesOut: c.BytesOut,
+			BytesIn: c.BytesIn, BytesOut: c.BytesOut, Protocol: c.Protocol, SNI: c.SNI,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

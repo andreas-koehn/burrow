@@ -47,6 +47,20 @@ func TestTCP_RemoteAndName(t *testing.T) {
 	}
 }
 
+// --proxy-protocol v2 makes the client write a PROXY v2 header to its
+// target (tcp complete, E2).
+func TestTCP_ProxyProtocol(t *testing.T) {
+	h := newHarness(t)
+	h.signIn()
+	if code := h.exec("tcp", "8443", "--name", "web", "--access", "open", "--proxy-protocol", "v2"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	want := []client.TunnelSpec{{Name: "web", Type: "tcp", LocalAddr: "127.0.0.1:8443", Access: "open", ProxyProtocol: "v2"}}
+	if r := h.oneRun(); !reflect.DeepEqual(r.tunnels, want) {
+		t.Fatalf("tunnels = %+v, want %+v", r.tunnels, want)
+	}
+}
+
 func TestExpose_Targets(t *testing.T) {
 	cases := []struct{ cmd, target, local, name string }{
 		{"http", "localhost:3000", "localhost:3000", "kohns-laptop-3000"},
@@ -107,6 +121,8 @@ func TestExpose_UsageErrors(t *testing.T) {
 		{"empty name", []string{"http", "3000", "--name", " "}, []string{"--name"}},
 		{"remote out of range", []string{"tcp", "5432", "--remote", "70000"}, []string{"--remote"}},
 		{"negative remote", []string{"tcp", "5432", "--remote", "-1"}, []string{"--remote"}},
+		{"http --proxy-protocol", []string{"http", "3000", "--proxy-protocol", "v2"}, []string{"--proxy-protocol applies to tcp services"}},
+		{"unknown proxy protocol", []string{"tcp", "8443", "--proxy-protocol", "v1"}, []string{"--proxy-protocol must be v2"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

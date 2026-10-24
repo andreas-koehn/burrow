@@ -503,6 +503,14 @@ func (*fullDepsStub) SetServiceGatewayOnly(context.Context, string, string, stri
 	stubPanic("SetServiceGatewayOnly")
 	return nil
 }
+func (*fullDepsStub) ServiceTCPSettings(context.Context, string, string, string) (store.TCPSettings, error) {
+	stubPanic("ServiceTCPSettings")
+	return store.TCPSettings{}, nil
+}
+func (*fullDepsStub) SetServiceTCPSettings(context.Context, string, string, string, store.TCPSettingsUpdate) (store.TCPSettings, store.TCPSettings, error) {
+	stubPanic("SetServiceTCPSettings")
+	return store.TCPSettings{}, store.TCPSettings{}, nil
+}
 func (*fullDepsStub) SetServiceMaxConnections(context.Context, string, string, string, int) (int, error) {
 	stubPanic("SetServiceMaxConnections")
 	return 0, nil

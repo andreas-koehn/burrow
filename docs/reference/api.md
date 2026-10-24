@@ -126,6 +126,7 @@ The table below lists the major resource groups, their path prefixes, and what t
 | **ip-grants** | `/api/v1/services/{id}/ip-grants` | Time-limited address grants of a tcp service in `ip` mode |
 | **connections** | `/api/v1/services/{id}/connections` | Live visitors and forwards of a tcp service; `DELETE` disconnects one |
 | **max-connections** | `/api/v1/services/{id}/max-connections` | Visitor cap of a tcp service (0 = default 32, at most 256) |
+| **tcp-settings** | `/api/v1/services/{id}/tcp-settings` | PROXY protocol header (`""` or `v2`) and idle timeout (0, or 60 to 86400 s) of a tcp service |
 | **webhooks** | `/api/v1/webhooks/` | HMAC outbound webhooks: create, list, pause, resume, delivery log |
 | **audit** | `/api/v1/audit/` | Immutable audit event log; chain verify and export |
 | **backups** | `/api/v1/backups/` | Create, list, verify, download, delete and restore database backups |

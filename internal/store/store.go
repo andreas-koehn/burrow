@@ -80,6 +80,13 @@ var ErrServiceNotTCP = errors.New("store: the setting applies to tcp services on
 // number out of range (maps to HTTP 400).
 var ErrInvalidMaxConnections = errors.New("store: max_connections must be 0 (the default) or 1 to 256")
 
+// ErrInvalidProxyProtocol: a tcp service's proxy_protocol is "" or "v2".
+// ErrInvalidIdleTimeout: its idle_timeout_s is 0 (never) or 60 to 86400.
+var (
+	ErrInvalidProxyProtocol = errors.New("store: proxy_protocol must be \"\" or \"v2\"")
+	ErrInvalidIdleTimeout   = errors.New("store: idle_timeout_s must be 0 (never) or 60 to 86400")
+)
+
 // ErrNameRequired is returned by CreateAPIKey when the name argument is empty
 // (maps to HTTP 400 in the API layer).
 var ErrNameRequired = errors.New("store: name is required")

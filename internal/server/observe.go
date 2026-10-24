@@ -106,8 +106,13 @@ func (c *countingStream) Write(p []byte) (int, error) {
 }
 
 // tcpTraffic reports one visitor connection of a tcp tunnel that has ended:
-// to the observer, and as a row of the connection log.
-func (s *Server) tcpTraffic(tun *Tunnel, visitor net.Conn, started time.Time, in, out uint64, outcome, reason string) {
+// to the observer, and as a row of the connection log. c is its live
+// connection, nil when it never was one (not paired).
+func (s *Server) tcpTraffic(tun *Tunnel, visitor net.Conn, c *liveConn, started time.Time, in, out uint64, outcome, reason string) {
+	var protocol, sni string
+	if c != nil {
+		protocol, sni = c.protocol()
+	}
 	ip, _, err := net.SplitHostPort(visitor.RemoteAddr().String())
 	if err != nil {
 		ip = visitor.RemoteAddr().String()
@@ -125,7 +130,7 @@ func (s *Server) tcpTraffic(tun *Tunnel, visitor net.Conn, started time.Time, in
 			Kind: observe.TrafficTCP, ServiceID: tun.ServiceID, TunnelID: tun.ID,
 			UserID: tun.sess.UserID, ClientSessionID: tun.sess.SessionID, SourceIP: ip,
 			StartedAt: started, EndedAt: ended, BytesIn: int64(in), BytesOut: int64(out),
-			Status: outcome, Reason: reason,
+			Status: outcome, Reason: reason, Protocol: protocol, SNI: sni,
 		})
 	}
 }

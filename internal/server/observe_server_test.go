@@ -145,6 +145,9 @@ type handClient struct {
 	conn net.Conn
 	ctrl *yamux.Stream
 	regs chan proto.TunnelRegisterResponse
+	// notices are the new_connection messages the relay sent (up to 64 not
+	// read yet; more are dropped).
+	notices chan proto.NewConnection
 }
 
 func (r *observedRelay) client(onConn func(st *yamux.Stream)) *handClient {
@@ -167,7 +170,7 @@ func (r *observedRelay) clientWith(token string, onConn func(st *yamux.Stream)) 
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	c := &handClient{conn: conn, ctrl: ctrl, regs: make(chan proto.TunnelRegisterResponse, 8)}
+	c := &handClient{conn: conn, ctrl: ctrl, regs: make(chan proto.TunnelRegisterResponse, 8), notices: make(chan proto.NewConnection, 64)}
 	go func() {
 		for {
 			var env proto.Envelope
@@ -181,7 +184,14 @@ func (r *observedRelay) clientWith(token string, onConn func(st *yamux.Stream)) 
 				c.regs <- rr
 			case proto.MsgNewConnection:
 				var nc proto.NewConnection
-				if proto.DecodePayload(env, &nc) != nil || onConn == nil {
+				if proto.DecodePayload(env, &nc) != nil {
+					continue
+				}
+				select {
+				case c.notices <- nc:
+				default:
+				}
+				if onConn == nil {
 					continue
 				}
 				go func() {

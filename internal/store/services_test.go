@@ -11,6 +11,7 @@ import (
 	"errors"
 	"github.com/ankoehn/burrow/internal/audit"
 	"math/big"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -720,5 +721,85 @@ func TestTouchServiceLastSeenShowsInTheViews(t *testing.T) {
 	}
 	if err := st.TouchServiceLastSeen(ctx, "no-such-service", "laptop"); !errors.Is(err, db.ErrNotFound) {
 		t.Fatalf("a deleted service err = %v, want db.ErrNotFound", err)
+	}
+}
+
+// The PROXY protocol and the idle timeout of a tcp service (tcp complete,
+// E2/E4): the owner (or a role that configures any service) sets either or
+// both, each is bounded, and every write is audited with both settings
+// before and after.
+func TestServiceTCPSettings(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	owner := mustCreateUser(t, st, "owner@x", "user")
+	other := mustCreateUser(t, st, "other@x", "user")
+	admin := mustCreateUser(t, st, "admin@x", "admin")
+	sink := &auditSink{}
+	st.SetAuditLogger(sink)
+	web := mustGetOrCreateService(t, st, owner.ID, "web", "http")
+	rdp := mustGetOrCreateService(t, st, owner.ID, "rdp", "tcp")
+
+	got, err := st.ServiceTCPSettings(ctx, owner.ID, "user", rdp.ID)
+	if err != nil || got != (TCPSettings{}) {
+		t.Fatalf("new service: %+v %v", got, err)
+	}
+	v2, idle := "v2", 3600
+	before, after, err := st.SetServiceTCPSettings(ctx, owner.ID, "user", rdp.ID, TCPSettingsUpdate{ProxyProtocol: &v2, IdleTimeoutS: &idle})
+	if err != nil || before != (TCPSettings{}) || after != (TCPSettings{ProxyProtocol: "v2", IdleTimeoutS: 3600}) {
+		t.Fatalf("set both: %+v %+v %v", before, after, err)
+	}
+	// One field alone leaves the other.
+	off := 0
+	if _, after, err := st.SetServiceTCPSettings(ctx, admin.ID, "admin", rdp.ID, TCPSettingsUpdate{IdleTimeoutS: &off}); err != nil ||
+		after != (TCPSettings{ProxyProtocol: "v2"}) {
+		t.Fatalf("idle alone: %+v %v", after, err)
+	}
+	if got, _ := st.ServiceTCPSettings(ctx, owner.ID, "user", rdp.ID); got != (TCPSettings{ProxyProtocol: "v2"}) {
+		t.Fatalf("read back: %+v", got)
+	}
+	for _, n := range []int{-1, 1, 59, 86401} {
+		if _, _, err := st.SetServiceTCPSettings(ctx, owner.ID, "user", rdp.ID, TCPSettingsUpdate{IdleTimeoutS: &n}); !errors.Is(err, ErrInvalidIdleTimeout) {
+			t.Fatalf("idle %d: %v", n, err)
+		}
+	}
+	for _, n := range []int{60, 86400} {
+		if _, _, err := st.SetServiceTCPSettings(ctx, owner.ID, "user", rdp.ID, TCPSettingsUpdate{IdleTimeoutS: &n}); err != nil {
+			t.Fatalf("idle %d: %v", n, err)
+		}
+	}
+	for _, p := range []string{"v1", "V2", "yes"} {
+		if _, _, err := st.SetServiceTCPSettings(ctx, owner.ID, "user", rdp.ID, TCPSettingsUpdate{ProxyProtocol: &p}); !errors.Is(err, ErrInvalidProxyProtocol) {
+			t.Fatalf("proxy %q: %v", p, err)
+		}
+	}
+	if _, _, err := st.SetServiceTCPSettings(ctx, owner.ID, "user", web.ID, TCPSettingsUpdate{ProxyProtocol: &v2}); !errors.Is(err, ErrServiceNotTCP) {
+		t.Fatalf("http: %v", err)
+	}
+	if _, err := st.ServiceTCPSettings(ctx, owner.ID, "user", web.ID); !errors.Is(err, ErrServiceNotTCP) {
+		t.Fatalf("http read: %v", err)
+	}
+	if _, _, err := st.SetServiceTCPSettings(ctx, other.ID, "user", rdp.ID, TCPSettingsUpdate{ProxyProtocol: &v2}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("another user: %v", err)
+	}
+	if _, err := st.ServiceTCPSettings(ctx, other.ID, "user", rdp.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("another user reads: %v", err)
+	}
+	var writes []string
+	for _, e := range sink.ev {
+		if e.Action == audit.ActionServiceTCPSettingsUpdate {
+			writes = append(writes, string(e.Payload))
+		}
+	}
+	want := []string{
+		`{"from":{"proxy_protocol":"","idle_timeout_s":0},"to":{"proxy_protocol":"v2","idle_timeout_s":3600}}`,
+		`{"from":{"proxy_protocol":"v2","idle_timeout_s":3600},"to":{"proxy_protocol":"v2","idle_timeout_s":0}}`,
+		`{"from":{"proxy_protocol":"v2","idle_timeout_s":0},"to":{"proxy_protocol":"v2","idle_timeout_s":60}}`,
+		`{"from":{"proxy_protocol":"v2","idle_timeout_s":60},"to":{"proxy_protocol":"v2","idle_timeout_s":86400}}`,
+	}
+	if strings.Join(writes, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("audit:\n%s\nwant\n%s", strings.Join(writes, "\n"), strings.Join(want, "\n"))
+	}
+	if !slices.Contains(audit.AllActions, audit.ActionServiceTCPSettingsUpdate) || audit.ActionServiceTCPSettingsUpdate != "service.tcp_settings.update" {
+		t.Fatal("service.tcp_settings.update is not an audit action")
 	}
 }

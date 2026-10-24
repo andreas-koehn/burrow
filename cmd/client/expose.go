@@ -49,6 +49,12 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 				}
 			} else if flags.Changed("remote") {
 				return usageErrorf("--remote applies to tcp services")
+			} else if flags.Changed("proxy-protocol") {
+				return usageErrorf("--proxy-protocol applies to tcp services")
+			}
+			proxyProtocol, _ := flags.GetString("proxy-protocol")
+			if flags.Changed("proxy-protocol") && proxyProtocol != client.ProxyProtocolV2 {
+				return usageErrorf("--proxy-protocol must be v2")
 			}
 
 			local, err := client.ParseTarget(args[0])
@@ -115,7 +121,8 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 				return err
 			}
 
-			spec := client.TunnelSpec{Name: name, Type: typ, LocalAddr: local, RemotePort: remote, Slug: slug, Access: mode, AccessDefault: accessDefault}
+			spec := client.TunnelSpec{Name: name, Type: typ, LocalAddr: local, RemotePort: remote, Slug: slug, Access: mode,
+				AccessDefault: accessDefault, ProxyProtocol: proxyProtocol}
 			return foreground(cmd, d, creds, []client.TunnelSpec{spec}, g)
 		},
 	}
@@ -128,9 +135,10 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 		f.String("access", "", "access mode: open|login|api-key; used only when the service is created")
 	}
 	f.Int("remote", 0, "fixed public port with --access open or ip (default: any free port)")
+	f.String("proxy-protocol", "", "v2: send a PROXY protocol v2 header with the visitor's address to the target first")
 	// A flag of the other kind is known, so that it gets a message that says
 	// where it belongs, but it is not listed in the help.
-	hidden := []string{"remote"}
+	hidden := []string{"remote", "proxy-protocol"}
 	if typ == "tcp" {
 		hidden = []string{"slug"}
 	}

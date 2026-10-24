@@ -43,6 +43,10 @@ type ServiceStore interface {
 	// SetServiceMaxConnections sets the cap on connected visitors of a tcp
 	// service (0: the relay's default) and returns the previous one.
 	SetServiceMaxConnections(ctx context.Context, callerID, callerRole, serviceID string, n int) (int, error)
+	// ServiceTCPSettings and SetServiceTCPSettings read and change the PROXY
+	// protocol and the idle timeout of a tcp service (store.TCPSettings).
+	ServiceTCPSettings(ctx context.Context, callerID, callerRole, serviceID string) (store.TCPSettings, error)
+	SetServiceTCPSettings(ctx context.Context, callerID, callerRole, serviceID string, u store.TCPSettingsUpdate) (before, after store.TCPSettings, err error)
 	// DeleteService removes the service and returns its name. Owner or a
 	// holder of services:configure:any; store.ErrForbidden otherwise.
 	// store.ErrServiceHasProvider and store.ErrProviderInUse refuse it.

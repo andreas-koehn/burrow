@@ -119,6 +119,12 @@ type Service struct {
 	TCPPort        int
 	TCPPortPinned  bool // the client asked for TCPPort (see migration 0040)
 	MaxConnections int
+	// ProxyProtocol is "" or "v2": the PROXY protocol header the home client
+	// writes to the target of a tcp service. IdleTimeoutS closes a
+	// connection that carried no byte for that many seconds; 0 never
+	// (migration 0042).
+	ProxyProtocol string
+	IdleTimeoutS  int
 }
 
 // ServiceAPIKey is a row of the service_api_keys table.
@@ -388,6 +394,9 @@ type ConnectionLog struct {
 	// TokenName is the client token name of the user who forwards (kind
 	// tcp_forward); empty otherwise.
 	TokenName string
+	// Protocol and SNI: what the first bytes of a tcp connection were and
+	// the server name of its TLS ClientHello; empty otherwise.
+	Protocol, SNI string
 }
 
 // ConnectionLogRollup is a row of the connection_log_rollups table.

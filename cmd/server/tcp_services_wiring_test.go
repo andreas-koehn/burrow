@@ -223,7 +223,7 @@ func TestServerConnLogAdapter_WritesRows(t *testing.T) {
 	a.RecordConnection(ctx, server.ConnLogEntry{
 		Kind: "tcp_proxy", ServiceID: "svc-rdp", TunnelID: "tn-1", UserID: uid, ClientSessionID: "sess-1",
 		SourceIP: "203.0.113.9", StartedAt: start, EndedAt: start.Add(1500 * time.Millisecond),
-		BytesIn: 11, BytesOut: 22, Status: "closed_clean",
+		BytesIn: 11, BytesOut: 22, Status: "closed_clean", Protocol: "tls", SNI: "rdp.example.com",
 	})
 	var rows []db.ConnectionLog
 	deadline := time.Now().Add(5 * time.Second)
@@ -240,7 +240,8 @@ func TestServerConnLogAdapter_WritesRows(t *testing.T) {
 	}
 	r := rows[0]
 	if r.ServiceID != "svc-rdp" || r.TunnelID != "tn-1" || r.UserID != uid || r.ClientSessionID != "sess-1" ||
-		r.SourceIP != "203.0.113.9" || r.BytesIn != 11 || r.BytesOut != 22 || r.Status != "closed_clean" || r.DurationMs != 1500 {
+		r.SourceIP != "203.0.113.9" || r.BytesIn != 11 || r.BytesOut != 22 || r.Status != "closed_clean" || r.DurationMs != 1500 ||
+		r.Protocol != "tls" || r.SNI != "rdp.example.com" {
 		t.Fatalf("row %+v", r)
 	}
 }
