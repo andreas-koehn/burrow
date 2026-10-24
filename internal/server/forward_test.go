@@ -245,7 +245,17 @@ func TestForward_ThePrivateServiceIsReachedBothWays(t *testing.T) {
 		t.Fatalf("echo %q", got)
 	}
 
-	conns := r.srv.ServiceConnections("svc-rdp")
+	// The relay counts a direction after its copy returns, which can land a
+	// moment after the echo reached us: wait for both counters.
+	var conns []ConnView
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		conns = r.srv.ServiceConnections("svc-rdp")
+		if len(conns) == 1 && conns[0].BytesIn == 5 && conns[0].BytesOut == 8 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(conns) != 1 {
 		t.Fatalf("live connections: %+v", conns)
 	}
