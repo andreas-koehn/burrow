@@ -75,7 +75,7 @@ func TestRegisterPublishesTunnelsChanged(t *testing.T) {
 	defer cli.Close()
 
 	reg := NewRegistry()
-	cs := &ClientSession{SessionID: "s2", UserID: "u1", Tunnels: map[string]*Tunnel{}}
+	cs := &ClientSession{SessionID: "s2", Scope: "all", UserID: "u1", Tunnels: map[string]*Tunnel{}}
 	reg.AddSession(cs)
 	cs.SetControl(srv)
 
@@ -126,8 +126,8 @@ func TestRegisterPublishesTunnelsChanged(t *testing.T) {
 func TestUserByteSumHelper(t *testing.T) {
 	reg := NewRegistry()
 
-	cs1 := &ClientSession{SessionID: "s1", UserID: "alice", Tunnels: map[string]*Tunnel{}}
-	cs2 := &ClientSession{SessionID: "s2", UserID: "bob", Tunnels: map[string]*Tunnel{}}
+	cs1 := &ClientSession{SessionID: "s1", Scope: "all", UserID: "alice", Tunnels: map[string]*Tunnel{}}
+	cs2 := &ClientSession{SessionID: "s2", Scope: "all", UserID: "bob", Tunnels: map[string]*Tunnel{}}
 	reg.AddSession(cs1)
 	reg.AddSession(cs2)
 
@@ -191,7 +191,7 @@ func TestByteTickerNoPubWhenIdle(t *testing.T) {
 	defer func() { cancel(); s.Wait() }()
 	waitListening(t, s)
 
-	cs := &ClientSession{SessionID: "idle-s1", UserID: "u2", Tunnels: map[string]*Tunnel{}}
+	cs := &ClientSession{SessionID: "idle-s1", Scope: "all", UserID: "u2", Tunnels: map[string]*Tunnel{}}
 	tn := &Tunnel{ID: "idle-t1", Name: "idle", Type: "tcp", RemotePort: 0, LocalAddr: "127.0.0.1:1"}
 	// Set fixed byte values; they will not change during the test.
 	tn.BytesIn.Store(42)
@@ -245,7 +245,7 @@ func TestByteTickerPubOnByteChange(t *testing.T) {
 	defer func() { cancel(); s.Wait() }()
 	waitListening(t, s)
 
-	cs := &ClientSession{SessionID: "chg-s1", UserID: "u3", Tunnels: map[string]*Tunnel{}}
+	cs := &ClientSession{SessionID: "chg-s1", Scope: "all", UserID: "u3", Tunnels: map[string]*Tunnel{}}
 	tn := &Tunnel{ID: "chg-t1", Name: "chg", Type: "tcp", RemotePort: 0, LocalAddr: "127.0.0.1:1"}
 	s.reg.AddSession(cs)
 	s.reg.AddTunnel(cs, tn)
@@ -305,7 +305,7 @@ func TestByteTickerNoMapLeakAfterDisconnect(t *testing.T) {
 	defer func() { cancel(); s.Wait() }()
 	waitListening(t, s)
 
-	cs := &ClientSession{SessionID: "leak-s1", UserID: "u4", Tunnels: map[string]*Tunnel{}}
+	cs := &ClientSession{SessionID: "leak-s1", Scope: "all", UserID: "u4", Tunnels: map[string]*Tunnel{}}
 	tn := &Tunnel{ID: "leak-t1", Name: "leak", Type: "tcp", RemotePort: 0, LocalAddr: "127.0.0.1:1"}
 	s.reg.AddSession(cs)
 	s.reg.AddTunnel(cs, tn)
@@ -372,7 +372,7 @@ func TestByteTickerPublishesForLiveTunnel(t *testing.T) {
 	waitListening(t, s)
 
 	// Wire a live session with one tunnel directly into the server's registry.
-	cs := &ClientSession{SessionID: "bt-s1", UserID: "u1", Tunnels: map[string]*Tunnel{}}
+	cs := &ClientSession{SessionID: "bt-s1", Scope: "all", UserID: "u1", Tunnels: map[string]*Tunnel{}}
 	tn := &Tunnel{ID: "bt-t1", Name: "bt", Type: "tcp", RemotePort: 0, LocalAddr: "127.0.0.1:1"}
 	s.reg.AddSession(cs)
 	s.reg.AddTunnel(cs, tn)

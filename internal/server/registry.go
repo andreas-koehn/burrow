@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
+	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/observe"
 	"github.com/ankoehn/burrow/internal/proto"
 )
@@ -104,8 +105,9 @@ type ClientSession struct {
 	// session is never recorded on a token.
 	TokenID string
 	// Scope is the scope of the token the session logged in with (the
-	// db.TokenScope… values). "" is all: an authenticator that names no scope
-	// limits nothing.
+	// db.TokenScope… values). Only those values allow anything; the handshake
+	// sets db.TokenScopeAll for an authenticator that has no scopes (a test
+	// double; the relay's own is a ScopedAuthenticator).
 	Scope string
 	// ConnectedAt is when the handshake succeeded.
 	ConnectedAt time.Time
@@ -456,8 +458,14 @@ const (
 	errScopeNoForward = "this token is limited to publishing (scope publish) and may not open forwards; use a token with scope all or forward"
 )
 
-// MayPublish reports whether the session's token may register tunnels.
-func (cs *ClientSession) MayPublish() bool { return cs.Scope != "forward" }
+// MayPublish reports whether the session's token may register tunnels. Only
+// the scopes all and publish allow it: an empty or unknown scope denies.
+func (cs *ClientSession) MayPublish() bool {
+	return cs.Scope == db.TokenScopeAll || cs.Scope == db.TokenScopePublish
+}
 
-// MayForward reports whether the session's token may open forwards.
-func (cs *ClientSession) MayForward() bool { return cs.Scope != "publish" }
+// MayForward reports whether the session's token may open forwards. Only the
+// scopes all and forward allow it: an empty or unknown scope denies.
+func (cs *ClientSession) MayForward() bool {
+	return cs.Scope == db.TokenScopeAll || cs.Scope == db.TokenScopeForward
+}

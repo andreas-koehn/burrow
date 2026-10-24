@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/proto"
 	"github.com/ankoehn/burrow/internal/version"
 )
@@ -57,11 +58,12 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 		_ = proto.WriteMessage(conn, proto.MsgError, proto.Error{Message: "bad auth payload", Code: proto.CodeBadRequest})
 		return nil, authFailure{err}
 	}
-	var userID, tokenID, tokenName, scope string
+	var userID, tokenID, tokenName string
+	// A plain authenticator has no scopes: its tokens are scope all, said here
+	// and not left empty (an empty scope allows nothing).
+	scope := db.TokenScopeAll
 	var err error
-	if sa, ok := auth.(interface {
-		AuthenticateTokenScope(ctx context.Context, token string) (string, string, string, string, error)
-	}); ok {
+	if sa, ok := auth.(ScopedAuthenticator); ok {
 		userID, tokenID, tokenName, scope, err = sa.AuthenticateTokenScope(context.Background(), ar.Token)
 	} else if ta, ok := auth.(interface {
 		AuthenticateToken(ctx context.Context, token string) (string, string, string, error)

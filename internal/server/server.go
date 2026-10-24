@@ -33,6 +33,15 @@ type TokenAuthenticator interface {
 	Authenticate(ctx context.Context, token string) (userID string, err error)
 }
 
+// ScopedAuthenticator is a TokenAuthenticator that also says what the token
+// may do (the db.TokenScope… values), and the id and name of the token. The
+// relay's own authenticator is one (pinned in cmd/server); the handshake
+// gives a plain TokenAuthenticator the scope all.
+type ScopedAuthenticator interface {
+	TokenAuthenticator
+	AuthenticateTokenScope(ctx context.Context, token string) (userID, tokenID, tokenName, scope string, err error)
+}
+
 // ServiceResolver maps a (user, tunnel-name, type) triple to a stable service
 // identity and an assigned subdomain, creating the service record and
 // generating/persisting the subdomain on first use. Collision retry (when two

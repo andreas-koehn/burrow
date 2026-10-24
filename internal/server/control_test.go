@@ -85,7 +85,7 @@ func TestControlLoopRegisterAndPing(t *testing.T) {
 	cli, srv := dialPair()
 	defer cli.Close()
 	reg := NewRegistry()
-	cs := &ClientSession{SessionID: "s", Tunnels: map[string]*Tunnel{}}
+	cs := &ClientSession{SessionID: "s", Scope: "all", Tunnels: map[string]*Tunnel{}}
 	reg.AddSession(cs)
 	cs.SetControl(srv)
 	s := &Server{
@@ -157,7 +157,7 @@ func newTestServerWithHTTPOpts(t *testing.T, resolver ServiceResolver, authDomai
 	t.Helper()
 	cli, srv := dialPair()
 	reg := NewRegistry()
-	cs := &ClientSession{SessionID: "s-http", UserID: "u1", Tunnels: map[string]*Tunnel{}}
+	cs := &ClientSession{SessionID: "s-http", UserID: "u1", Scope: "all", Tunnels: map[string]*Tunnel{}}
 	reg.AddSession(cs)
 	cs.SetControl(srv)
 	s := &Server{

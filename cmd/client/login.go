@@ -419,7 +419,7 @@ func newLoginCmd(d deps) *cobra.Command {
 			}
 
 			scope, _ := flags.GetString("scope")
-			scope = strings.ToLower(strings.TrimSpace(scope))
+			scope = strings.TrimSpace(scope) // lower case only, as the API takes it
 			switch scope {
 			case "", "all", "forward", "publish":
 			default:

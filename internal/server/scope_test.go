@@ -43,7 +43,11 @@ func TestScope_ForwardTokenMayNotRegister(t *testing.T) {
 	if rr.RemotePort != 0 || rr.TunnelID != "" {
 		t.Fatalf("a refused registration opened something: %+v", rr)
 	}
-	// The same refusal for an http tunnel.
+	// The same refusal for the default type and for an http tunnel.
+	rr = c.register(t, proto.TunnelRegister{Name: "dflt", Type: "", LocalAddr: "127.0.0.1:3389"})
+	if rr.OK || rr.Code != proto.CodeScopeDenied {
+		t.Fatalf("a forward token registered with no type: %+v", rr)
+	}
 	rr = c.register(t, proto.TunnelRegister{Name: "web", Type: "http", LocalAddr: "127.0.0.1:8080"})
 	if rr.OK || rr.Code != proto.CodeScopeDenied {
 		t.Fatalf("a forward token registered http: %+v", rr)
@@ -113,5 +117,58 @@ func TestScope_AnAuthenticatorWithoutScopesLimitsNothing(t *testing.T) {
 	}
 	if _, resp, err := r.forwarder("secret").open(t, "rdp"); err != nil || !resp.OK {
 		t.Fatalf("forward: %+v %v", resp, err)
+	}
+}
+
+// Only the known scopes allow anything: an unknown or empty scope on a
+// session denies both actions (deny by default).
+func TestScope_UnknownScopeDeniesBoth(t *testing.T) {
+	for scope, want := range map[string][2]bool{
+		"all": {true, true}, "forward": {false, true}, "publish": {true, false},
+		"": {false, false}, "ALL": {false, false}, "admin": {false, false}, " all": {false, false},
+	} {
+		cs := &ClientSession{Scope: scope}
+		if cs.MayPublish() != want[0] || cs.MayForward() != want[1] {
+			t.Errorf("scope %q: publish %v forward %v, want %v", scope, cs.MayPublish(), cs.MayForward(), want)
+		}
+	}
+}
+
+// A relay whose authenticator names an unknown scope refuses both the
+// registration and the forward, and the session stays up.
+func TestScope_AnAuthenticatorWithAnUnknownScope(t *testing.T) {
+	r := newForwardRelay(t, 19860, func(o *Options) { o.Auth = oddScopeUsers{} })
+	if rr := r.home.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "127.0.0.1:3389"}); rr.OK || rr.Code != proto.CodeScopeDenied {
+		t.Fatalf("register: %+v", rr)
+	}
+	if _, resp, err := r.forwarder("secret").open(t, "rdp"); err != nil || resp.OK || resp.Code != proto.CodeScopeDenied {
+		t.Fatalf("forward: %+v %v", resp, err)
+	}
+}
+
+type oddScopeUsers struct{ tokenUsers }
+
+func (oddScopeUsers) AuthenticateTokenScope(ctx context.Context, tok string) (string, string, string, string, error) {
+	u, id, name, err := tokenUsers{}.AuthenticateToken(ctx, tok)
+	return u, id, name, "root", err
+}
+
+// A reconnect is checked again: a client that dials again with the same
+// token gets the same refusals, and one with an all token is not limited by
+// the refusals of the first.
+func TestScope_ReconnectIsCheckedAgain(t *testing.T) {
+	r := newScopeRelay(t, 19865)
+	if rr := r.home.register(t, proto.TunnelRegister{Name: "box", Type: "tcp", LocalAddr: "127.0.0.1:3389", Access: "private"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	for i := 0; i < 3; i++ {
+		c := r.clientWith("fwd", nil) // each dial is a new session, as after a reconnect
+		if rr := c.register(t, proto.TunnelRegister{Name: "again", Type: "tcp", LocalAddr: "127.0.0.1:22"}); rr.OK || rr.Code != proto.CodeScopeDenied {
+			t.Fatalf("attempt %d, forward token registered: %+v", i, rr)
+		}
+		_, resp, err := r.forwarder("pub").open(t, "box")
+		if err != nil || resp.OK || resp.Code != proto.CodeScopeDenied {
+			t.Fatalf("attempt %d, publish token forwarded: %+v %v", i, resp, err)
+		}
 	}
 }

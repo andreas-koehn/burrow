@@ -740,6 +740,12 @@ func TestLoginBrowser_Scope(t *testing.T) {
 	})
 	t.Run("a bad scope, and a scope with --token, are usage errors", func(t *testing.T) {
 		h := browserHarness(t)
+		for _, bad := range []string{"Forward", "ALL"} {
+			h := browserHarness(t)
+			if code := h.exec("login", "relay.example.com", "--scope", bad); code != exitUsage || !strings.Contains(h.stderr.String(), "--scope must be all, forward or publish") {
+				t.Fatalf("--scope %s: exit %d: %s", bad, code, h.stderr.String())
+			}
+		}
 		if code := h.exec("login", "relay.example.com", "--scope", "root"); code != exitUsage || !strings.Contains(h.stderr.String(), "--scope must be all, forward or publish") {
 			t.Fatalf("exit %d: %s", code, h.stderr.String())
 		}
