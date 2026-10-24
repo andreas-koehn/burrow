@@ -449,18 +449,15 @@ func (s *Store) SetServiceTCPHostname(ctx context.Context, callerID, callerRole,
 		if name, ok = NormalizeTCPHostname(hostname); !ok {
 			return TCPHostname{}, TCPHostname{}, ErrInvalidTCPHostname
 		}
-		covered, err := s.q.CustomDomainCovers(ctx, name)
-		if err != nil {
-			return TCPHostname{}, TCPHostname{}, err
-		}
-		if covered {
-			return TCPHostname{}, TCPHostname{}, ErrTCPHostnameReserved
-		}
 	}
 	before = tcpHostnameOf(svc)
 	if err := s.q.SetServiceTCPHostname(ctx, serviceID, name); err != nil {
 		if errors.Is(err, db.ErrTCPHostnameTaken) {
 			return TCPHostname{}, TCPHostname{}, ErrTCPHostnameTaken
+		}
+		// The check and the write are one transaction in db (H12).
+		if errors.Is(err, db.ErrTCPHostnameCovered) {
+			return TCPHostname{}, TCPHostname{}, ErrTCPHostnameReserved
 		}
 		return TCPHostname{}, TCPHostname{}, err
 	}

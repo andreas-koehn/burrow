@@ -1285,7 +1285,21 @@ components:
           description: >
             A TLS client that names one of hostnames reaches the service now:
             the listener runs, the service has a name, and it is in mode open
-            or ip (a private service is never reached by name).
+            or ip (a private service is never reached by name), and at least
+            one of the names is not shadowed (see shadowed_by).
+        shadowed_by:
+          type: string
+          enum: [custom_domain, relay]
+          description: >
+            Present when the http side owns a name of the service and wins it
+            (one owner per host name, rows from before the write-time checks):
+            `custom_domain` when a custom domain of an http service covers it,
+            `relay` when the relay serves it itself on its HTTPS port (its
+            certificate or ACME names, the dashboard's host and the names under
+            it; only while BURROW_TLS_PASSTHROUGH_ON_HTTPS is on). The relay
+            terminates TLS for a shadowed name and logs a warning once; it never
+            hands the bytes to the tcp service. reachable is false when every
+            name is shadowed.
         hostname_only:
           type: boolean
           description: >
@@ -4499,8 +4513,12 @@ paths:
         is required. It is stored lower case without a trailing dot
         and is unique among services; a name of the relay's own domains
         (the tcp domain, the dashboard's domain, the services host and the
-        names under each) or of a custom domain of a service (or under one)
-        is refused. Setting a name needs `services:configure:any` (403
+        names under each) is refused with 400. Refused with 409: a name that is,
+        or lies under, an ACME name (`BURROW_ACME_DOMAIN`, the services host with
+        ACME) or a name of the relay's certificate; and a name a custom domain
+        of an http service covers (the same name, a parent of it, or a wildcard
+        over it). The check and the write are one transaction, so a custom domain
+        and a tcp host name never both take a name. Setting a name needs `services:configure:any` (403
         otherwise): an owner with `:own` alone has the slug name under
         `BURROW_TCP_DOMAIN` only, and may clear a name. The relay applies it at once: the old
         name stops reaching the service and the new one does. A new name
@@ -4535,7 +4553,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { description: The service is not a tcp service, another service has the host name, or a custom domain covers it. }
+        '409': { description: The service is not a tcp service, another service has the host name, a custom domain covers it, or it is (or lies under) an ACME name or a name the relay serves itself. }
 
   /api/v1/services/{serviceID}/tcp-limits:
     get:
@@ -7422,7 +7440,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
-        '409': { description: Hostname already bound. }
+        '409': { description: "Hostname already bound, or `hostname is a tcp host name`: it equals, is a parent of, or is a wildcard over the tcp_hostname of a tcp service, or it is, lies under, or covers `BURROW_TCP_DOMAIN`; or it is a name the relay serves itself (the dashboard's host, the services host, the ACME names, the names of its certificate) or lies under one." }
   /api/v1/services/{serviceID}/domains/{did}:
     get:
       tags: [services]
@@ -7481,7 +7499,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { description: Hostname already bound. }
+        '409': { description: "Hostname already bound, or `hostname is a tcp host name`: it equals, is a parent of, or is a wildcard over the tcp_hostname of a tcp service, or it is, lies under, or covers `BURROW_TCP_DOMAIN`; or it is a name the relay serves itself (the dashboard's host, the services host, the ACME names, the names of its certificate) or lies under one." }
     delete:
       tags: [services]
       operationId: serviceDomainDelete

@@ -443,6 +443,10 @@ func (d Deps) PostCustomDomain(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "hostname is required")
 		return
 	}
+	if why := d.customDomainRefusal(in.Hostname); why != "" {
+		writeErr(w, http.StatusConflict, why)
+		return
+	}
 	if in.CertPEM == "" || in.KeyPEM == "" {
 		writeErr(w, http.StatusBadRequest, "cert_pem and key_pem are required")
 		return
@@ -468,6 +472,10 @@ func (d Deps) PostCustomDomain(w http.ResponseWriter, r *http.Request) {
 	}
 	inserted, err := d.CustomDomains.InsertCustomDomain(r.Context(), row)
 	if err != nil {
+		if errors.Is(err, db.ErrHostIsTCPName) {
+			writeErr(w, http.StatusConflict, "hostname is a tcp host name")
+			return
+		}
 		if errors.Is(err, db.ErrDuplicateHostname) {
 			writeErr(w, http.StatusConflict, "hostname already bound")
 			return
@@ -565,6 +573,10 @@ func (d Deps) PutCustomDomain(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "hostname is required")
 		return
 	}
+	if why := d.customDomainRefusal(in.Hostname); why != "" {
+		writeErr(w, http.StatusConflict, why)
+		return
+	}
 	if in.CertPEM == "" || in.KeyPEM == "" {
 		writeErr(w, http.StatusBadRequest, "cert_pem and key_pem are required")
 		return
@@ -595,6 +607,10 @@ func (d Deps) PutCustomDomain(w http.ResponseWriter, r *http.Request) {
 	if err := d.CustomDomains.UpdateCustomDomain(r.Context(), row); err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "domain not found")
+			return
+		}
+		if errors.Is(err, db.ErrHostIsTCPName) {
+			writeErr(w, http.StatusConflict, "hostname is a tcp host name")
 			return
 		}
 		if errors.Is(err, db.ErrDuplicateHostname) {
@@ -693,4 +709,42 @@ func (d Deps) DeleteCustomDomain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// customDomainRefusal says why hostname (lower case, "*.<parent>" for a
+// wildcard) cannot be a custom domain, "" when it can (H12). The message
+// is the 409's. Refused: a name that is, lies under or covers BURROW_TCP_DOMAIN
+// (the slug names of the tcp services are the passthrough's), and a name the
+// relay serves itself (the dashboard, the services host, the ACME names, the
+// names of its certificate) or one under them. A tcp service's own
+// tcp_hostname is the store's to say (db.ErrHostIsTCPName), in the same
+// transaction as the write.
+func (d Deps) customDomainRefusal(hostname string) string {
+	base := strings.TrimPrefix(hostname, "*.")
+	if tcp := strings.ToLower(strings.TrimSuffix(d.TCPDomain, ".")); tcp != "" && (underName(base, tcp) || underName(tcp, base)) {
+		return "hostname is a tcp host name: " + base + " is, lies under, or covers BURROW_TCP_DOMAIN " + tcp + ", whose names are the tcp services'"
+	}
+	own := append([]string{d.AuthDomain, d.ServicesDomain}, d.ACMENames...)
+	for _, o := range own {
+		if underName(base, o) {
+			return "hostname " + base + " is a name the relay serves itself, or lies under one (" + strings.ToLower(o) + ")"
+		}
+	}
+	probes := []string{base}
+	if hostname != base {
+		probes = append(probes, "x."+base) // what a wildcard over it covers
+	}
+	for _, p := range probes {
+		for n := p; ; {
+			if d.RelayNames.Owns(n) {
+				return "hostname " + base + " is a name the relay serves itself, or lies under one (" + n + ")"
+			}
+			_, up, ok := strings.Cut(n, ".")
+			if !ok || !strings.Contains(up, ".") {
+				break
+			}
+			n = up
+		}
+	}
+	return ""
 }

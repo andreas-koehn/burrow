@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -202,14 +203,36 @@ func (x *DB) SetServiceTCPHostname(ctx context.Context, id, hostname string) err
 	if hostname != "" {
 		v = sql.NullString{String: hostname, Valid: true}
 	}
-	res, err := x.sqlDB.ExecContext(ctx, `UPDATE services SET tcp_hostname=? WHERE id=?`, v, id)
+	hostOwnerMu.Lock()
+	defer hostOwnerMu.Unlock()
+	tx, err := x.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("set service tcp hostname: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if hostname != "" {
+		covered, err := customDomainCovers(ctx, tx, strings.ToLower(hostname))
+		if err != nil {
+			return err
+		}
+		if covered {
+			return ErrTCPHostnameCovered
+		}
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE services SET tcp_hostname=? WHERE id=?`, v, id)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return ErrTCPHostnameTaken
 		}
 		return fmt.Errorf("set service tcp hostname: %w", err)
 	}
-	return notFoundIfNoRows(res, "set service tcp hostname")
+	if err := notFoundIfNoRows(res, "set service tcp hostname"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("set service tcp hostname: commit: %w", err)
+	}
+	return nil
 }
 
 // SetServiceTCPHostnameOnly sets whether a tcp service is reached by its

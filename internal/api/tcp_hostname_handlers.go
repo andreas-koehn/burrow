@@ -8,6 +8,7 @@ package api
 // name the service has there and whether they reach it.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -33,6 +34,12 @@ type tcpHostnameResp struct {
 	Passthrough  bool     `json:"passthrough"`
 	Reachable    bool     `json:"reachable"`
 	HostnameOnly bool     `json:"hostname_only"`
+	// ShadowedBy says who owns a name of the service that the http side
+	// serves instead (H12): "custom_domain" when a custom domain covers it,
+	// "relay" when the relay serves it itself on its HTTPS port (only while
+	// the 443 mux runs). Absent when no name is shadowed. A shadowed name
+	// reaches no tcp service; reachable is false when every name is.
+	ShadowedBy string `json:"shadowed_by,omitempty"`
 }
 
 // tcpHostnameReq sets the host name ("" clears it), whether the service is
@@ -59,11 +66,52 @@ func (d Deps) tcpHostnames(h store.TCPHostname) []string {
 	return out
 }
 
-func (d Deps) tcpHostnameView(h store.TCPHostname) tcpHostnameResp {
+func (d Deps) tcpHostnameView(ctx context.Context, h store.TCPHostname) tcpHostnameResp {
 	out := tcpHostnameResp{TCPHostname: h.Hostname, Hostnames: d.tcpHostnames(h), Passthrough: d.TLSPassthrough, HostnameOnly: h.HostnameOnly}
 	open := h.AccessMode == "" || h.AccessMode == "open" || h.AccessMode == "ip"
-	out.Reachable = d.TLSPassthrough && open && len(out.Hostnames) > 0
+	free := 0
+	for _, n := range out.Hostnames {
+		if by := d.shadowedBy(ctx, n); by != "" {
+			if out.ShadowedBy == "" {
+				out.ShadowedBy = by
+			}
+			continue
+		}
+		free++
+	}
+	out.Reachable = d.TLSPassthrough && open && free > 0
 	return out
+}
+
+// domainCoverer is what a CustomDomains store that can say a custom domain
+// covers a name provides (*db.DB does).
+type domainCoverer interface {
+	CustomDomainCovers(ctx context.Context, name string) (bool, error)
+}
+
+// shadowedBy says which owner the http side wins a tcp name with, in the
+// mux's order (H11 2-3): "relay", then "custom_domain"; "" for none. The
+// relay's own names shadow only while the 443 mux runs, since the dedicated
+// listener does not terminate. A failing lookup shadows nothing here.
+func (d Deps) shadowedBy(ctx context.Context, name string) string {
+	if !d.TLSPassthrough {
+		return ""
+	}
+	if d.TLSPassthroughMux && d.RelayNames.Owns(name) {
+		return "relay"
+	}
+	if c, ok := d.CustomDomains.(domainCoverer); ok {
+		if covers, err := c.CustomDomainCovers(ctx, name); err == nil && covers {
+			return "custom_domain"
+		}
+	}
+	return ""
+}
+
+// underName reports whether name is dom or lies under it.
+func underName(name, dom string) bool {
+	dom = strings.ToLower(strings.TrimSuffix(dom, "."))
+	return dom != "" && (name == dom || strings.HasSuffix(name, "."+dom))
 }
 
 // hostnameOnlyRefusal is why a service with h cannot be reached by host name
@@ -112,7 +160,7 @@ func (d Deps) GetServiceTCPHostname(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, d.tcpHostnameView(h))
+	writeJSON(w, http.StatusOK, d.tcpHostnameView(r.Context(), h))
 }
 
 // PutServiceTCPHostname handles PUT /api/v1/services/{serviceID}/tcp-hostname:
@@ -151,6 +199,12 @@ func (d Deps) PutServiceTCPHostname(w http.ResponseWriter, r *http.Request) {
 		if dom := d.reservedTCPHostname(name); dom != "" {
 			writeErr(w, http.StatusBadRequest, "tcp_hostname must not be "+dom+" or a name under it: the relay gives those names out itself")
 			return
+		}
+		for _, acme := range d.ACMENames {
+			if underName(name, acme) {
+				writeErr(w, http.StatusConflict, "tcp_hostname "+name+" is, or lies under, the ACME name "+acme+": the relay obtains certificates for it")
+				return
+			}
 		}
 		if d.RelayNames.Owns(name) {
 			writeErr(w, http.StatusConflict, "tcp_hostname "+name+" is a name the relay serves itself on its HTTPS port (its certificate or ACME names)")
@@ -199,7 +253,7 @@ func (d Deps) PutServiceTCPHostname(w http.ResponseWriter, r *http.Request) {
 			case errors.Is(err, store.ErrTCPHostnameTaken):
 				writeErr(w, http.StatusConflict, "tcp_hostname is used by another service")
 			case errors.Is(err, store.ErrTCPHostnameReserved):
-				writeErr(w, http.StatusConflict, "tcp_hostname is a custom domain of a service, or under one")
+				writeErr(w, http.StatusConflict, "tcp_hostname is a custom domain of a service, or under one: an http service owns that name")
 			case errors.Is(err, store.ErrTCPHostnameNeedsAny):
 				writeErr(w, http.StatusForbidden, "a tcp_hostname of its own needs services:configure:any; the service is reached by its slug name under the tcp domain")
 			case !mapServiceErr(w, err, "service not found"):
@@ -222,5 +276,5 @@ func (d Deps) PutServiceTCPHostname(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	d.refreshTCP(ctx, serviceID)
-	writeJSON(w, http.StatusOK, d.tcpHostnameView(after))
+	writeJSON(w, http.StatusOK, d.tcpHostnameView(ctx, after))
 }

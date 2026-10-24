@@ -427,3 +427,40 @@ func TestRelayNameSet(t *testing.T) {
 		t.Fatal("a missing certificate accepted")
 	}
 }
+
+// H12: with the 443 mux on, a name of the dashboard's certificate that
+// covers the slug names under BURROW_TCP_DOMAIN (here "*.tcp.example.com")
+// would have the mux terminate every one of them: the relay refuses to
+// start. Without the mux, or with a tcp domain the wildcard does not reach
+// (a wildcard covers one label: "*.example.com" does not cover
+// <slug>.tcp.example.com), it starts.
+func TestRelayNameSet_ACertificateNameCoveringTheTCPDomainIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	wild := filepath.Join(dir, "wild.pem")
+	c := selfSignedTLS(t) // *.example.com, *.tcp.example.com
+	if err := os.WriteFile(wild, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Certificate[0]}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := func(mux bool, tcp string) *config.ServerConfig {
+		return &config.ServerConfig{HTTPTLSCert: wild, HTTPTLSKey: "k", TLSPassthroughOnHTTPS: mux, TCPDomain: tcp}
+	}
+	_, err := relayNameSet(cfg(true, "tcp.example.com"), "", nil)
+	if err == nil || !strings.Contains(err.Error(), "BURROW_TCP_DOMAIN") {
+		t.Fatalf("mux, covered: %v", err)
+	}
+	for name, c := range map[string]*config.ServerConfig{
+		"no mux":             cfg(false, "tcp.example.com"),
+		"not covered":        cfg(true, "tcp.other.test"),
+		"no tcp domain":      cfg(true, ""),
+		"covers the domain":  cfg(true, "x.example.com"), // *.example.com covers x.example.com, not <slug>.x.example.com
+		"the slug is deeper": cfg(true, "a.b.example.com"),
+	} {
+		if _, err := relayNameSet(c, "", nil); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// Under the dashboard's host: every name there is the relay's.
+	if _, err := relayNameSet(&config.ServerConfig{TLSPassthroughOnHTTPS: true, TCPDomain: "tcp.burrow.example.com"}, "burrow.example.com", nil); err == nil {
+		t.Error("a tcp domain under the dashboard's host accepted")
+	}
+}

@@ -524,6 +524,15 @@ type Deps struct {
 	// (relaynames): a tcp service's host name must not be one (409). nil:
 	// none beyond the domains above.
 	RelayNames *relaynames.Set
+	// ACMENames are the names the relay obtains certificates for
+	// (BURROW_ACME_DOMAIN and the services domain with it): a tcp service's
+	// host name must not be one nor lie under one, and a custom domain must
+	// not either (409, H12).
+	ACMENames []string
+	// TLSPassthroughMux reports that the 443 mux runs
+	// (BURROW_TLS_PASSTHROUGH_ON_HTTPS): the relay's own names then shadow
+	// a tcp service's name there (shadowed_by "relay").
+	TLSPassthroughMux bool
 	// TCPPortMin and TCPPortMax are the range of public tcp ports
 	// (BURROW_PORT_MIN, BURROW_PORT_MAX): POST /services refuses a fixed port
 	// outside it. 0 for both: no range check.

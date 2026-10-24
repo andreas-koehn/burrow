@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,7 +28,17 @@ func (x *DB) InsertCustomDomain(ctx context.Context, d ServiceCustomDomain) (Ser
 	d.CreatedAt = now
 	d.UpdatedAt = now
 
-	_, err := x.sqlDB.ExecContext(ctx,
+	hostOwnerMu.Lock()
+	defer hostOwnerMu.Unlock()
+	tx, err := x.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return ServiceCustomDomain{}, fmt.Errorf("insert custom domain: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := refuseTCPNameUnder(ctx, tx, d.Hostname); err != nil {
+		return ServiceCustomDomain{}, err
+	}
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO service_custom_domains
 		   (id, service_id, hostname, cert_pem, key_pem, cert_sha256, not_before, not_after, created_at, updated_at, cert_source)
 		   VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
@@ -39,6 +50,9 @@ func (x *DB) InsertCustomDomain(ctx context.Context, d ServiceCustomDomain) (Ser
 			return ServiceCustomDomain{}, ErrDuplicateHostname
 		}
 		return ServiceCustomDomain{}, fmt.Errorf("insert custom domain: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return ServiceCustomDomain{}, fmt.Errorf("insert custom domain: commit: %w", err)
 	}
 	return d, nil
 }
@@ -56,7 +70,17 @@ func (x *DB) UpdateCustomDomain(ctx context.Context, d ServiceCustomDomain) erro
 	}
 	now := time.Now().UTC()
 
-	res, err := x.sqlDB.ExecContext(ctx,
+	hostOwnerMu.Lock()
+	defer hostOwnerMu.Unlock()
+	tx, err := x.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("update custom domain: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := refuseTCPNameUnder(ctx, tx, d.Hostname); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx,
 		`UPDATE service_custom_domains
 		    SET hostname=?, cert_pem=?, key_pem=?, cert_sha256=?,
 		        not_before=?, not_after=?, updated_at=?, cert_source=?
@@ -74,6 +98,9 @@ func (x *DB) UpdateCustomDomain(ctx context.Context, d ServiceCustomDomain) erro
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("update custom domain: commit: %w", err)
 	}
 	return nil
 }
@@ -261,11 +288,72 @@ var ErrInvalidCertSource = errors.New("db: cert_source must be uploaded or auto"
 // existing row (UNIQUE constraint on service_custom_domains.hostname).
 var ErrDuplicateHostname = fmt.Errorf("hostname already bound")
 
+// hostOwnerMu serialises every write that gives a host name an owner: a
+// custom domain (InsertCustomDomain, UpdateCustomDomain) and a tcp
+// service's host name (SetServiceTCPHostname). Each runs its check and its
+// write in one transaction under it, so a custom domain and a tcp_hostname
+// for one name never both win (H12). The relay is one process; the lock is
+// per process like ipGrantMu.
+var hostOwnerMu sync.Mutex
+
+// ErrHostIsTCPName is what InsertCustomDomain and UpdateCustomDomain return
+// for a host name that is, lies under, or is a wildcard over the
+// tcp_hostname of a tcp service (H12).
+var ErrHostIsTCPName = errors.New("db: hostname is a tcp host name")
+
+// ErrTCPHostnameCovered is what SetServiceTCPHostname returns for a name a
+// custom domain covers (CustomDomainCovers) (H12).
+var ErrTCPHostnameCovered = errors.New("db: tcp hostname is covered by a custom domain")
+
+// queryer is the read half of *sql.DB and *sql.Tx.
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// domainCoversName is CustomDomainCovers for one custom domain: it is name,
+// a parent of name, or "*.<parent>" over name. Both are lower case.
+func domainCoversName(domain, name string) bool {
+	if domain == name {
+		return true
+	}
+	if p, ok := strings.CutPrefix(domain, "*."); ok {
+		return strings.HasSuffix(name, "."+p)
+	}
+	return strings.HasSuffix(name, "."+domain)
+}
+
+// refuseTCPNameUnder returns ErrHostIsTCPName when the custom domain
+// hostname covers the tcp_hostname of any tcp service: the names a custom
+// domain covers are the http owner's (H12).
+func refuseTCPNameUnder(ctx context.Context, q queryer, hostname string) error {
+	rows, err := q.QueryContext(ctx, `SELECT tcp_hostname FROM services WHERE tcp_hostname IS NOT NULL AND tcp_hostname <> ''`)
+	if err != nil {
+		return fmt.Errorf("custom domain: tcp host names: %w", err)
+	}
+	defer rows.Close()
+	hostname = strings.ToLower(hostname)
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return fmt.Errorf("custom domain: scan tcp host name: %w", err)
+		}
+		if domainCoversName(hostname, strings.ToLower(n)) {
+			return ErrHostIsTCPName
+		}
+	}
+	return rows.Err()
+}
+
 // CustomDomainCovers reports whether a custom domain (service_custom_domains)
 // is name, a parent of name, or a wildcard "*.<parent>" over it: a TLS
 // passthrough host name there would take a name an http service is reached
 // by. name is lower case.
 func (x *DB) CustomDomainCovers(ctx context.Context, name string) (bool, error) {
+	return customDomainCovers(ctx, x.sqlDB, name)
+}
+
+func customDomainCovers(ctx context.Context, q queryer, name string) (bool, error) {
 	cands := []any{name}
 	for rest := name; ; {
 		_, parent, ok := strings.Cut(rest, ".")
@@ -275,9 +363,9 @@ func (x *DB) CustomDomainCovers(ctx context.Context, name string) (bool, error) 
 		cands = append(cands, parent, "*."+parent)
 		rest = parent
 	}
-	q := `SELECT COUNT(*) FROM service_custom_domains WHERE hostname IN (?` + strings.Repeat(",?", len(cands)-1) + `)`
+	qs := `SELECT COUNT(*) FROM service_custom_domains WHERE hostname IN (?` + strings.Repeat(",?", len(cands)-1) + `)`
 	var n int
-	if err := x.sqlDB.QueryRowContext(ctx, q, cands...).Scan(&n); err != nil {
+	if err := q.QueryRowContext(ctx, qs, cands...).Scan(&n); err != nil {
 		return false, fmt.Errorf("custom domain covers: %w", err)
 	}
 	return n > 0, nil

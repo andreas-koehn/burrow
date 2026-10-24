@@ -1156,7 +1156,10 @@ func newRootCmd() *cobra.Command {
 				// What the tcp-hostname route says and refuses.
 				TCPDomain:      cfg.TCPDomain,
 				RelayNames:     relayNames,
+				ACMENames:      acmeCertNames(cfg, acmeMgr),
 				TLSPassthrough: passthroughOn(cfg),
+				// The relay's own names shadow a tcp name on the mux only.
+				TLSPassthroughMux: cfg.TLSPassthroughOnHTTPS,
 				Ingress: api.IngressInfo{
 					H2C: cfg.HTTPH2C, HTTPSPassthrough: cfg.TLSPassthroughOnHTTPS,
 					PassthroughListen: cfg.TLSPassthroughListen, ACME: acmeMgr != nil,

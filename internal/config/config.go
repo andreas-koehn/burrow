@@ -642,6 +642,26 @@ func cleanTCPDomain(c *ServerConfig) error {
 	if dashboard != "" && strings.HasSuffix(dashboard, "."+c.TCPDomain) {
 		return fmt.Errorf("tcp_domain %q must not be a parent of the dashboard's host %q", c.TCPDomain, dashboard)
 	}
+	// One owner per host name (H12): the relay obtains certificates for its
+	// ACME names, so no name of them may be a slug name, and the tcp
+	// domain's names may not be a name above one.
+	acme := []string{c.ServicesDomain}
+	for _, n := range strings.Split(c.ACMEDomain, ",") {
+		acme = append(acme, strings.ToLower(strings.TrimSpace(n)))
+	}
+	for _, n := range acme {
+		if n == "" {
+			continue
+		}
+		if n == c.TCPDomain || strings.HasSuffix(n, "."+c.TCPDomain) {
+			return fmt.Errorf("tcp_domain %q must not be an ACME name or a parent of one (%q): the relay obtains certificates for it, and every name under tcp_domain is a tcp service's", c.TCPDomain, n)
+		}
+	}
+	// The 443 mux terminates the dashboard's host and every name under it,
+	// so a tcp domain there would have all its slug names terminated.
+	if c.TLSPassthroughOnHTTPS && dashboard != "" && strings.HasSuffix(c.TCPDomain, "."+dashboard) {
+		return fmt.Errorf("tcp_domain %q must not be under the dashboard's host %q while BURROW_TLS_PASSTHROUGH_ON_HTTPS is on: the HTTPS port terminates every name under it, so no slug name would reach its tcp service", c.TCPDomain, dashboard)
+	}
 	return nil
 }
 

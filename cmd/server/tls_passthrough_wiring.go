@@ -29,7 +29,19 @@ func relayNameSet(cfg *config.ServerConfig, dashboardHost string, acmeNames []st
 		}
 		names = append(names, sans...)
 	}
-	return relaynames.New([]string{dashboardHost}, names...), nil
+	set := relaynames.New([]string{dashboardHost}, names...)
+	// With the 443 mux on, the relay's own names are terminated whatever
+	// tcp service claims them (H11), so a tcp domain whose slug names are
+	// the relay's own (a wildcard name of the certificate over the tcp
+	// domain, or the tcp domain under the dashboard's host) would terminate
+	// every one: the operator is told at startup (H12). A wildcard covers
+	// one label, which is what a slug name is.
+	if cfg.TLSPassthroughOnHTTPS && cfg.TCPDomain != "" && set.Owns("slug."+cfg.TCPDomain) {
+		return nil, fmt.Errorf("BURROW_TCP_DOMAIN %q: its slug names are names the relay serves itself on its HTTPS port "+
+			"(a wildcard name of BURROW_HTTP_TLS_CERT over it, or it lies under the dashboard's host), "+
+			"so BURROW_TLS_PASSTHROUGH_ON_HTTPS would terminate every one; choose a tcp domain the certificate does not cover", cfg.TCPDomain)
+	}
+	return set, nil
 }
 
 // passthroughOn reports whether the relay reaches tcp services by host name:

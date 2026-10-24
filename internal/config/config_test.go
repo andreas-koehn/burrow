@@ -1192,3 +1192,48 @@ func TestServerHTTPH2CDefaultAndValues(t *testing.T) {
 		})
 	}
 }
+
+// H12: BURROW_TCP_DOMAIN is disjoint from the names the relay serves itself.
+// It is not an ACME name, nor a parent of one, nor the services host's
+// parent; and while the 443 mux is on (BURROW_TLS_PASSTHROUGH_ON_HTTPS) it
+// is not under the dashboard's host, whose names the mux terminates.
+func TestLoadServer_TCPDomainIsDisjoint(t *testing.T) {
+	t.Setenv("BURROW_AUTH_DOMAIN", "burrow.example.com")
+	t.Setenv("BURROW_ACME_EMAIL", "ops@example.com")
+	for _, tc := range []struct{ acme, services, tcp string }{
+		{"burrow.example.com", "", "burrow.example.com"},              // an ACME name
+		{"burrow.example.com,other.example.org", "", "example.org"},   // a parent of an ACME name
+		{"burrow.example.com", "", "example.com"},                     // a parent of the dashboard's
+		{"burrow.example.com,x.other.example.org", "", "example.org"}, // a parent, second name
+		{"burrow.example.com", "a.apps.example.net", "example.net"},   // a parent of the services host
+	} {
+		t.Setenv("BURROW_ACME_DOMAIN", tc.acme)
+		t.Setenv("BURROW_SERVICES_DOMAIN", tc.services)
+		t.Setenv("BURROW_TCP_DOMAIN", tc.tcp)
+		if _, err := LoadServer(nil); err == nil || !strings.Contains(err.Error(), "tcp_domain") {
+			t.Errorf("acme=%q services=%q tcp=%q: %v", tc.acme, tc.services, tc.tcp, err)
+		}
+	}
+	// A sibling, and a child of an ACME name without the mux, are fine.
+	t.Setenv("BURROW_ACME_DOMAIN", "burrow.example.com,other.example.org")
+	t.Setenv("BURROW_SERVICES_DOMAIN", "")
+	t.Setenv("BURROW_TCP_DOMAIN", "tcp.example.com")
+	if _, err := LoadServer(nil); err != nil {
+		t.Fatalf("sibling: %v", err)
+	}
+	t.Setenv("BURROW_TCP_DOMAIN", "tcp.burrow.example.com")
+	if _, err := LoadServer(nil); err != nil {
+		t.Fatalf("under the dashboard, no mux: %v", err)
+	}
+	// With the mux the names under the dashboard's host are the relay's own:
+	// every slug name would be terminated.
+	t.Setenv("BURROW_TLS_PASSTHROUGH_ON_HTTPS", "true")
+	err := func() error { _, err := LoadServer(nil); return err }()
+	if err == nil || !strings.Contains(err.Error(), "tcp_domain") || !strings.Contains(err.Error(), "BURROW_TLS_PASSTHROUGH_ON_HTTPS") {
+		t.Fatalf("under the dashboard, mux: %v", err)
+	}
+	t.Setenv("BURROW_TCP_DOMAIN", "tcp.example.com")
+	if _, err := LoadServer(nil); err != nil {
+		t.Fatalf("mux, sibling: %v", err)
+	}
+}

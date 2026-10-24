@@ -32,6 +32,8 @@ func TestTCPServices_Postgres(t *testing.T) {
 	})
 	t.Run("tcp settings", func(t *testing.T) { checkServiceTCPSettings(t, x, "u-tcpset-pg") })
 	t.Run("tcp hostname", func(t *testing.T) { checkServiceTCPHostname(t, x, "u-tcphost-pg") })
+	t.Run("host ownership", func(t *testing.T) { checkHostOwnership(t, x, "u-hostown-pg") })
+	t.Run("host ownership race", func(t *testing.T) { checkHostOwnershipRace(t, x, "u-hostrace-pg") })
 	t.Run("custom domain covers", func(t *testing.T) { checkCustomDomainCovers(t, x, "u-covers-pg") })
 	t.Run("tcp complete tables", func(t *testing.T) { checkTCPCompleteTables(t, x, "u-tcptables-pg") })
 	t.Run("tcp limits", func(t *testing.T) { checkServiceTCPLimits(t, x, "u-tcplim-pg") })
