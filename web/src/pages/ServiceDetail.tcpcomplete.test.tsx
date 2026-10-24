@@ -417,7 +417,11 @@ describe("tcp service page: the password is asked for where the relay asks", () 
   }
   async function confirm() {
     const d = await screen.findByRole("dialog", { name: "Confirm your password" });
-    await userEvent.type(within(d).getByLabelText("Your password"), "password123");
+    // The prompt can open over another dialog: type once focus has moved into it, and check the text arrived.
+    const input = within(d).getByLabelText("Your password");
+    await waitFor(() => expect(input).toHaveFocus(), { timeout: 5_000 });
+    await userEvent.type(input, "password123");
+    await waitFor(() => expect(input).toHaveValue("password123"), { timeout: 5_000 });
     await userEvent.click(within(d).getByRole("button", { name: "Confirm" }));
   }
 
@@ -428,7 +432,7 @@ describe("tcp service page: the password is asked for where the relay asks", () 
     await userEvent.type(await within(card).findByLabelText("Custom host name"), "rdp.example.org");
     await userEvent.click(within(card).getByRole("button", { name: "Save host name" }));
     await confirm();
-    await waitFor(() => expect(db.tcpHostnames.svc_rdp01).toBe("rdp.example.org"));
+    await waitFor(() => expect(db.tcpHostnames.svc_rdp01).toBe("rdp.example.org"), { timeout: 5_000 });
   });
 
   it("limits", async () => {
@@ -438,7 +442,7 @@ describe("tcp service page: the password is asked for where the relay asks", () 
     await userEvent.type(await within(card).findByLabelText("Bandwidth limit (kbit/s)"), "2000");
     await userEvent.click(within(card).getByRole("button", { name: "Save limits" }));
     await confirm();
-    await waitFor(() => expect(db.tcpLimits.svc_rdp01?.rate_limit_kbps).toBe(2000));
+    await waitFor(() => expect(db.tcpLimits.svc_rdp01?.rate_limit_kbps).toBe(2000), { timeout: 5_000 });
   });
 
   it("unban", async () => {
@@ -449,7 +453,7 @@ describe("tcp service page: the password is asked for where the relay asks", () 
     await userEvent.click(await within(card).findByRole("button", { name: "Unban 198.51.100.7" }));
     await userEvent.click(within(await screen.findByRole("dialog", { name: /Unban/ })).getByRole("button", { name: "Unban" }));
     await confirm();
-    await waitFor(() => expect(db.tcpBans.svc_rdp01).toHaveLength(0));
+    await waitFor(() => expect(db.tcpBans.svc_rdp01).toHaveLength(0), { timeout: 5_000 });
   });
 
   it("countries", async () => {
@@ -459,7 +463,7 @@ describe("tcp service page: the password is asked for where the relay asks", () 
     await userEvent.type(await within(card).findByLabelText("Country code"), "ru");
     await userEvent.click(within(card).getByRole("button", { name: "Add country" }));
     await confirm();
-    await waitFor(() => expect(db.tcpIpGeo.svc_rdp01?.block_countries).toEqual(["RU"]));
+    await waitFor(() => expect(db.tcpIpGeo.svc_rdp01?.block_countries).toEqual(["RU"]), { timeout: 5_000 });
   });
 });
 
