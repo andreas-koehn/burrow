@@ -276,3 +276,18 @@ func TestRunStatusTickNoWebhookEdgeForExpiredJump(t *testing.T) {
 			len(fwh.publishs))
 	}
 }
+
+// An auto row has no stored certificate (zero not_after): the tick leaves
+// it alone instead of calling it expired (H10).
+func TestRunStatusTickSkipsAuto(t *testing.T) {
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	fdb := &fakeTickDB{rows: []db.ServiceCustomDomain{{
+		ID: "d-auto", ServiceID: "svc1", Hostname: "auto.example.com",
+		Status: StatusActive, CertSource: db.CertSourceAuto,
+	}}}
+	fau := &fakeTickAudit{}
+	n, err := RunStatusTick(context.Background(), StatusTickDeps{DB: fdb, Audit: fau, Log: quietLogger()}, now)
+	if err != nil || n != 0 || len(fdb.updates) != 0 || len(fau.events) != 0 {
+		t.Fatalf("n=%d err=%v updates=%v audit=%d", n, err, fdb.updates, len(fau.events))
+	}
+}

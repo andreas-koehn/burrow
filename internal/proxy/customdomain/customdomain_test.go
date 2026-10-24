@@ -210,3 +210,26 @@ func TestGetCertificate_NilHello(t *testing.T) {
 		t.Error("expected wildcard cert for nil ClientHelloInfo")
 	}
 }
+
+// A row without a certificate (cert_source auto) is still a bound custom
+// domain for routing, and CertCallback skips it: the next certificate
+// source (certmagic, or the listener's own) answers the handshake (H10).
+func TestStore_ARowWithoutACertificate(t *testing.T) {
+	db := newMemDB()
+	db.add(customdomain.DomainRow{ID: "d1", ServiceID: "svc1", Hostname: "auto.example.com"})
+	s := customdomain.New(db)
+
+	c, ok, err := s.LookupBySNI(context.Background(), "auto.example.com")
+	if err != nil || !ok || c.ServiceID != "svc1" || c.Cert != nil {
+		t.Fatalf("LookupBySNI = %+v %v %v", c, ok, err)
+	}
+	fallback := &tls.Certificate{}
+	got, err := customdomain.CertCallback(s, fallback)(&tls.ClientHelloInfo{ServerName: "auto.example.com"})
+	if err != nil || got != fallback {
+		t.Fatalf("CertCallback = %p %v, want the fallback", got, err)
+	}
+	got, err = customdomain.CertCallback(s, nil)(&tls.ClientHelloInfo{ServerName: "AUTO.example.com"})
+	if err != nil || got != nil {
+		t.Fatalf("CertCallback = %v %v, want nil", got, err)
+	}
+}

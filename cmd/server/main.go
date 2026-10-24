@@ -1092,6 +1092,21 @@ func newRootCmd() *cobra.Command {
 				proxyTLSCfg.GetConfigForClient = proxyHandler.GetConfigForClient
 			}
 
+			// H10: custom domains with cert_source auto. Under ACME the relay
+			// obtains their certificates (certmagic ManageAsync, in the
+			// background, for names that pass the same H12 refusals as a
+			// write); the existing ones are loaded now without waiting on the
+			// CA. With a file certificate and no ACME nobody serves them.
+			var domainCerts api.CustomDomainCerts
+			if acmeMgr != nil {
+				ownership := api.Deps{
+					AuthDomain: proxyAuthDomain, ServicesDomain: cfg.ServicesDomain, TCPDomain: cfg.TCPDomain,
+					ACMENames: acmeCertNames(cfg, acmeMgr), RelayNames: relayNames,
+				}
+				domainCerts = startCustomDomainCerts(ctx, acmeMgr, db.Wrap(database), ownership.CustomDomainRefusal, v04.AuditAppender, log)
+			} else if httpsEnabled {
+				warnAutoWithoutACME(ctx, db.Wrap(database), log)
+			}
 			apiRouter := api.NewRouter(api.Deps{
 				Users: st, Tunnels: tunnelListerAdapter{s: srv, access: st, services: st, slugs: st, authDomain: proxyAuthDomain, servicesDomain: cfg.ServicesDomain}, Events: bus,
 				Log: log, SecureCookies: effectiveSecureCookies, HTTPSEnabled: httpsEnabled,
@@ -1250,6 +1265,8 @@ func newRootCmd() *cobra.Command {
 				CustomDomains:       db.Wrap(database),
 				CustomDomainCache:   v05.CustomDomainStore,
 				CertValidationRoots: certValidationRoots,
+				CustomDomainCerts:   domainCerts,
+				CustomDomainFileTLS: httpsEnabled && acmeMgr == nil,
 				ConnLogDB:           v05.ConnLogDB,
 			})
 			// A tool call of the MCP server is replayed through this router,
@@ -1269,6 +1286,24 @@ func newRootCmd() *cobra.Command {
 			}
 			if apiSrv.TLSConfig != nil {
 				ensureIngressNextProtos(apiSrv.TLSConfig)
+				// H10: custom domains are served here too. An uploaded
+				// certificate answers its name; an auto one comes from
+				// certmagic (the ACME source behind it), and every other
+				// name keeps the listener's own certificate.
+				apiSrv.TLSConfig.GetCertificate = customDomainGetCertificate(relayNames.Owns,
+					customdomain.CertCallback(v05.CustomDomainStore, nil), apiSrv.TLSConfig.GetCertificate)
+			}
+			// H10: host dispatch. A request for a bound custom domain goes to
+			// the host-routing proxy, the relay's own names keep the dashboard
+			// and API (api.CustomDomainSwitch says why Host is the key).
+			if dispatchCustomDomains(proxyAuthDomain, httpsEnabled, acmeMgr != nil) {
+				apiSrv.Handler = api.CustomDomainSwitch(relayNames.Owns, func(ctx context.Context, host string) (bool, error) {
+					_, ok, err := v05.CustomDomainStore.LookupBySNI(ctx, host)
+					return ok, err
+				}, proxyHandler, apiRouter, log)
+			} else {
+				log.Info("custom domains are served on the host-routed ingress only: " +
+					"set BURROW_AUTH_DOMAIN so the dashboard listener knows its own host and serves them too")
 			}
 			applyIngressProtocols(apiSrv, apiSrv.TLSConfig != nil, cfg.HTTPH2C)
 

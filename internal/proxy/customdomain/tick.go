@@ -86,8 +86,10 @@ func RunStatusTick(ctx context.Context, deps StatusTickDeps, now time.Time) (int
 		if err := ctx.Err(); err != nil {
 			return transitions, err
 		}
-		// Pending rows have no cert to evaluate; skip until a cert is uploaded.
-		if r.Status == StatusPending {
+		// Pending rows have no cert to evaluate; skip until a cert is
+		// uploaded. Nor do auto rows: the relay obtains their certificate
+		// and certmagic renews it (H10).
+		if r.Status == StatusPending || r.CertSource == db.CertSourceAuto {
 			continue
 		}
 		want := ComputeStatus(r.NotAfter, now)

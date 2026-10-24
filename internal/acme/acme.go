@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"github.com/caddyserver/certmagic"
 	"github.com/mholt/acmez/v3"
@@ -27,8 +28,12 @@ type Config struct {
 // domains across every listener.
 type Manager struct {
 	magic *certmagic.Config
+	cache *certmagic.Cache
 	acme  *certmagic.ACMEIssuer
 	log   *slog.Logger
+	// onEvent is the hook OnCertEvent sets (certmagic events of every
+	// managed name, renewals included).
+	onEvent atomic.Pointer[func(event, name string, err error)]
 }
 
 // New builds a Manager and synchronously obtains/loads certificates for all
@@ -44,9 +49,24 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 		log = slog.Default()
 	}
 
+	m, err := newManager(c, log)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.magic.ManageSync(ctx, c.Domains); err != nil {
+		return nil, fmt.Errorf("acme: obtain certificates for %s: %w", strings.Join(c.Domains, ","), err)
+	}
+	log.Info("acme: certificates ready", "domains", c.Domains, "ca", certmagic.DefaultACME.CA)
+	return m, nil
+}
+
+// newManager builds the certmagic Config and its cache, and obtains
+// nothing.
+func newManager(c Config, log *slog.Logger) (*Manager, error) {
 	// Configure the process-global CertMagic defaults (burrowd uses a single
-	// ACME configuration), then build a Config from them. This is CertMagic's
-	// documented simple-usage pattern and wires an ACMEIssuer into Issuers[0].
+	// ACME configuration). The Config gets a cache of its own, so that a
+	// custom domain can be unmanaged (Cache.RemoveManaged), and an event
+	// hook: renewals use the same Config (GetConfigForCert).
 	certmagic.Default.Storage = &certmagic.FileStorage{Path: c.Storage}
 	certmagic.DefaultACME.Agreed = true
 	certmagic.DefaultACME.Email = c.Email
@@ -54,22 +74,71 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 		certmagic.DefaultACME.CA = c.CA
 	}
 
-	magic := certmagic.NewDefault()
-
-	if err := magic.ManageSync(ctx, c.Domains); err != nil {
-		return nil, fmt.Errorf("acme: obtain certificates for %s: %w", strings.Join(c.Domains, ","), err)
-	}
+	m := &Manager{log: log}
+	m.cache = certmagic.NewCache(certmagic.CacheOptions{
+		GetConfigForCert: func(certmagic.Certificate) (*certmagic.Config, error) { return m.magic, nil },
+		Logger:           certmagic.Default.Logger,
+	})
+	m.magic = certmagic.New(m.cache, certmagic.Config{OnEvent: m.event})
 
 	var issuer *certmagic.ACMEIssuer
-	if len(magic.Issuers) > 0 {
-		issuer, _ = magic.Issuers[0].(*certmagic.ACMEIssuer)
+	if len(m.magic.Issuers) > 0 {
+		issuer, _ = m.magic.Issuers[0].(*certmagic.ACMEIssuer)
 	}
 	if issuer == nil {
 		return nil, fmt.Errorf("acme: no ACME issuer configured (cannot serve HTTP-01 challenges)")
 	}
+	m.acme = issuer
+	return m, nil
+}
 
-	log.Info("acme: certificates ready", "domains", c.Domains, "ca", certmagic.DefaultACME.CA)
-	return &Manager{magic: magic, acme: issuer, log: log}, nil
+// event passes certmagic's events on to the OnCertEvent hook. It never
+// cancels an event.
+func (m *Manager) event(_ context.Context, event string, data map[string]any) error {
+	fn := m.onEvent.Load()
+	if fn == nil {
+		return nil
+	}
+	name, _ := data["identifier"].(string)
+	err, _ := data["error"].(error)
+	(*fn)(event, name, err)
+	return nil
+}
+
+// OnCertEvent sets the hook told of certmagic's events (cert_obtaining,
+// cert_obtained, cert_failed, …) with the name and, for a failure, the
+// error. It must return quickly.
+func (m *Manager) OnCertEvent(fn func(event, name string, err error)) {
+	m.onEvent.Store(&fn)
+}
+
+// ManageAsync starts obtaining and renewing certificates for names without
+// waiting for the CA; failures are retried by certmagic with exponential
+// backoff and reported as cert_failed events. Cancelling ctx stops the
+// retries.
+func (m *Manager) ManageAsync(ctx context.Context, names []string) error {
+	return m.magic.ManageAsync(ctx, names)
+}
+
+// Unmanage stops the renewal of the names' certificates and drops them
+// from the cache. The stored files stay.
+func (m *Manager) Unmanage(names []string) {
+	subjects := make([]certmagic.SubjectIssuer, 0, len(names))
+	for _, n := range names {
+		subjects = append(subjects, certmagic.SubjectIssuer{Subject: n})
+	}
+	m.cache.RemoveManaged(subjects)
+}
+
+// HasCertificate reports whether a certificate for name that has not
+// expired is loaded.
+func (m *Manager) HasCertificate(name string) bool {
+	for _, c := range m.cache.AllMatchingCertificates(name) {
+		if !c.Expired() {
+			return true
+		}
+	}
+	return false
 }
 
 // GetCertificate is a tls.Config.GetCertificate function backed by CertMagic.

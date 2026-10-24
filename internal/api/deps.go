@@ -824,6 +824,15 @@ type Deps struct {
 	// so the chain validation step trusts the test-issued cert without
 	// requiring a real CA-signed certificate.
 	CertValidationRoots *x509.CertPool
+	// CustomDomainCerts obtains the certificates of auto custom domains
+	// while the relay terminates TLS with ACME (H10); nil without ACME.
+	CustomDomainCerts CustomDomainCerts
+	// CustomDomainFileTLS reports that the dashboard listener terminates TLS
+	// with a file certificate (BURROW_HTTP_TLS_CERT) and ACME is off: an
+	// auto custom domain is refused (400), since nobody could serve it.
+	// With neither this nor CustomDomainCerts, TLS ends at a proxy in front
+	// and auto needs no certificate (cert_status not_needed).
+	CustomDomainFileTLS bool
 
 	// v0.5.0 Task 8: per-tunnel connection logs (spec E).
 	// ConnLogDB is the read surface for GET /api/v1/connection-logs and the

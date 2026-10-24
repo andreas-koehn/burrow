@@ -1708,18 +1708,37 @@ components:
       type: object
       description: >
         A custom domain of a service with the data of its certificate. The
-        private key is never returned.
-      required: [id, service_id, hostname, cert_sha256, not_before, not_after, created_at, updated_at, status, status_updated_at]
+        private key is never returned. With `cert_source` auto no
+        certificate is stored: `cert_sha256` is empty and `not_before` and
+        `not_after` are the zero time.
+      required: [id, service_id, hostname, cert_sha256, not_before, not_after, created_at, updated_at, status, status_updated_at, cert_source, cert_status]
       properties:
         id: { type: string }
         service_id: { type: string }
         hostname: { type: string, description: Lower case. }
-        cert_sha256: { type: string, description: Fingerprint of the stored certificate. }
+        cert_source:
+          type: string
+          enum: [uploaded, auto]
+          description: >
+            `uploaded`: the certificate and key were uploaded with the
+            domain. `auto`: the relay obtains the certificate itself (ACME,
+            HTTP-01 on :80 or TLS-ALPN-01 on 443), or none is needed because
+            a proxy in front terminates TLS.
+        cert_status:
+          type: string
+          enum: [ready, pending, not_needed]
+          description: >
+            Derived, not stored. `ready`: an uploaded certificate, or an
+            auto one the relay has obtained. `pending`: the relay is still
+            obtaining it (or, for an auto domain on a relay that serves a
+            file certificate without ACME, cannot). `not_needed`: auto
+            behind a proxy that terminates TLS (a plain dashboard listener).
+        cert_sha256: { type: string, description: Fingerprint of the stored certificate; empty for auto. }
         not_before: { type: string, format: date-time }
         not_after: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-        status: { type: string, enum: [pending, active, cert_expiring, cert_expired] }
+        status: { type: string, enum: [pending, active, cert_expiring, cert_expired], description: The life of an uploaded certificate; always active for auto. }
         status_updated_at: { type: string, format: date-time }
     SessionUser:
       type: object
@@ -7425,6 +7444,8 @@ paths:
       summary: Add a custom domain to a service
       description: |
         Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
+
+        The 409s of host-name ownership come before any check of the certificate. With `cert_source` auto under ACME the relay starts obtaining the certificate in the background (`cert_status` pending, then ready); a failure is logged and audited as `service.custom_domain.cert_failed`. Audited as `service.custom_domain.add` with `hostname`, `cert_source` and `cert_sha256`.
       parameters:
         - name: serviceID
           in: path
@@ -7436,11 +7457,22 @@ paths:
           application/json:
             schema:
               type: object
-              required: [hostname, cert_pem, key_pem]
+              required: [hostname]
               properties:
                 hostname: { type: string }
-                cert_pem: { type: string }
-                key_pem: { type: string }
+                cert_source:
+                  type: string
+                  enum: [uploaded, auto]
+                  default: uploaded
+                  description: >
+                    `uploaded` (the default) needs `cert_pem` and `key_pem`.
+                    `auto` takes neither (400 when they are sent with a
+                    value): under ACME the relay obtains the certificate,
+                    behind a proxy that terminates TLS none is needed. auto
+                    is refused (400) for a wildcard and on a relay that
+                    serves a file certificate without ACME.
+                cert_pem: { type: string, description: The certificate chain (PEM); `uploaded` only. }
+                key_pem: { type: string, description: The private key (PEM); `uploaded` only. }
       responses:
         '201':
           description: Domain created.
@@ -7480,9 +7512,11 @@ paths:
       operationId: serviceDomainUpdate
       x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       x-burrow-mcp: false
-      summary: Replace the cert/key for a custom domain
+      summary: Replace the host name, certificate source or cert/key of a custom domain
       description: |
         Not a tool of the management MCP server (`/mcp/burrow`): an agent must not re-route credentials or switch off inspection.
+
+        The body is the same as for adding one; a body without `cert_source` is `uploaded`. Under ACME the certificate order follows the row: it stops for the old name when an auto domain is renamed or switched to uploaded, and starts for a new auto name. Audited as `service.custom_domain.update` with `hostname`, `cert_source` and `cert_sha256`.
       parameters:
         - name: serviceID
           in: path
@@ -7498,11 +7532,22 @@ paths:
           application/json:
             schema:
               type: object
-              required: [hostname, cert_pem, key_pem]
+              required: [hostname]
               properties:
                 hostname: { type: string }
-                cert_pem: { type: string }
-                key_pem: { type: string }
+                cert_source:
+                  type: string
+                  enum: [uploaded, auto]
+                  default: uploaded
+                  description: >
+                    `uploaded` (the default) needs `cert_pem` and `key_pem`.
+                    `auto` takes neither (400 when they are sent with a
+                    value): under ACME the relay obtains the certificate,
+                    behind a proxy that terminates TLS none is needed. auto
+                    is refused (400) for a wildcard and on a relay that
+                    serves a file certificate without ACME.
+                cert_pem: { type: string, description: The certificate chain (PEM); `uploaded` only. }
+                key_pem: { type: string, description: The private key (PEM); `uploaded` only. }
       responses:
         '204': { description: Updated. }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -7515,6 +7560,7 @@ paths:
       operationId: serviceDomainDelete
       x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Remove a custom domain
+      description: For an auto domain under ACME the relay stops obtaining and renewing its certificate.
       parameters:
         - name: serviceID
           in: path

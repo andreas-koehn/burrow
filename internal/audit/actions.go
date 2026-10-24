@@ -145,6 +145,12 @@ const (
 	// {id, from, to}. NOT in aggregatedActions — transitions are rare.
 	ActionServiceCustomDomainStatusChanged = "custom_domain.status_changed"
 
+	// H10: the relay could not obtain (or renew) the ACME certificate of a
+	// custom domain with cert_source auto, or refused to order one for a
+	// name it does not own. Payload {hostname, error}; no actor. Aggregated
+	// per host name: certmagic retries a failed order with backoff.
+	ActionServiceCustomDomainCertFailed = "service.custom_domain.cert_failed"
+
 	// v0.5.0 Task 9: retention compaction job.
 	ActionRetentionCompact = "retention.compact"
 
@@ -233,7 +239,7 @@ var AllActions = []string{
 	ActionMCPSourceSync, ActionMCPToolApprove, ActionMCPToolOverride, ActionMCPGatewayCall,
 	ActionServiceUpstreamCredentialBind, ActionServiceUpstreamCredentialUnbind,
 	ActionServiceCustomDomainAdd, ActionServiceCustomDomainUpdate, ActionServiceCustomDomainDelete,
-	ActionServiceCustomDomainStatusChanged,
+	ActionServiceCustomDomainStatusChanged, ActionServiceCustomDomainCertFailed,
 	ActionRetentionCompact,
 	ActionConnectionSessionSummary, ActionAICachePromoted, ActionAIUpstreamError,
 	ActionClientLoginApproved, ActionClientLoginDenied,
@@ -254,6 +260,8 @@ var aggregatedActions = map[string]bool{
 	// One row per limit per hour: the caller keys it by scope, subject and
 	// dimension (Event.AggregationKey).
 	ActionRateLimitEnforced: true,
+	// One row per host name per hour (Event.AggregationKey).
+	ActionServiceCustomDomainCertFailed: true,
 }
 
 // IsAggregated reports whether the given action is sample-rated.

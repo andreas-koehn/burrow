@@ -50,6 +50,8 @@ type DomainRow struct {
 // Cert is a parsed per-domain certificate together with its metadata.
 type Cert struct {
 	// Cert is ready for use in *tls.Config; it is pre-parsed and cached.
+	// nil for a row without a certificate (cert_source auto, H10): the
+	// domain is bound, and its certificate comes from elsewhere.
 	Cert      *tls.Certificate
 	Hostname  string
 	ServiceID string
@@ -94,13 +96,19 @@ func (s *Store) LookupBySNI(ctx context.Context, sni string) (Cert, bool, error)
 		return Cert{}, false, nil
 	}
 
-	tlsCert, err := tls.X509KeyPair([]byte(row.CertPEM), []byte(row.KeyPEM))
-	if err != nil {
-		return Cert{}, false, err
+	// A row without a certificate (cert_source auto) is bound all the
+	// same: routing needs its service, the handshake another source.
+	var parsed *tls.Certificate
+	if row.CertPEM != "" || row.KeyPEM != "" {
+		tlsCert, err := tls.X509KeyPair([]byte(row.CertPEM), []byte(row.KeyPEM))
+		if err != nil {
+			return Cert{}, false, err
+		}
+		parsed = &tlsCert
 	}
 
 	entry := &Cert{
-		Cert:      &tlsCert,
+		Cert:      parsed,
 		Hostname:  row.Hostname,
 		ServiceID: row.ServiceID,
 		NotAfter:  row.NotAfter,
@@ -130,7 +138,8 @@ func (s *Store) InvalidateHostname(hostname string) {
 //
 // The returned function always returns (cert, nil) — lookup errors are
 // silently swallowed so that a DB hiccup during a TLS handshake doesn't
-// return an error to the client for an unrelated vhost.
+// return an error to the client for an unrelated vhost. A row without a
+// certificate (cert_source auto) is skipped like a miss (H10).
 func CertCallback(s *Store, wildcard *tls.Certificate) func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	return func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		if hello == nil || hello.ServerName == "" {
@@ -141,7 +150,7 @@ func CertCallback(s *Store, wildcard *tls.Certificate) func(*tls.ClientHelloInfo
 			ctx = context.Background()
 		}
 		c, ok, _ := s.LookupBySNI(ctx, hello.ServerName)
-		if ok {
+		if ok && c.Cert != nil {
 			return c.Cert, nil
 		}
 		return wildcard, nil

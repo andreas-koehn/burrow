@@ -62,6 +62,27 @@ type CustomDomainCacheInvalidator interface {
 	InvalidateHostname(hostname string)
 }
 
+// CustomDomainCerts obtains the certificates of the custom domains with
+// cert_source auto while the relay terminates TLS with ACME (H10).
+// *acme.CustomDomains satisfies it. Manage and Unmanage never wait on the
+// CA; Manage refuses a name the relay does not own (H12) by itself too.
+type CustomDomainCerts interface {
+	Manage(serviceID, hostname string) error
+	Unmanage(hostname string)
+	Ready(hostname string) bool
+}
+
+// The cert_status values of a custom domain (H10), derived, not stored.
+const (
+	// CertStatusReady: the certificate is there (uploaded, or obtained).
+	CertStatusReady = "ready"
+	// CertStatusPending: the relay is still obtaining it (auto under
+	// ACME), or cannot serve one (an auto row in file-certificate mode).
+	CertStatusPending = "pending"
+	// CertStatusNotNeeded: auto behind a proxy that terminates TLS.
+	CertStatusNotNeeded = "not_needed"
+)
+
 // ─── Wire shapes ─────────────────────────────────────────────────────────────
 
 // domainResp is the JSON wire shape for a single custom domain (no key_pem).
@@ -82,6 +103,38 @@ type domainResp struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 	Status          string    `json:"status"`
 	StatusUpdatedAt time.Time `json:"status_updated_at"`
+	// CertSource is uploaded or auto; CertStatus is ready, pending or
+	// not_needed (H10).
+	CertSource string `json:"cert_source"`
+	CertStatus string `json:"cert_status"`
+}
+
+// domainResp is toDomainResp with the cert_status of this relay.
+func (d Deps) domainResp(row db.ServiceCustomDomain) domainResp {
+	out := toDomainResp(row)
+	out.CertStatus = d.certStatus(row)
+	return out
+}
+
+// certStatus derives the cert_status of a row: an uploaded certificate is
+// ready; an auto one is ready once certmagic has it, pending until then,
+// pending too where nobody obtains it (file certificate, no ACME), and
+// not_needed behind a proxy that terminates TLS (a plain listener).
+func (d Deps) certStatus(row db.ServiceCustomDomain) string {
+	if row.CertSource != db.CertSourceAuto {
+		return CertStatusReady
+	}
+	switch {
+	case d.CustomDomainCerts != nil:
+		if d.CustomDomainCerts.Ready(row.Hostname) {
+			return CertStatusReady
+		}
+		return CertStatusPending
+	case d.CustomDomainFileTLS:
+		return CertStatusPending
+	default:
+		return CertStatusNotNeeded
+	}
 }
 
 // toDomainResp projects db.ServiceCustomDomain → domainResp (no key_pem).
@@ -99,7 +152,18 @@ func toDomainResp(d db.ServiceCustomDomain) domainResp {
 	if status == "" {
 		status = customdomain.ComputeStatus(d.NotAfter, time.Now())
 	}
+	source := d.CertSource
+	if source == "" {
+		source = db.CertSourceUploaded
+	}
+	// The stored status tracks an uploaded certificate's expiry; an auto
+	// one is renewed by certmagic (the daily tick skips it), so a row
+	// switched from an expired upload must not keep saying so.
+	if source == db.CertSourceAuto {
+		status = customdomain.StatusActive
+	}
 	return domainResp{
+		CertSource:      source,
 		ID:              d.ID,
 		ServiceID:       d.ServiceID,
 		Hostname:        d.Hostname,
@@ -114,17 +178,76 @@ func toDomainResp(d db.ServiceCustomDomain) domainResp {
 }
 
 // postDomainReq is the POST /services/{id}/domains request body.
+// cert_source is uploaded (the default, so an older dashboard keeps
+// working) or auto; cert_pem and key_pem are for uploaded only (H10).
 type postDomainReq struct {
-	Hostname string `json:"hostname"`
-	CertPEM  string `json:"cert_pem"`
-	KeyPEM   string `json:"key_pem"`
+	Hostname   string `json:"hostname"`
+	CertSource string `json:"cert_source"`
+	CertPEM    string `json:"cert_pem"`
+	KeyPEM     string `json:"key_pem"`
 }
 
-// putDomainReq is the PUT /services/{id}/domains/{did} request body.
+// putDomainReq is the PUT /services/{id}/domains/{did} request body, the
+// same as POST's.
 type putDomainReq struct {
-	Hostname string `json:"hostname"`
-	CertPEM  string `json:"cert_pem"`
-	KeyPEM   string `json:"key_pem"`
+	Hostname   string `json:"hostname"`
+	CertSource string `json:"cert_source"`
+	CertPEM    string `json:"cert_pem"`
+	KeyPEM     string `json:"key_pem"`
+}
+
+// domainCert is what a custom-domain write stores of its certificate.
+type domainCert struct {
+	source              string
+	certPEM, keyPEM     string
+	sha256              string
+	notBefore, notAfter time.Time
+}
+
+// domainCert validates the certificate part of a custom-domain write for
+// the (normalised, unrefused) hostname: uploaded needs a certificate and
+// key that pass validateCertAndKey; auto takes none, and is refused for a
+// wildcard (HTTP-01 and TLS-ALPN-01 cannot prove one) and where the relay
+// serves a file certificate without ACME, since nobody could serve the
+// name. ok false: the 400 is written.
+func (d Deps) domainCert(w http.ResponseWriter, hostname, source, certPEM, keyPEM string) (domainCert, bool) {
+	if source == "" {
+		source = db.CertSourceUploaded
+	}
+	switch source {
+	case db.CertSourceAuto:
+		switch {
+		case strings.HasPrefix(hostname, "*."):
+			writeErr(w, http.StatusBadRequest, "a wildcard custom domain needs cert_source uploaded")
+		case d.CustomDomainCerts == nil && d.CustomDomainFileTLS:
+			writeErr(w, http.StatusBadRequest, "cert_source auto needs ACME (BURROW_ACME_DOMAIN) or a proxy in front that terminates TLS; this relay serves a file certificate, so upload one")
+		case certPEM != "" || keyPEM != "":
+			writeErr(w, http.StatusBadRequest, "cert_pem and key_pem are for cert_source uploaded; leave them out with auto")
+		default:
+			return domainCert{source: source}, true
+		}
+		return domainCert{}, false
+	case db.CertSourceUploaded:
+	default:
+		writeErr(w, http.StatusBadRequest, "cert_source must be uploaded or auto")
+		return domainCert{}, false
+	}
+	if certPEM == "" || keyPEM == "" {
+		writeErr(w, http.StatusBadRequest, "cert_pem and key_pem are required")
+		return domainCert{}, false
+	}
+	result, status, errBody := validateCertAndKey(certPEM, keyPEM, hostname, d.CertValidationRoots)
+	if errBody != nil {
+		writeJSON(w, status, errBody)
+		return domainCert{}, false
+	}
+	if result.warnNOSAN {
+		w.Header().Set("Burrow-Warning", "cert-no-san")
+	}
+	return domainCert{
+		source: source, certPEM: certPEM, keyPEM: keyPEM, sha256: result.certSHA256,
+		notBefore: result.notBefore, notAfter: result.notAfter,
+	}, true
 }
 
 // certValidationResult holds parsed cert fields after successful validation.
@@ -415,7 +538,7 @@ func (d Deps) ListCustomDomains(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]domainResp, len(rows))
 	for i, row := range rows {
-		out[i] = toDomainResp(row)
+		out[i] = d.domainResp(row)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -453,28 +576,20 @@ func (d Deps) PostCustomDomain(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, why)
 		return
 	}
-	if in.CertPEM == "" || in.KeyPEM == "" {
-		writeErr(w, http.StatusBadRequest, "cert_pem and key_pem are required")
+	cert, ok := d.domainCert(w, in.Hostname, in.CertSource, in.CertPEM, in.KeyPEM)
+	if !ok {
 		return
-	}
-
-	result, status, errBody := validateCertAndKey(in.CertPEM, in.KeyPEM, in.Hostname, d.CertValidationRoots)
-	if errBody != nil {
-		writeJSON(w, status, errBody)
-		return
-	}
-	if result.warnNOSAN {
-		w.Header().Set("Burrow-Warning", "cert-no-san")
 	}
 
 	row := db.ServiceCustomDomain{
 		ServiceID:  serviceID,
 		Hostname:   in.Hostname,
-		CertPEM:    in.CertPEM,
-		KeyPEM:     in.KeyPEM,
-		CertSHA256: result.certSHA256,
-		NotBefore:  result.notBefore,
-		NotAfter:   result.notAfter,
+		CertSource: cert.source,
+		CertPEM:    cert.certPEM,
+		KeyPEM:     cert.keyPEM,
+		CertSHA256: cert.sha256,
+		NotBefore:  cert.notBefore,
+		NotAfter:   cert.notAfter,
 	}
 	inserted, err := d.CustomDomains.InsertCustomDomain(r.Context(), row)
 	if err != nil {
@@ -498,6 +613,12 @@ func (d Deps) PostCustomDomain(w http.ResponseWriter, r *http.Request) {
 	if d.CustomDomainCache != nil {
 		d.CustomDomainCache.InvalidateHostname(in.Hostname)
 	}
+	// An auto name: the relay starts obtaining its certificate (H10). A
+	// failure there is logged and audited by the ACME side; the domain
+	// stays bound with cert_status pending.
+	if cert.source == db.CertSourceAuto && d.CustomDomainCerts != nil {
+		_ = d.CustomDomainCerts.Manage(serviceID, in.Hostname)
+	}
 
 	// Audit (best-effort).
 	if d.AuditAppender != nil {
@@ -510,29 +631,15 @@ func (d Deps) PostCustomDomain(w http.ResponseWriter, r *http.Request) {
 			SourceIP: lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
 			Payload: audit.MustJSON(map[string]string{
 				"hostname":    in.Hostname,
-				"cert_sha256": result.certSHA256,
+				"cert_source": cert.source,
+				"cert_sha256": cert.sha256,
 			}),
 		})
 	}
 
-	// Emit cert-expiry metric.
-	if d.Metrics != nil {
-		days := float64(time.Until(result.notAfter)) / float64(24*time.Hour)
-		d.Metrics.SetCertExpiryDays(in.Hostname, days)
-	}
+	d.uploadedCertSignals(r.Context(), serviceID, in.Hostname, cert)
 
-	// Emit cert.expiring webhook event when expiring soon.
-	// Rate-limiting is a TODO (Task 9/12 carry-over — the dispatcher has no
-	// built-in per-domain once-per-day limiter).
-	if result.notAfter.Before(time.Now().Add(14*24*time.Hour)) && d.WebhookDispatcher != nil {
-		d.WebhookDispatcher.Publish(r.Context(), "cert.expiring", map[string]any{
-			"hostname":   in.Hostname,
-			"service_id": serviceID,
-			"not_after":  result.notAfter.UTC().Format(time.RFC3339),
-		})
-	}
-
-	writeJSON(w, http.StatusCreated, toDomainResp(inserted))
+	writeJSON(w, http.StatusCreated, d.domainResp(inserted))
 }
 
 // GetCustomDomain handles GET /api/v1/services/{serviceID}/domains/{did}.
@@ -556,7 +663,7 @@ func (d Deps) GetCustomDomain(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "get domain failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, toDomainResp(row))
+	writeJSON(w, http.StatusOK, d.domainResp(row))
 }
 
 // PutCustomDomain handles PUT /api/v1/services/{serviceID}/domains/{did}.
@@ -593,32 +700,24 @@ func (d Deps) PutCustomDomain(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, why)
 		return
 	}
-	if in.CertPEM == "" || in.KeyPEM == "" {
-		writeErr(w, http.StatusBadRequest, "cert_pem and key_pem are required")
+	cert, ok := d.domainCert(w, in.Hostname, in.CertSource, in.CertPEM, in.KeyPEM)
+	if !ok {
 		return
 	}
 
-	result, status, errBody := validateCertAndKey(in.CertPEM, in.KeyPEM, in.Hostname, d.CertValidationRoots)
-	if errBody != nil {
-		writeJSON(w, status, errBody)
-		return
-	}
-	if result.warnNOSAN {
-		w.Header().Set("Burrow-Warning", "cert-no-san")
-	}
-
-	// Fetch old hostname (for cache invalidation).
+	// Fetch old hostname (for cache invalidation and the ACME order).
 	old, oldErr := d.CustomDomains.GetCustomDomain(r.Context(), serviceID, did)
 
 	row := db.ServiceCustomDomain{
 		ID:         did,
 		ServiceID:  serviceID,
 		Hostname:   in.Hostname,
-		CertPEM:    in.CertPEM,
-		KeyPEM:     in.KeyPEM,
-		CertSHA256: result.certSHA256,
-		NotBefore:  result.notBefore,
-		NotAfter:   result.notAfter,
+		CertSource: cert.source,
+		CertPEM:    cert.certPEM,
+		KeyPEM:     cert.keyPEM,
+		CertSHA256: cert.sha256,
+		NotBefore:  cert.notBefore,
+		NotAfter:   cert.notAfter,
 	}
 	if err := d.CustomDomains.UpdateCustomDomain(r.Context(), row); err != nil {
 		if errors.Is(err, db.ErrNotFound) {
@@ -648,6 +747,17 @@ func (d Deps) PutCustomDomain(w http.ResponseWriter, r *http.Request) {
 		}
 		d.CustomDomainCache.InvalidateHostname(in.Hostname)
 	}
+	// The ACME order follows the row (H10): the old auto name stops when
+	// it is renamed or switched to uploaded, the new auto name starts.
+	if d.CustomDomainCerts != nil {
+		if oldErr == nil && old.CertSource == db.CertSourceAuto &&
+			(cert.source != db.CertSourceAuto || old.Hostname != in.Hostname) {
+			d.CustomDomainCerts.Unmanage(old.Hostname)
+		}
+		if cert.source == db.CertSourceAuto {
+			_ = d.CustomDomainCerts.Manage(serviceID, in.Hostname)
+		}
+	}
 
 	// Audit (best-effort).
 	if d.AuditAppender != nil {
@@ -660,28 +770,13 @@ func (d Deps) PutCustomDomain(w http.ResponseWriter, r *http.Request) {
 			SourceIP: lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
 			Payload: audit.MustJSON(map[string]string{
 				"hostname":    in.Hostname,
-				"cert_sha256": result.certSHA256,
+				"cert_source": cert.source,
+				"cert_sha256": cert.sha256,
 			}),
 		})
 	}
 
-	// Update cert-expiry metric.
-	if d.Metrics != nil {
-		days := float64(time.Until(result.notAfter)) / float64(24*time.Hour)
-		d.Metrics.SetCertExpiryDays(in.Hostname, days)
-	}
-
-	// Emit cert.expiring webhook event when the renewed cert lands within the
-	// 14-day expiry window. Mirrors the POST path. Rate-limiting is a TODO
-	// (Task 9/12 carry-over — the dispatcher has no per-domain once-per-day
-	// limiter).
-	if result.notAfter.Before(time.Now().Add(14*24*time.Hour)) && d.WebhookDispatcher != nil {
-		d.WebhookDispatcher.Publish(r.Context(), "cert.expiring", map[string]any{
-			"hostname":   in.Hostname,
-			"service_id": serviceID,
-			"not_after":  result.notAfter.UTC().Format(time.RFC3339),
-		})
-	}
+	d.uploadedCertSignals(r.Context(), serviceID, in.Hostname, cert)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -711,6 +806,10 @@ func (d Deps) DeleteCustomDomain(w http.ResponseWriter, r *http.Request) {
 	if fetchErr == nil && d.CustomDomainCache != nil {
 		d.CustomDomainCache.InvalidateHostname(row.Hostname)
 	}
+	// An auto name: its certificate is no longer obtained or renewed.
+	if fetchErr == nil && row.CertSource == db.CertSourceAuto && d.CustomDomainCerts != nil {
+		d.CustomDomainCerts.Unmanage(row.Hostname)
+	}
 
 	// Audit (best-effort).
 	if fetchErr == nil && d.AuditAppender != nil {
@@ -723,12 +822,42 @@ func (d Deps) DeleteCustomDomain(w http.ResponseWriter, r *http.Request) {
 			SourceIP: lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
 			Payload: audit.MustJSON(map[string]string{
 				"hostname":    row.Hostname,
+				"cert_source": toDomainResp(row).CertSource,
 				"cert_sha256": row.CertSHA256,
 			}),
 		})
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// uploadedCertSignals sets the expiry gauge of an uploaded certificate and
+// emits cert.expiring when it lands within 14 days. An auto certificate
+// is renewed by certmagic and has neither.
+func (d Deps) uploadedCertSignals(ctx context.Context, serviceID, hostname string, cert domainCert) {
+	if cert.source != db.CertSourceUploaded {
+		return
+	}
+	if d.Metrics != nil {
+		days := float64(time.Until(cert.notAfter)) / float64(24*time.Hour)
+		d.Metrics.SetCertExpiryDays(hostname, days)
+	}
+	// Rate-limiting is a TODO (Task 9/12 carry-over — the dispatcher has no
+	// built-in per-domain once-per-day limiter).
+	if cert.notAfter.Before(time.Now().Add(14*24*time.Hour)) && d.WebhookDispatcher != nil {
+		d.WebhookDispatcher.Publish(ctx, "cert.expiring", map[string]any{
+			"hostname":   hostname,
+			"service_id": serviceID,
+			"not_after":  cert.notAfter.UTC().Format(time.RFC3339),
+		})
+	}
+}
+
+// CustomDomainRefusal is customDomainRefusal for the relay's startup: the
+// auto names loaded into certmagic pass the same H12 checks as a write
+// (their rows may predate a change of the configuration).
+func (d Deps) CustomDomainRefusal(hostname string) string {
+	return d.customDomainRefusal(hostname)
 }
 
 // customDomainRefusal says why hostname (lower case, "*.<parent>" for a
