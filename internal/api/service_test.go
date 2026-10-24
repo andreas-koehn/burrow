@@ -74,9 +74,13 @@ type fakeServiceStore struct {
 	lastMaxConns int
 
 	// ServiceTCPSettings / SetServiceTCPSettings
-	tcpSettings    store.TCPSettings
-	tcpSettingsErr error
-	lastTCPUpdate  store.TCPSettingsUpdate
+	tcpSettings store.TCPSettings
+	// ServiceHTTPSettings / SetServiceHTTPSettings
+	httpSettings    store.HTTPSettings
+	httpSettingsErr error
+	lastHTTPUpdate  store.HTTPSettingsUpdate
+	tcpSettingsErr  error
+	lastTCPUpdate   store.TCPSettingsUpdate
 
 	// ServiceTCPHostname / SetServiceTCPHostname
 	tcpHostname     store.TCPHostname
@@ -167,6 +171,35 @@ func (f *fakeServiceStore) SetServiceTCPSettings(_ context.Context, _, _, _ stri
 		f.tcpSettings.IdleTimeoutS = *u.IdleTimeoutS
 	}
 	return before, f.tcpSettings, nil
+}
+func (f *fakeServiceStore) ServiceHTTPSettings(_ context.Context, _, _, _ string) (store.HTTPSettings, error) {
+	return f.httpSettings, f.httpSettingsErr
+}
+func (f *fakeServiceStore) SetServiceHTTPSettings(_ context.Context, _, _, _ string, u store.HTTPSettingsUpdate) (store.HTTPSettings, store.HTTPSettings, error) {
+	if f.httpSettingsErr != nil {
+		return store.HTTPSettings{}, store.HTTPSettings{}, f.httpSettingsErr
+	}
+	f.lastHTTPUpdate = u
+	before := f.httpSettings
+	if u.UpstreamProtocol != nil {
+		f.httpSettings.UpstreamProtocol = *u.UpstreamProtocol
+	}
+	if u.UpstreamTLSVerify != nil {
+		f.httpSettings.UpstreamTLSVerify = *u.UpstreamTLSVerify
+	}
+	if u.UpstreamTLSServerName != nil {
+		f.httpSettings.UpstreamTLSServerName = *u.UpstreamTLSServerName
+	}
+	if u.UpstreamTLSCAPEM != nil {
+		f.httpSettings.UpstreamTLSCASHA256 = ""
+		if *u.UpstreamTLSCAPEM != "" {
+			f.httpSettings.UpstreamTLSCASHA256 = "fp-of-" + *u.UpstreamTLSCAPEM
+		}
+	}
+	if u.GRPCMaxDurationS != nil {
+		f.httpSettings.GRPCMaxDurationS = *u.GRPCMaxDurationS
+	}
+	return before, f.httpSettings, nil
 }
 func (f *fakeServiceStore) ServiceTCPHostname(_ context.Context, _, _, _ string) (store.TCPHostname, error) {
 	return f.tcpHostname, f.tcpHostnameErr

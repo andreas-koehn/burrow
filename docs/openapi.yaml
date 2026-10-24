@@ -1197,6 +1197,71 @@ components:
         idle_timeout_s:
           type: integer
           description: 0 (never) or 60 to 86400.
+    HttpSettings:
+      type: object
+      description: >
+        The settings of an http service that shape how the relay speaks to
+        the local service over the tunnel. The CA is never read back.
+      required: [upstream_protocol, upstream_tls_verify, upstream_tls_server_name, upstream_tls_ca_sha256, grpc_max_duration_s, client_upstream_protocol, effective_upstream_protocol]
+      properties:
+        upstream_protocol:
+          type: string
+          enum: [http1, https, h2c, h2]
+          description: >
+            http1 (the default), https (HTTP/1.1 over TLS), h2c (HTTP/2
+            without TLS, prior knowledge) or h2 (HTTP/2 over TLS). gRPC needs
+            h2c or h2.
+        upstream_tls_verify:
+          type: boolean
+          description: >
+            https and h2 only. true: the upstream certificate is verified
+            (against the CA below, else the relay's trust store). false: it
+            is not.
+        upstream_tls_server_name:
+          type: string
+          description: The name to verify and send as SNI; "" for the service's own host. Lower case.
+        upstream_tls_ca_sha256:
+          type: string
+          description: SHA-256 (hex) of the CA PEM the upstream is verified against; "" for none.
+        grpc_max_duration_s:
+          type: integer
+          description: The longest a gRPC call may last; 0 for no cap, otherwise 1 to 86400.
+        client_upstream_protocol:
+          type: string
+          enum: ['', http1, https, h2c, h2]
+          description: >
+            The protocol the client that serves the service named at
+            registration; "" when it named none or no client serves the
+            service. It applies in place of upstream_protocol.
+        effective_upstream_protocol:
+          type: string
+          enum: [http1, https, h2c, h2]
+          description: The protocol the relay uses now - client_upstream_protocol, else upstream_protocol.
+    HttpSettingsInput:
+      type: object
+      description: The settings to change; at least one. A field left out is kept.
+      additionalProperties: false
+      properties:
+        upstream_protocol: { type: string, enum: [http1, https, h2c, h2] }
+        upstream_tls_verify: { type: boolean }
+        upstream_tls_server_name:
+          type: string
+          description: A DNS name (an IP address is refused); "" clears it.
+        upstream_tls_ca_pem:
+          type: string
+          description: PEM with a CERTIFICATE block, at most 64 KiB; "" clears it. Write only.
+        grpc_max_duration_s:
+          type: integer
+          description: 0 (no cap) or 1 to 86400.
+    IngressStatus:
+      type: object
+      description: The env-only ingress switches of the relay.
+      required: [h2c, https_passthrough, passthrough_listen, acme]
+      properties:
+        h2c: { type: boolean, description: "HTTP/2 without TLS is accepted on the plain-text listeners (BURROW_HTTP_H2C)." }
+        https_passthrough: { type: boolean, description: "The HTTPS port also routes TLS passthrough host names of tcp services (BURROW_TLS_PASSTHROUGH_ON_HTTPS)." }
+        passthrough_listen: { type: string, description: 'The TLS passthrough listener address (BURROW_TLS_PASSTHROUGH_LISTEN); "" for none.' }
+        acme: { type: boolean, description: Built-in ACME is on (BURROW_ACME_DOMAIN). }
     TcpHostname:
       type: object
       description: The TLS passthrough host names of a tcp service.
@@ -4325,6 +4390,77 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { description: The service is not a tcp service. }
+
+  /api/v1/services/{serviceID}/http-settings:
+    get:
+      tags: [services]
+      operationId: serviceHttpSettingsGet
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      summary: Read the upstream protocol, TLS and gRPC settings of an http service
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      responses:
+        '200':
+          description: The settings.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HttpSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not an http service. }
+    put:
+      tags: [services]
+      operationId: serviceHttpSettingsUpdate
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      x-burrow-mcp: false
+      summary: Set the upstream protocol, TLS verification, CA or gRPC cap of an http service
+      description: |
+        Changes the settings named in the body and keeps the others; the
+        next request uses them. Nothing here widens who can reach the
+        service, so there is no recent-auth step. Audited as
+        `service.http_settings.update` with both states before and after;
+        the CA appears as its fingerprint.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): it sets a
+        trust anchor and can switch certificate verification off, which an
+        agent steered by untrusted text must not do.
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HttpSettingsInput' }
+      responses:
+        '200':
+          description: The settings after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HttpSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not an http service. }
+
+  /api/v1/ingress/status:
+    get:
+      tags: [services]
+      operationId: ingressStatusGet
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      summary: Which ingress features the relay runs (h2c, TLS passthrough, ACME)
+      description: |
+        The flags are environment only (`BURROW_HTTP_H2C`,
+        `BURROW_TLS_PASSTHROUGH_ON_HTTPS`, `BURROW_TLS_PASSTHROUGH_LISTEN`,
+        `BURROW_ACME_DOMAIN`); the dashboard uses them to say what a service
+        can be reached by.
+      responses:
+        '200':
+          description: The status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngressStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/services/{serviceID}/tcp-hostname:
     get:

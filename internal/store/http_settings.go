@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"strings"
 
+	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/db"
 )
 
@@ -116,7 +117,7 @@ func (s *Store) ServiceHTTPSettings(ctx context.Context, callerID, callerRole, s
 // ErrInvalidUpstreamCA or ErrInvalidUpstreamTLSServerName for a bad value
 // (nothing is written then). The server name is stored lower case. It
 // returns both states for the caller's audit row (the CA only as its
-// fingerprint); this method emits no audit event.
+// fingerprint). It audits the write as service.http_settings.update.
 func (s *Store) SetServiceHTTPSettings(ctx context.Context, callerID, callerRole, serviceID string, u HTTPSettingsUpdate) (before, after HTTPSettings, err error) {
 	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
 	if err != nil {
@@ -149,7 +150,13 @@ func (s *Store) SetServiceHTTPSettings(ctx context.Context, callerID, callerRole
 	if err != nil {
 		return HTTPSettings{}, HTTPSettings{}, err
 	}
-	return before, httpSettingsOf(now), nil
+	after = httpSettingsOf(now)
+	s.emitAudit(withAuditDeadline(ctx), audit.ActionServiceHTTPSettingsUpdate, func(e *audit.Event) {
+		e.SubjectID = serviceID
+		e.SubjectLabel = svc.Name
+		e.Payload = audit.MustJSON(map[string]HTTPSettings{"from": before, "to": after})
+	})
+	return before, after, nil
 }
 
 // validUpstreamServerName reports whether name (lower case) is a DNS name

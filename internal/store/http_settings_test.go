@@ -5,7 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
+
+	"github.com/ankoehn/burrow/internal/audit"
 )
 
 func TestValidUpstreamProtocol(t *testing.T) {
@@ -104,5 +108,51 @@ func TestServiceHTTPSettings(t *testing.T) {
 	}
 	if _, _, err := st.SetServiceHTTPSettings(ctx, owner.ID, "user", rdp.ID, HTTPSettingsUpdate{UpstreamProtocol: ptrTo("h2")}); !errors.Is(err, ErrServiceNotHTTPSettings) {
 		t.Fatalf("tcp write: %v", err)
+	}
+}
+
+// Every http settings write is audited as service.http_settings.update with
+// both states; the CA appears only as its fingerprint, and a refused write
+// leaves no row.
+func TestServiceHTTPSettings_Audit(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	owner := mustCreateUser(t, st, "owner@x", "user")
+	web := mustGetOrCreateService(t, st, owner.ID, "web", "http")
+	sink := &auditSink{}
+	st.SetAuditLogger(sink)
+
+	ca := string(genTestCAPEM(t))
+	sum := sha256.Sum256([]byte(ca))
+	if _, _, err := st.SetServiceHTTPSettings(ctx, owner.ID, "user", web.ID, HTTPSettingsUpdate{
+		UpstreamProtocol: ptrTo("h2"), UpstreamTLSCAPEM: ptrTo(ca)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.SetServiceHTTPSettings(ctx, owner.ID, "user", web.ID, HTTPSettingsUpdate{UpstreamProtocol: ptrTo("bogus")}); err == nil {
+		t.Fatal("bogus accepted")
+	}
+	var rows []string
+	for _, e := range sink.ev {
+		if e.Action == audit.ActionServiceHTTPSettingsUpdate {
+			if e.SubjectID != web.ID {
+				t.Fatalf("subject %q", e.SubjectID)
+			}
+			rows = append(rows, string(e.Payload))
+		}
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows %v", rows)
+	}
+	fp := hex.EncodeToString(sum[:])
+	for _, want := range []string{`"from":{"upstream_protocol":"http1"`, `"to":{"upstream_protocol":"h2"`, `"upstream_tls_ca_sha256":"` + fp + `"`} {
+		if !strings.Contains(rows[0], want) {
+			t.Fatalf("payload %s lacks %s", rows[0], want)
+		}
+	}
+	if strings.Contains(rows[0], "BEGIN CERTIFICATE") {
+		t.Fatal("the PEM is in the audit row")
+	}
+	if !slices.Contains(audit.AllActions, audit.ActionServiceHTTPSettingsUpdate) || audit.ActionServiceHTTPSettingsUpdate != "service.http_settings.update" {
+		t.Fatal("service.http_settings.update is not an audit action")
 	}
 }

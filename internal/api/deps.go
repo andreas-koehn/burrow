@@ -46,6 +46,10 @@ type ServiceStore interface {
 	SetServiceMaxConnections(ctx context.Context, callerID, callerRole, serviceID string, n int) (int, error)
 	// ServiceTCPSettings and SetServiceTCPSettings read and change the PROXY
 	// protocol and the idle timeout of a tcp service (store.TCPSettings).
+	// ServiceHTTPSettings and SetServiceHTTPSettings read and change the
+	// upstream protocol, TLS and gRPC settings of an http service.
+	ServiceHTTPSettings(ctx context.Context, callerID, callerRole, serviceID string) (store.HTTPSettings, error)
+	SetServiceHTTPSettings(ctx context.Context, callerID, callerRole, serviceID string, u store.HTTPSettingsUpdate) (before, after store.HTTPSettings, err error)
 	ServiceTCPSettings(ctx context.Context, callerID, callerRole, serviceID string) (store.TCPSettings, error)
 	SetServiceTCPSettings(ctx context.Context, callerID, callerRole, serviceID string, u store.TCPSettingsUpdate) (before, after store.TCPSettings, err error)
 	// ServiceTCPHostname and SetServiceTCPHostname read and change the TLS
@@ -525,6 +529,8 @@ type Deps struct {
 	// outside it. 0 for both: no range check.
 	TCPPortMin, TCPPortMax int
 	TLSPassthrough         bool
+	// Ingress is what GET /ingress/status reports.
+	Ingress IngressInfo
 	// HostRouting reports whether the host-routed ingress is enabled. mTLS
 	// access mode needs it (a client certificate is checked during the TLS
 	// handshake of a dedicated host).

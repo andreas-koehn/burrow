@@ -640,6 +640,11 @@ func newRouter(d Deps) http.Handler {
 			// The PROXY protocol and idle timeout of a tcp service.
 			r.Get("/services/{serviceID}/tcp-settings", d.GetServiceTCPSettings)
 			r.Put("/services/{serviceID}/tcp-settings", d.PutServiceTCPSettings)
+			// The upstream protocol, its TLS settings and the gRPC cap of an
+			// http service, and the env-only ingress switches.
+			r.Get("/services/{serviceID}/http-settings", d.GetServiceHTTPSettings)
+			r.Put("/services/{serviceID}/http-settings", d.PutServiceHTTPSettings)
+			r.Get("/ingress/status", d.GetIngressStatus)
 			// The TLS passthrough host name of a tcp service: a new name
 			// widens who can reach it, so it asks for a recent confirmation.
 			r.Get("/services/{serviceID}/tcp-hostname", d.GetServiceTCPHostname)

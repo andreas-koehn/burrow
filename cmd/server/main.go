@@ -1157,6 +1157,10 @@ func newRootCmd() *cobra.Command {
 				TCPDomain:      cfg.TCPDomain,
 				RelayNames:     relayNames,
 				TLSPassthrough: passthroughOn(cfg),
+				Ingress: api.IngressInfo{
+					H2C: cfg.HTTPH2C, HTTPSPassthrough: cfg.TLSPassthroughOnHTTPS,
+					PassthroughListen: cfg.TLSPassthroughListen, ACME: acmeMgr != nil,
+				},
 				// A fixed port given when a tcp service is created.
 				TCPPortMin: cfg.PortMin, TCPPortMax: cfg.PortMax,
 				// feat/builtin-acme B3: single-origin /svc/{slug} tunnel routing.

@@ -276,6 +276,9 @@ func TestRegistry_CredentialRoutingAndInspectionWritesAreNotTools(t *testing.T) 
 		// told about its visitors (the source it may trust), and an idle
 		// timeout cuts connections off.
 		"serviceTcpSettingsUpdate",
+		// It sets an http service's trust anchor and can switch the
+		// verification of its upstream certificate off.
+		"serviceHttpSettingsUpdate",
 		// A TLS passthrough host name gives a tcp service a way in.
 		"serviceTcpHostnameUpdate",
 		// Lifting a tcp service's limits or a ban lets more in.
@@ -291,6 +294,7 @@ func TestRegistry_CredentialRoutingAndInspectionWritesAreNotTools(t *testing.T) 
 		"guardrailSettingsGet", "redactionSettingsGet", "redactionRulesList", "serviceAiConfigGet",
 		"retentionSettingsGet", "redactionPreview", "guardrailPreview", "webhookPreview",
 		"serviceIpGeoGet", "serviceAccessPolicyGet", "automationTokenCreate", "serviceTcpSettingsGet", "serviceTcpHostnameGet",
+		"serviceHttpSettingsGet", "ingressStatusGet",
 		"serviceTcpLimitsGet", "serviceTcpBansList",
 		"aiModelsList", "gatewayKeysList", "usersList", "rolesList",
 	} {
