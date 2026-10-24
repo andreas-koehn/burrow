@@ -53,7 +53,7 @@ func TestExpiredTokenSweeper_ClosesSessionsOfExpiredTokens(t *testing.T) {
 	soon := time.Now().Add(300 * time.Millisecond)
 	later := time.Now().Add(time.Hour)
 	for name, exp := range map[string]*time.Time{"soon": &soon, "later": &later, "never": nil} {
-		if _, err := st.IssueClientTokenUntil(ctx, u.ID, name, exp); err != nil {
+		if _, err := st.IssueClientTokenUntil(ctx, u.ID, name, exp, ""); err != nil {
 			t.Fatal(err)
 		}
 	}

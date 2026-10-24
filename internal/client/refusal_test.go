@@ -557,3 +557,27 @@ func TestRun_AFinalRefusalOfOneTunnelKeepsTheOthers(t *testing.T) {
 		t.Fatalf("one refused tunnel: %v %v", err, ended)
 	}
 }
+
+// A relay that refuses a registration for the scope of the token says so with
+// scope_denied: final for that tunnel, and the other tunnels go on.
+func TestRun_AScopeRefusalIsFinalForThatTunnelOnly(t *testing.T) {
+	if !(&RefusedError{Code: proto.CodeScopeDenied}).Final() {
+		t.Fatal("scope_denied is not final")
+	}
+	r := startRawRelay(t, oldAuthOK, func(req proto.TunnelRegister) string {
+		if req.Name == "rdp" {
+			return `{"ok":false,"error":"this token is limited to forwarding (scope forward) and may not register tunnels","code":"scope_denied"}`
+		}
+		return `{"ok":true,"tunnel_id":"t-` + req.Name + `","remote_port":9001}`
+	})
+	o := r.options(TunnelSpec{Name: "rdp", Type: "tcp", LocalAddr: "127.0.0.1:3389"})
+	o.StopOnRefusal = true
+	err, ended := runFor(t, o, 3*time.Second)
+	var re *RefusedError
+	if !ended || !errors.As(err, &re) || re.Code != proto.CodeScopeDenied || !strings.Contains(re.Message, "scope forward") {
+		t.Fatalf("refused tunnel: %v %v", err, ended)
+	}
+	if auths, regs := r.sent(); len(auths) != 1 || len(regs) != 1 {
+		t.Fatalf("%d sessions, %d registrations; a final refusal must not be retried", len(auths), len(regs))
+	}
+}

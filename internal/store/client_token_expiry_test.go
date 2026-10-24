@@ -18,7 +18,7 @@ func TestExpiredClientTokenDoesNotAuthenticate(t *testing.T) {
 	u := mustCreateUser(t, s, "exp@x", "user")
 
 	future := time.Now().Add(time.Hour).UTC()
-	live, err := s.IssueClientTokenUntil(ctx, u.ID, "live", &future)
+	live, err := s.IssueClientTokenUntil(ctx, u.ID, "live", &future, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestExpiredClientTokenDoesNotAuthenticate(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := time.Now().Add(-time.Minute).UTC()
-	dead, err := s.IssueClientTokenUntil(ctx, u.ID, "dead", &past)
+	dead, err := s.IssueClientTokenUntil(ctx, u.ID, "dead", &past, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestIssueClientToken_AuditCarriesExpiry(t *testing.T) {
 	sink := &auditSink{}
 	s.SetAuditLogger(sink)
 	exp := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
-	if _, err := s.IssueClientTokenUntil(ctx, u.ID, "laptop", &exp); err != nil {
+	if _, err := s.IssueClientTokenUntil(ctx, u.ID, "laptop", &exp, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.IssueClientToken(ctx, u.ID, "forever"); err != nil {

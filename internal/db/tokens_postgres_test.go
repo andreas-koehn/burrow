@@ -28,6 +28,10 @@ func TestClientLastSession_Postgres(t *testing.T) {
 	t.Run("unknown token", func(t *testing.T) { checkRecordClientSessionUnknownToken(t, x, "u-rec-unknown-pg") })
 	t.Run("caps", func(t *testing.T) { checkRecordClientSessionCapsFields(t, x, "u-rec-caps-pg") })
 	t.Run("order", func(t *testing.T) { checkListClientTokensOrder(t, x, "u-order-pg-1", "u-order-pg-2") })
+	t.Run("scope", func(t *testing.T) { checkClientTokenScope(t, x, "u-scope-pg") })
+	t.Run("migration 0043 down and up", func(t *testing.T) {
+		checkMigration0029DownAndUp(t, x, "0043_v0.13.0_client_token_scope.postgres.sql")
+	})
 	t.Run("migration 0026 down and up", func(t *testing.T) {
 		checkMigration0026DownAndUp(t, x, "0026_v0.10.0_client_last_session.postgres.sql", "u-mig26-pg")
 	})

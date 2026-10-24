@@ -70,10 +70,10 @@ func TestClientLogin_Postgres(t *testing.T) {
 		if _, err := s.PollClientLogin(ctx, st.DeviceCode); !errors.Is(err, ErrLoginSlowDown) {
 			t.Fatalf("poll at once: %v", err)
 		}
-		if _, err := s.ApproveClientLogin(ctx, st.UserCode, u.ID, "laptop"); err != nil {
+		if _, err := s.ApproveClientLogin(ctx, st.UserCode, u.ID, "laptop", ""); err != nil {
 			t.Fatalf("approve: %v", err)
 		}
-		if _, err := s.ApproveClientLogin(ctx, st.UserCode, u.ID, "again"); !errors.Is(err, ErrLoginConflict) {
+		if _, err := s.ApproveClientLogin(ctx, st.UserCode, u.ID, "again", ""); !errors.Is(err, ErrLoginConflict) {
 			t.Fatalf("second approve: %v", err)
 		}
 		clk.add(3 * time.Second)

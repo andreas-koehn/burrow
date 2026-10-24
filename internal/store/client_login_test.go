@@ -156,7 +156,7 @@ func TestClientLogin_Lifecycle(t *testing.T) {
 		t.Fatal("a token exists before approval")
 	}
 
-	av, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "  laptop ")
+	av, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "  laptop ", "")
 	if err != nil {
 		t.Fatalf("approve: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestClientLogin_ConcurrentPollsMintOnce(t *testing.T) {
 	ctx := context.Background()
 	s, _, _, u1 := loginFixture(t)
 	st := mustStart(t, s)
-	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop"); err != nil {
+	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -265,7 +265,7 @@ func TestClientLogin_Deny(t *testing.T) {
 		t.Fatalf("deny: %+v %v", v, err)
 	}
 	// A denied request cannot be approved afterwards.
-	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop"); !errors.Is(err, ErrLoginConflict) {
+	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop", ""); !errors.Is(err, ErrLoginConflict) {
 		t.Fatalf("approve after deny: %v, want ErrLoginConflict", err)
 	}
 	if _, err := s.PollClientLogin(ctx, st.DeviceCode); !errors.Is(err, ErrLoginDenied) {
@@ -289,7 +289,7 @@ func TestClientLogin_Expiry(t *testing.T) {
 
 	pending := mustStart(t, s)
 	approved := mustStart(t, s)
-	if _, err := s.ApproveClientLogin(ctx, approved.UserCode, u1, "laptop"); err != nil {
+	if _, err := s.ApproveClientLogin(ctx, approved.UserCode, u1, "laptop", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -303,7 +303,7 @@ func TestClientLogin_Expiry(t *testing.T) {
 	if _, err := s.GetClientLogin(ctx, pending.UserCode); !errors.Is(err, ErrLoginNotFound) {
 		t.Fatalf("get: %v", err)
 	}
-	if _, err := s.ApproveClientLogin(ctx, pending.UserCode, u1, "x"); !errors.Is(err, ErrLoginNotFound) {
+	if _, err := s.ApproveClientLogin(ctx, pending.UserCode, u1, "x", ""); !errors.Is(err, ErrLoginNotFound) {
 		t.Fatalf("approve: %v", err)
 	}
 	if _, err := s.DenyClientLogin(ctx, pending.UserCode, u1); !errors.Is(err, ErrLoginNotFound) {
@@ -326,10 +326,10 @@ func TestClientLogin_ApproveTwice(t *testing.T) {
 	s, _, clk, u1 := loginFixture(t)
 	u2 := loginUser(t, s, "u2@x")
 	st := mustStart(t, s)
-	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "first"); err != nil {
+	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "first", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u2, "second"); !errors.Is(err, ErrLoginConflict) {
+	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u2, "second", ""); !errors.Is(err, ErrLoginConflict) {
 		t.Fatalf("second approve: %v, want ErrLoginConflict", err)
 	}
 	if _, err := s.DenyClientLogin(ctx, st.UserCode, u2); !errors.Is(err, ErrLoginConflict) {
@@ -404,7 +404,7 @@ func TestClientLogin_UserCodeIsNotADeviceCode(t *testing.T) {
 	ctx := context.Background()
 	s, _, clk, u1 := loginFixture(t)
 	st := mustStart(t, s)
-	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop"); err != nil {
+	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop", ""); err != nil {
 		t.Fatal(err)
 	}
 	for _, guess := range []string{st.UserCode, strings.ReplaceAll(st.UserCode, "-", ""), auth.HashToken(st.DeviceCode), ""} {
@@ -422,7 +422,7 @@ func TestClientLogin_RowHoldsNoSecret(t *testing.T) {
 	ctx := context.Background()
 	s, d, _, u1 := loginFixture(t)
 	st := mustStart(t, s)
-	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop"); err != nil {
+	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop", ""); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := d.Query(`SELECT * FROM client_login_requests`)
@@ -483,7 +483,7 @@ func TestClientLogin_PendingCap(t *testing.T) {
 	}
 
 	// One collected request frees a place.
-	if _, err := s.ApproveClientLogin(ctx, all[0].UserCode, u1, "laptop"); err != nil {
+	if _, err := s.ApproveClientLogin(ctx, all[0].UserCode, u1, "laptop", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.PollClientLogin(ctx, all[0].DeviceCode); err != nil {
@@ -596,7 +596,7 @@ func TestClientLogin_DecisionSurvivesAnImmediatePoll(t *testing.T) {
 	}{
 		{"approve", "client.login.approved", "approved",
 			func(s *Store, code, uid string) (LoginRequestView, error) {
-				return s.ApproveClientLogin(ctx, code, uid, "laptop")
+				return s.ApproveClientLogin(ctx, code, uid, "laptop", "")
 			}, nil},
 		{"deny", "client.login.denied", "denied",
 			func(s *Store, code, uid string) (LoginRequestView, error) { return s.DenyClientLogin(ctx, code, uid) },
@@ -660,7 +660,7 @@ func TestClientLogin_SlowDown(t *testing.T) {
 		t.Fatalf("poll after 1.9 s: %v, want ErrLoginSlowDown", err)
 	}
 	// Polling too fast does not hand out the token either.
-	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop"); err != nil {
+	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop", ""); err != nil {
 		t.Fatal(err)
 	}
 	if res, err := s.PollClientLogin(ctx, st.DeviceCode); !errors.Is(err, ErrLoginSlowDown) || res.Token != "" {
@@ -745,14 +745,14 @@ func TestClientLogin_TokenNameRules(t *testing.T) {
 	s, _, _, u1 := loginFixture(t)
 	st := mustStart(t, s)
 	for _, bad := range []string{"", "   ", "a\nb", "a\x00b", "a\u202eb", strings.Repeat("x", 121), "\xff\xfe"} {
-		if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, bad); !errors.Is(err, ErrLoginTokenName) {
+		if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, bad, ""); !errors.Is(err, ErrLoginTokenName) {
 			t.Fatalf("approve with name %q: %v, want ErrLoginTokenName", bad, err)
 		}
 	}
 	if v, err := s.GetClientLogin(ctx, st.UserCode); err != nil || v.Status != "pending" {
 		t.Fatalf("a refused name changed the request: %+v %v", v, err)
 	}
-	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, strings.Repeat("x", 120)); err != nil {
+	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, strings.Repeat("x", 120), ""); err != nil {
 		t.Fatalf("120 characters must be accepted: %v", err)
 	}
 }
@@ -761,7 +761,7 @@ func TestClientLogin_ApproverDeletedBeforePoll(t *testing.T) {
 	ctx := context.Background()
 	s, d, clk, u1 := loginFixture(t)
 	st := mustStart(t, s)
-	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop"); err != nil {
+	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteUser(ctx, u1); err != nil {
@@ -781,7 +781,7 @@ func TestClientLogin_ApproverSuspendedBeforePoll(t *testing.T) {
 	ctx := context.Background()
 	s, d, clk, u1 := loginFixture(t)
 	st := mustStart(t, s)
-	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop"); err != nil {
+	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetUserStatus(ctx, u1, "suspended"); err != nil {
@@ -803,7 +803,7 @@ func TestClientLogin_Audit(t *testing.T) {
 	s.SetAuditLogger(sink)
 
 	st := mustStart(t, s)
-	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop"); err != nil {
+	if _, err := s.ApproveClientLogin(ctx, st.UserCode, u1, "laptop", ""); err != nil {
 		t.Fatal(err)
 	}
 	clk.add(3 * time.Second)

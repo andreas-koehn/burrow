@@ -816,6 +816,16 @@ func (a tcpAccessAdapter) TCPAccess(ctx context.Context, serviceID string) (serv
 // passed on unmarked and not counted.
 type controlAuth struct{ *store.Store }
 
+// AuthenticateTokenScope is AuthenticateToken that also names the scope of
+// the token, which the relay enforces for the session.
+func (a controlAuth) AuthenticateTokenScope(ctx context.Context, token string) (userID, tokenID, tokenName, scope string, err error) {
+	userID, tokenID, tokenName, scope, err = a.Store.AuthenticateTokenScope(ctx, token)
+	if errors.Is(err, store.ErrUnauthorized) {
+		err = fmt.Errorf("%w: %w", server.ErrTokenInvalid, err)
+	}
+	return userID, tokenID, tokenName, scope, err
+}
+
 func (a controlAuth) AuthenticateToken(ctx context.Context, token string) (userID, tokenID, tokenName string, err error) {
 	userID, tokenID, tokenName, err = a.Store.AuthenticateToken(ctx, token)
 	if errors.Is(err, store.ErrUnauthorized) {

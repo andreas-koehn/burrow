@@ -392,7 +392,7 @@ func TestClientLoginRequest_Get(t *testing.T) {
 	want := map[string]any{
 		"user_code": user, "hostname": "laptop.local", "os": "linux", "arch": "amd64",
 		"client_version": "0.6.0", "source_ip": "127.0.0.1", "status": "pending",
-		"suggested_token_name": "laptop.local", "age_seconds": float64(90),
+		"suggested_token_name": "laptop.local", "scope": "all", "age_seconds": float64(90),
 		"created_at": "2026-10-06T12:00:00Z", "expires_at": "2026-10-06T12:10:00Z",
 		"password_required": true,
 	}
@@ -477,7 +477,7 @@ func TestClientLogin_ApproveAndCollect(t *testing.T) {
 		t.Fatalf("Cache-Control on the token answer %q, want no-store", cc)
 	}
 	token, _ := body["token"].(string)
-	if len(body) != 3 || !strings.HasPrefix(token, "bur_") || body["token_name"] != "laptop" || body["email"] != "admin@x" {
+	if len(body) != 4 || body["scope"] != "all" || !strings.HasPrefix(token, "bur_") || body["token_name"] != "laptop" || body["email"] != "admin@x" {
 		t.Fatalf("poll answer has fields %d name %v email %v", len(body), body["token_name"], body["email"])
 	}
 	// The token is a working client token of the approver: this is the check
@@ -691,7 +691,7 @@ func (f *fakeClientLogins) GetClientLogin(context.Context, string) (store.LoginR
 	f.got++
 	return store.LoginRequestView{Status: "pending"}, nil
 }
-func (f *fakeClientLogins) ApproveClientLogin(context.Context, string, string, string) (store.LoginRequestView, error) {
+func (f *fakeClientLogins) ApproveClientLogin(context.Context, string, string, string, string) (store.LoginRequestView, error) {
 	f.approved++
 	return store.LoginRequestView{Status: "approved"}, nil
 }

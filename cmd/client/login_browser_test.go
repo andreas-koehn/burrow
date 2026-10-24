@@ -35,7 +35,8 @@ type signInRelay struct {
 	verification string // "" names the relay's own /link
 	interval     int
 	tokenName    string
-	polls        []int // statuses of the polls in order; the last one repeats
+	scope        string // reported on the token answer when set
+	polls        []int  // statuses of the polls in order; the last one repeats
 	nPoll        int
 	polled       chan struct{} // gets one value per poll, when set
 }
@@ -84,7 +85,7 @@ func (s *signInRelay) servePoll(w http.ResponseWriter) {
 		status = s.polls[min(s.nPoll, len(s.polls)-1)]
 	}
 	s.nPoll++
-	name, polled := s.tokenName, s.polled
+	name, polled, scope := s.tokenName, s.polled, s.scope
 	s.mu.Unlock()
 	if polled != nil {
 		polled <- struct{}{}
@@ -92,7 +93,11 @@ func (s *signInRelay) servePoll(w http.ResponseWriter) {
 	w.WriteHeader(status)
 	switch status {
 	case http.StatusOK:
-		_ = json.NewEncoder(w).Encode(map[string]string{"token": browserToken, "token_name": name, "email": "admin@example.com"})
+		out := map[string]string{"token": browserToken, "token_name": name, "email": "admin@example.com"}
+		if scope != "" {
+			out["scope"] = scope
+		}
+		_ = json.NewEncoder(w).Encode(out)
 	case http.StatusAccepted:
 		_, _ = io.WriteString(w, `{"status":"pending"}`)
 	case http.StatusTooManyRequests:
@@ -681,4 +686,66 @@ func TestLoginBrowser_TokenCannotBeStored(t *testing.T) {
 		t.Fatalf("stdout = %q", h.stdout.String())
 	}
 	h.noSecrets()
+}
+
+func TestLoginBrowser_Scope(t *testing.T) {
+	t.Run("--scope is suggested to the approval page and the result is told", func(t *testing.T) {
+		relay := newSignInRelay(t, http.StatusOK)
+		relay.scope = "forward"
+		h := browserHarness(t)
+		if code := h.execWithin("login", relay.URL, "--cacert", relay.caFile(t), "--scope", "forward"); code != 0 {
+			t.Fatalf("exit %d: %s", code, h.stderr.String())
+		}
+		if start := relay.asked(client.DeviceLoginStartPath)[0]; !strings.Contains(start, `"scope":"forward"`) {
+			t.Fatalf("start request: %s", start)
+		}
+		if !strings.Contains(h.stdout.String(), "This token is limited to forwarding") {
+			t.Fatalf("stdout = %q", h.stdout.String())
+		}
+	})
+	t.Run("the approver's scope is the one told", func(t *testing.T) {
+		relay := newSignInRelay(t, http.StatusOK)
+		relay.scope = "publish"
+		h := browserHarness(t)
+		if code := h.execWithin("login", relay.URL, "--cacert", relay.caFile(t), "--scope", "forward"); code != 0 {
+			t.Fatalf("exit %d: %s", code, h.stderr.String())
+		}
+		if !strings.Contains(h.stdout.String(), "limited to publishing") {
+			t.Fatalf("stdout = %q", h.stdout.String())
+		}
+	})
+	t.Run("no --scope sends none and says nothing", func(t *testing.T) {
+		relay := newSignInRelay(t, http.StatusOK)
+		relay.scope = "all"
+		h := browserHarness(t)
+		if code := h.execWithin("login", relay.URL, "--cacert", relay.caFile(t)); code != 0 {
+			t.Fatalf("exit %d: %s", code, h.stderr.String())
+		}
+		if start := relay.asked(client.DeviceLoginStartPath)[0]; strings.Contains(start, "scope") {
+			t.Fatalf("start request: %s", start)
+		}
+		if strings.Contains(h.stdout.String(), "limited") {
+			t.Fatalf("stdout = %q", h.stdout.String())
+		}
+	})
+	t.Run("a relay that knows no scopes is told about", func(t *testing.T) {
+		relay := newSignInRelay(t, http.StatusOK)
+		h := browserHarness(t)
+		if code := h.execWithin("login", relay.URL, "--cacert", relay.caFile(t), "--scope", "forward"); code != 0 {
+			t.Fatalf("exit %d: %s", code, h.stderr.String())
+		}
+		if !strings.Contains(h.stdout.String(), "does not know token scopes") {
+			t.Fatalf("stdout = %q", h.stdout.String())
+		}
+	})
+	t.Run("a bad scope, and a scope with --token, are usage errors", func(t *testing.T) {
+		h := browserHarness(t)
+		if code := h.exec("login", "relay.example.com", "--scope", "root"); code != exitUsage || !strings.Contains(h.stderr.String(), "--scope must be all, forward or publish") {
+			t.Fatalf("exit %d: %s", code, h.stderr.String())
+		}
+		h = browserHarness(t)
+		if code := h.exec("login", "relay.example.com", "--scope", "forward", "--token", "bur_x"); code != exitUsage || !strings.Contains(h.stderr.String(), "--scope applies to the browser sign-in") {
+			t.Fatalf("exit %d: %s", code, h.stderr.String())
+		}
+	})
 }

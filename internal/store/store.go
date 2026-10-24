@@ -24,6 +24,9 @@ import (
 // ErrUnauthorized is returned when a client token does not match.
 var ErrUnauthorized = errors.New("store: unauthorized")
 
+// ErrTokenScope: a client token scope other than all, forward or publish.
+var ErrTokenScope = errors.New("store: token scope must be all, forward or publish")
+
 // ErrInvalidCredentials is returned by ChangePassword when the current password is wrong.
 var ErrInvalidCredentials = errors.New("store: invalid credentials")
 
@@ -311,14 +314,18 @@ func (s *Store) GetUserByID(ctx context.Context, id string) (db.User, error) {
 // IssueClientToken generates a new client token for the given user and name,
 // persists the hash, and returns the plaintext (shown once).
 func (s *Store) IssueClientToken(ctx context.Context, userID, name string) (plaintext string, err error) {
-	return s.IssueClientTokenUntil(ctx, userID, name, nil)
+	return s.IssueClientTokenUntil(ctx, userID, name, nil, "")
 }
 
 // IssueClientTokenUntil is IssueClientToken for a token that stops working at
-// expiresAt; nil issues one that never does. The expiry is audited with the
-// mint.
-func (s *Store) IssueClientTokenUntil(ctx context.Context, userID, name string, expiresAt *time.Time) (plaintext string, err error) {
-	pt, ct, err := newClientToken(userID, name)
+// expiresAt; nil issues one that never does. scope is db.TokenScopeAll,
+// TokenScopeForward or TokenScopePublish; "" is all, anything else is
+// ErrTokenScope. The expiry and the scope are audited with the mint.
+func (s *Store) IssueClientTokenUntil(ctx context.Context, userID, name string, expiresAt *time.Time, scope string) (plaintext string, err error) {
+	if !db.ValidTokenScope(db.NormalizeTokenScope(scope)) {
+		return "", ErrTokenScope
+	}
+	pt, ct, err := newClientToken(userID, name, scope)
 	if err != nil {
 		return "", err
 	}
@@ -332,7 +339,7 @@ func (s *Store) IssueClientTokenUntil(ctx context.Context, userID, name string, 
 	s.emitAudit(ctx, audit.ActionTokenMint, func(e *audit.Event) {
 		e.SubjectID = ct.ID
 		e.SubjectLabel = name
-		e.Payload = audit.MustJSON(map[string]any{"expires_at": ct.ExpiresAt})
+		e.Payload = audit.MustJSON(map[string]any{"expires_at": ct.ExpiresAt, "scope": ct.Scope})
 	})
 	return pt, nil
 }
@@ -340,7 +347,7 @@ func (s *Store) IssueClientTokenUntil(ctx context.Context, userID, name string, 
 // newClientToken generates a client token for the user: the plaintext (shown
 // once) and the row to persist, which holds its hash only. Every client token
 // is made here, whether POST /tokens or an approved sign-in request asks.
-func newClientToken(userID, name string) (plaintext string, ct db.ClientToken, err error) {
+func newClientToken(userID, name, scope string) (plaintext string, ct db.ClientToken, err error) {
 	pt, hash, err := auth.GenerateClientToken()
 	if err != nil {
 		return "", db.ClientToken{}, err
@@ -350,6 +357,7 @@ func newClientToken(userID, name string) (plaintext string, ct db.ClientToken, e
 		UserID:    userID,
 		Name:      name,
 		TokenHash: hash,
+		Scope:     db.NormalizeTokenScope(scope),
 	}, nil
 }
 
@@ -391,33 +399,41 @@ func (s *Store) AuthenticateNamed(ctx context.Context, plaintext string) (userID
 // (RecordClientSession). Returns ErrUnauthorized for unknown/invalid tokens
 // for an expired token and for the token of a suspended user.
 func (s *Store) AuthenticateToken(ctx context.Context, plaintext string) (userID, tokenID, tokenName string, err error) {
+	userID, tokenID, tokenName, _, err = s.AuthenticateTokenScope(ctx, plaintext)
+	return userID, tokenID, tokenName, err
+}
+
+// AuthenticateTokenScope is AuthenticateToken that also returns the scope of
+// the token (db.TokenScopeAll, TokenScopeForward or TokenScopePublish), which
+// the relay enforces for the whole session.
+func (s *Store) AuthenticateTokenScope(ctx context.Context, plaintext string) (userID, tokenID, tokenName, scope string, err error) {
 	hash := auth.HashToken(plaintext)
 	ct, err := s.q.GetClientTokenByHash(ctx, hash)
 	if errors.Is(err, db.ErrNotFound) {
-		return "", "", "", ErrUnauthorized
+		return "", "", "", "", ErrUnauthorized
 	}
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	// A token past its expiry is as good as an unknown one.
 	if ct.ExpiresAt != nil && !ct.ExpiresAt.After(time.Now()) {
-		return "", "", "", ErrUnauthorized
+		return "", "", "", "", ErrUnauthorized
 	}
 	// The token of a suspended user opens no session: suspending closes the
 	// live ones, and this keeps the client from coming straight back.
 	u, err := s.q.GetUserByID(ctx, ct.UserID)
 	if errors.Is(err, db.ErrNotFound) {
-		return "", "", "", ErrUnauthorized
+		return "", "", "", "", ErrUnauthorized
 	}
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	if u.Status == "suspended" {
-		return "", "", "", ErrUnauthorized
+		return "", "", "", "", ErrUnauthorized
 	}
 	// Best-effort: update last_used without failing auth on error.
 	_ = s.q.TouchClientTokenLastUsed(ctx, ct.ID)
-	return ct.UserID, ct.ID, ct.Name, nil
+	return ct.UserID, ct.ID, ct.Name, db.NormalizeTokenScope(ct.Scope), nil
 }
 
 // ListExpiredClientTokenIDs returns the ids of the client tokens that have

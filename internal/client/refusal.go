@@ -42,7 +42,7 @@ func (e *RefusedError) Final() bool {
 	switch e.Code {
 	case proto.CodeInvalidToken, proto.CodeClientTooOld,
 		proto.CodeSlugInvalid, proto.CodeSlugTaken, proto.CodeAccessInvalid,
-		proto.CodeForbidden, proto.CodeNameInUse:
+		proto.CodeForbidden, proto.CodeNameInUse, proto.CodeScopeDenied:
 		return true
 	}
 	return false

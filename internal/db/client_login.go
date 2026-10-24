@@ -30,19 +30,20 @@ type ClientLoginRequest struct {
 	Status         string
 	ApprovedBy     string // empty until approved
 	TokenName      string // the client's suggestion while pending, the approver's choice afterwards
+	Scope          string // the scope the client wished for while pending, the approver's choice afterwards
 	LastPollAt     *time.Time
 	CreatedAt      time.Time
 	ExpiresAt      time.Time
 }
 
 const clientLoginCols = `device_code_hash, user_code, hostname, os, arch, client_version, source_ip,
-	status, COALESCE(approved_by,''), token_name, last_poll_at, created_at, expires_at`
+	status, COALESCE(approved_by,''), token_name, scope, last_poll_at, created_at, expires_at`
 
 func scanClientLogin(row *sql.Row) (ClientLoginRequest, error) {
 	var r ClientLoginRequest
 	var lastPoll sql.NullTime
 	err := row.Scan(&r.DeviceCodeHash, &r.UserCode, &r.Hostname, &r.OS, &r.Arch, &r.ClientVersion, &r.SourceIP,
-		&r.Status, &r.ApprovedBy, &r.TokenName, &lastPoll, &r.CreatedAt, &r.ExpiresAt)
+		&r.Status, &r.ApprovedBy, &r.TokenName, &r.Scope, &lastPoll, &r.CreatedAt, &r.ExpiresAt)
 	if err == sql.ErrNoRows {
 		return ClientLoginRequest{}, ErrNotFound
 	}
@@ -136,12 +137,12 @@ func (x *DB) InsertClientLogin(ctx context.Context, r ClientLoginRequest, maxPen
 	}
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO client_login_requests(device_code_hash, user_code, hostname, os, arch, client_version,
-		   source_ip, status, token_name, created_at, expires_at)
-		 SELECT ?,?,?,?,?,?,?,'pending',?,?,?
+		   source_ip, status, token_name, scope, created_at, expires_at)
+		 SELECT ?,?,?,?,?,?,?,'pending',?,?,?,?
 		 WHERE (SELECT COUNT(*) FROM client_login_requests
 		         WHERE status='pending' AND expires_at > ?) < ?`,
 		r.DeviceCodeHash, r.UserCode, r.Hostname, r.OS, r.Arch, r.ClientVersion,
-		r.SourceIP, r.TokenName, created, r.ExpiresAt.UTC(),
+		r.SourceIP, r.TokenName, NormalizeTokenScope(r.Scope), created, r.ExpiresAt.UTC(),
 		created, maxPending,
 	)
 	if err != nil {
@@ -188,8 +189,9 @@ func (x *DB) GetClientLoginByDeviceHash(ctx context.Context, hash string) (Clien
 // denied). decided is false when no such request exists: the state check is
 // part of the statement, so a request is decided at most once.
 // approvedBy is stored for an approval and must be empty for a denial;
-// tokenName replaces the client's suggestion when it is not empty.
-func (x *DB) DecideClientLogin(ctx context.Context, userCode, status, approvedBy, tokenName string, now time.Time) (decided bool, err error) {
+// tokenName and scope replace the client's suggestions when they are not
+// empty.
+func (x *DB) DecideClientLogin(ctx context.Context, userCode, status, approvedBy, tokenName, scope string, now time.Time) (decided bool, err error) {
 	if status != ClientLoginApproved && status != ClientLoginDenied {
 		return false, fmt.Errorf("decide client login request: unknown status %q", status)
 	}
@@ -199,9 +201,10 @@ func (x *DB) DecideClientLogin(ctx context.Context, userCode, status, approvedBy
 	}
 	res, err := x.sqlDB.ExecContext(ctx,
 		`UPDATE client_login_requests
-		    SET status=?, approved_by=?, token_name=CASE WHEN ?='' THEN token_name ELSE ? END
+		    SET status=?, approved_by=?, token_name=CASE WHEN ?='' THEN token_name ELSE ? END,
+		        scope=CASE WHEN ?='' THEN scope ELSE ? END
 		  WHERE user_code=? AND status='pending' AND expires_at > ?`,
-		status, by, tokenName, tokenName, userCode, now.UTC())
+		status, by, tokenName, tokenName, scope, scope, userCode, now.UTC())
 	if err != nil {
 		return false, fmt.Errorf("decide client login request: %w", err)
 	}
@@ -270,8 +273,8 @@ func (x *DB) CollectClientLogin(ctx context.Context, hash string, now time.Time,
 		return false, nil
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO client_tokens(id, user_id, name, token_hash, expires_at) VALUES(?,?,?,?,?)`,
-		ct.ID, ct.UserID, ct.Name, ct.TokenHash, nullableTime(ct.ExpiresAt)); err != nil {
+		`INSERT INTO client_tokens(id, user_id, name, token_hash, expires_at, scope) VALUES(?,?,?,?,?,?)`,
+		ct.ID, ct.UserID, ct.Name, ct.TokenHash, nullableTime(ct.ExpiresAt), NormalizeTokenScope(ct.Scope)); err != nil {
 		return false, fmt.Errorf("collect client login: insert token: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

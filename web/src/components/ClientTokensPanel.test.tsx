@@ -43,7 +43,7 @@ describe("ClientTokensPanel", () => {
     );
     setup();
     const cell = (await screen.findByText(/no tokens yet/i)).closest("td")!;
-    expect(cell.getAttribute("colspan")).toBe("5");
+    expect(cell.getAttribute("colspan")).toBe("6");
   });
 
   it("renders formatted timestamps (not raw RFC3339) for token rows", async () => {
@@ -231,7 +231,7 @@ describe("ClientTokensPanel", () => {
       await userEvent.type(await screen.findByLabelText(/token name/i), "laptop");
       await userEvent.click(screen.getByRole("button", { name: /create/i }));
       await screen.findByText("bur_X");
-      expect(posts(spy)).toEqual([{ name: "laptop" }]);
+      expect(posts(spy)).toEqual([{ name: "laptop", scope: "all" }]);
     });
 
     it.each([["30 days", 30], ["90 days", 90], ["365 days", 365]])("%s sends an expires_at about that far ahead", async (label, days) => {
@@ -248,6 +248,18 @@ describe("ClientTokensPanel", () => {
       expect(ahead).toBeLessThan(days + 0.1);
       // A relay clock a little behind ours must still accept it: sit 5 minutes inside the limit.
       expect(Date.parse(body.expires_at)).toBeLessThanOrEqual(Date.now() + days * 86_400_000 - 4 * 60_000);
+    });
+
+    it("sends the chosen scope and lists the scope of each token", async () => {
+      const spy = listing([{ id: "t1", name: "rdp-box", scope: "forward", created_at: "2026-01-01T00:00:00Z", last_used: null, expires_at: null }]);
+      setup();
+      expect(await screen.findByText("Forward only", { selector: "td" })).toBeInTheDocument();
+      await userEvent.type(await screen.findByLabelText(/token name/i), "laptop");
+      await userEvent.click(screen.getByRole("combobox", { name: "Scope" }));
+      await userEvent.click(await screen.findByRole("option", { name: "Publish only" }));
+      await userEvent.click(screen.getByRole("button", { name: /create/i }));
+      await screen.findByText("bur_X");
+      expect(posts(spy)).toEqual([{ name: "laptop", scope: "publish" }]);
     });
 
     it("shows the API's error message when create fails", async () => {

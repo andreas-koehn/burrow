@@ -85,7 +85,7 @@ type DeviceLogin struct {
 	Relay string
 	// Meta is what the approval page shows about this machine. TokenName is
 	// sent only when it is set.
-	Meta struct{ Hostname, OS, Arch, ClientVersion, TokenName string }
+	Meta struct{ Hostname, OS, Arch, ClientVersion, TokenName, Scope string }
 	// Sleep waits between two polls; nil waits on a timer. It returns the
 	// context's error when the context ends first.
 	Sleep func(ctx context.Context, d time.Duration) error
@@ -122,7 +122,12 @@ func (s DeviceStart) LogValue() slog.Value { return slog.StringValue(s.String())
 // DeviceToken is what an approved request gives, once. Token is the secret;
 // String, GoString and LogValue leave it out. TokenName and Email are text
 // fit for a terminal, or empty.
-type DeviceToken struct{ Token, TokenName, Email string }
+type DeviceToken struct {
+	Token, TokenName, Email string
+	// Scope is what the relay says the token may do (all, forward or publish);
+	// "" from a relay that knows no scopes.
+	Scope string
+}
 
 func (t DeviceToken) String() string {
 	return "DeviceToken{TokenName:" + t.TokenName + " Token:[redacted]}"
@@ -226,7 +231,8 @@ func (d DeviceLogin) Start(ctx context.Context) (DeviceStart, error) {
 		Arch          string `json:"arch"`
 		ClientVersion string `json:"client_version"`
 		TokenName     string `json:"token_name,omitempty"`
-	}{d.Meta.Hostname, d.Meta.OS, d.Meta.Arch, d.Meta.ClientVersion, d.Meta.TokenName})
+		Scope         string `json:"scope,omitempty"`
+	}{d.Meta.Hostname, d.Meta.OS, d.Meta.Arch, d.Meta.ClientVersion, d.Meta.TokenName, d.Meta.Scope})
 	if err != nil {
 		return DeviceStart{}, err
 	}
@@ -430,6 +436,7 @@ func deviceToken(raw []byte) (DeviceToken, error) {
 		Token     string `json:"token"`
 		TokenName string `json:"token_name"`
 		Email     string `json:"email"`
+		Scope     string `json:"scope"`
 	}
 	if err := decodeOne(raw, &doc); err != nil {
 		return DeviceToken{}, err
@@ -442,5 +449,6 @@ func deviceToken(raw []byte) (DeviceToken, error) {
 		Token:     doc.Token,
 		TokenName: displayText(doc.TokenName, 120),
 		Email:     displayText(doc.Email, 254),
+		Scope:     displayText(doc.Scope, 16),
 	}, nil
 }

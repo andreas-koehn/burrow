@@ -14,6 +14,7 @@ import (
 type tokenResp struct {
 	ID        string     `json:"id"`
 	Name      string     `json:"name"`
+	Scope     string     `json:"scope"`
 	LastUsed  *time.Time `json:"last_used"`
 	CreatedAt time.Time  `json:"created_at"`
 	// ExpiresAt is when the token stops working; null for one that never does.
@@ -29,13 +30,15 @@ func (d Deps) ListTokens(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]tokenResp, 0, len(ts))
 	for _, t := range ts {
-		out = append(out, tokenResp{ID: t.ID, Name: t.Name, LastUsed: t.LastUsed, CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt})
+		out = append(out, tokenResp{ID: t.ID, Name: t.Name, Scope: db.NormalizeTokenScope(t.Scope), LastUsed: t.LastUsed, CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 type createTokenReq struct {
 	Name string `json:"name"`
+	// Scope is optional: all (default), forward or publish.
+	Scope string `json:"scope"`
 	// ExpiresAt (RFC 3339) is optional: in the future and at most
 	// maxClientTokenLife ahead.
 	ExpiresAt *string `json:"expires_at"`
@@ -48,6 +51,7 @@ const maxClientTokenLife = 365 * 24 * time.Hour
 // the expiry the token got (null: never).
 type newTokenResp struct {
 	Name      string     `json:"name"`
+	Scope     string     `json:"scope"`
 	Token     string     `json:"token"`
 	ExpiresAt *time.Time `json:"expires_at"`
 }
@@ -60,6 +64,11 @@ func (d Deps) CreateToken(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	if !db.ValidTokenScope(db.NormalizeTokenScope(in.Scope)) {
+		writeErr(w, http.StatusBadRequest, "scope must be all, forward or publish")
+		return
+	}
+	scope := db.NormalizeTokenScope(in.Scope)
 	now := time.Now()
 	var exp *time.Time
 	if in.ExpiresAt != nil {
@@ -87,12 +96,12 @@ func (d Deps) CreateToken(w http.ResponseWriter, r *http.Request) {
 		}
 		exp = &limit
 	}
-	pt, err := d.Users.IssueClientTokenUntil(r.Context(), userID(r.Context()), in.Name, exp)
+	pt, err := d.Users.IssueClientTokenUntil(r.Context(), userID(r.Context()), in.Name, exp, scope)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "issue failed")
 		return
 	}
-	writeJSON(w, http.StatusCreated, newTokenResp{Name: in.Name, Token: pt, ExpiresAt: exp})
+	writeJSON(w, http.StatusCreated, newTokenResp{Name: in.Name, Scope: scope, Token: pt, ExpiresAt: exp})
 }
 
 // RevokeToken deletes one of the caller's tokens and ends the sessions that

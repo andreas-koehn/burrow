@@ -433,6 +433,11 @@ func (f *forwarder) refused(resp proto.ForwardOpenResponse) {
 		p = fmt.Sprintf("tcp service %q not found, or you may not reach it; check the name (the slug the dashboard shows) and ask its owner to allow your role", t)
 		f.stop(p, &ForwardRefusedError{Target: t, Code: resp.Code, Message: p})
 		return
+	case proto.CodeScopeDenied:
+		// The token never opens a forward; the answer will not change.
+		p = "this token may not open forwards: " + displayText(resp.Error, 300)
+		f.stop(p, &ForwardRefusedError{Target: t, Code: resp.Code, Message: p})
+		return
 	case proto.CodeOffline:
 		p = fmt.Sprintf("%s is offline: no client serves it right now; try again when its machine is connected", t)
 	case proto.CodeRateLimited:

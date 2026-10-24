@@ -57,9 +57,13 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 		_ = proto.WriteMessage(conn, proto.MsgError, proto.Error{Message: "bad auth payload", Code: proto.CodeBadRequest})
 		return nil, authFailure{err}
 	}
-	var userID, tokenID, tokenName string
+	var userID, tokenID, tokenName, scope string
 	var err error
-	if ta, ok := auth.(interface {
+	if sa, ok := auth.(interface {
+		AuthenticateTokenScope(ctx context.Context, token string) (string, string, string, string, error)
+	}); ok {
+		userID, tokenID, tokenName, scope, err = sa.AuthenticateTokenScope(context.Background(), ar.Token)
+	} else if ta, ok := auth.(interface {
 		AuthenticateToken(ctx context.Context, token string) (string, string, string, error)
 	}); ok {
 		userID, tokenID, tokenName, err = ta.AuthenticateToken(context.Background(), ar.Token)
@@ -109,7 +113,7 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 	cs := &ClientSession{
 		SessionID: sessionID, UserID: userID, RemoteAddr: conn.RemoteAddr().String(), LocalAddr: conn.LocalAddr().String(),
 		OS: ar.OS, Arch: ar.Arch, ClientVersion: ar.ClientVersion, TokenName: tokenName,
-		TokenID: tokenID, ConnectedAt: time.Now(),
+		TokenID: tokenID, Scope: scope, ConnectedAt: time.Now(),
 		Tunnels: map[string]*Tunnel{},
 	}
 	// Only a client that says it reads request summaries is sent any. A name
@@ -651,6 +655,13 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 			var tr proto.TunnelRegister
 			if err := proto.DecodePayload(env, &tr); err != nil {
 				_ = cs.SendControl(proto.MsgError, proto.Error{Message: "bad tunnel_register", Code: proto.CodeBadRequest})
+				continue
+			}
+			// A token that may only forward publishes nothing, whatever the
+			// type; only this registration is refused, not the session.
+			if !cs.MayPublish() {
+				_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: errScopeNoPublish, Code: proto.CodeScopeDenied})
+				s.refused(reg, cs, tr, proto.CodeScopeDenied)
 				continue
 			}
 			switch tr.Type {

@@ -349,6 +349,11 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 		refuse(proto.CodeBadRequest, "a forward needs a target: the slug, name or id of a tcp service")
 		return
 	}
+	if !cs.MayForward() {
+		s.log.Info("forward refused: token scope", "session_id", cs.SessionID, "user_id", cs.UserID, "token_id", cs.TokenID)
+		refuse(proto.CodeScopeDenied, errScopeNoForward)
+		return
+	}
 	limits := cs.forwardLimits()
 	if !limits.admit() {
 		s.log.Info("forward refused: too many opens", "session_id", cs.SessionID, "user_id", cs.UserID)

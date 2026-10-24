@@ -31,7 +31,7 @@ func (f fakeUsers) GetUserByEmail(_ context.Context, _ string) (db.User, error) 
 func (f fakeUsers) GetUserByID(_ context.Context, id string) (db.User, error) {
 	return db.User{ID: id, Email: "a@x", Role: "admin"}, nil
 }
-func (f fakeUsers) IssueClientTokenUntil(_ context.Context, _, _ string, _ *time.Time) (string, error) {
+func (f fakeUsers) IssueClientTokenUntil(_ context.Context, _, _ string, _ *time.Time, _ string) (string, error) {
 	return "bur_x", nil
 }
 func (f fakeUsers) ListClientTokens(_ context.Context, _ string) ([]db.ClientToken, error) {

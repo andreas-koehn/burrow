@@ -50,7 +50,7 @@ const (
 type ClientLoginStore interface {
 	StartClientLogin(ctx context.Context, m store.LoginMeta) (store.LoginStart, error)
 	GetClientLogin(ctx context.Context, userCode string) (store.LoginRequestView, error)
-	ApproveClientLogin(ctx context.Context, userCode, approverID, tokenName string) (store.LoginRequestView, error)
+	ApproveClientLogin(ctx context.Context, userCode, approverID, tokenName, scope string) (store.LoginRequestView, error)
 	DenyClientLogin(ctx context.Context, userCode, userID string) (store.LoginRequestView, error)
 	PollClientLogin(ctx context.Context, deviceCode string) (store.LoginResult, error)
 }
@@ -111,6 +111,7 @@ type clientLoginStartReq struct {
 	Arch          string `json:"arch"`
 	ClientVersion string `json:"client_version"`
 	TokenName     string `json:"token_name"`
+	Scope         string `json:"scope"`
 }
 
 type clientLoginStartResp struct {
@@ -149,8 +150,12 @@ func (d Deps) PostClientLoginStart(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := d.ClientLogins.StartClientLogin(r.Context(), store.LoginMeta{
 		Hostname: in.Hostname, OS: in.OS, Arch: in.Arch, ClientVersion: in.ClientVersion,
-		SourceIP: remoteIP(r), TokenName: in.TokenName,
+		SourceIP: remoteIP(r), TokenName: in.TokenName, Scope: in.Scope,
 	})
+	if errors.Is(err, store.ErrTokenScope) {
+		writeErr(w, http.StatusBadRequest, "scope must be all, forward or publish")
+		return
+	}
 	if errors.Is(err, store.ErrLoginTooMany) {
 		w.Header().Set("Retry-After", "60")
 		writeErr(w, http.StatusTooManyRequests, "too many pending sign-in requests")
@@ -177,6 +182,7 @@ type clientLoginPollResp struct {
 	Token     string `json:"token"`
 	TokenName string `json:"token_name"`
 	Email     string `json:"email"`
+	Scope     string `json:"scope"`
 }
 
 // PostClientLoginPoll is the client asking for the outcome of its request.
@@ -202,7 +208,7 @@ func (d Deps) PostClientLoginPoll(w http.ResponseWriter, r *http.Request) {
 	res, err := d.ClientLogins.PollClientLogin(r.Context(), in.DeviceCode)
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, clientLoginPollResp{Token: res.Token, TokenName: res.TokenName, Email: res.Email})
+		writeJSON(w, http.StatusOK, clientLoginPollResp{Token: res.Token, TokenName: res.TokenName, Email: res.Email, Scope: res.Scope})
 	case errors.Is(err, store.ErrLoginPending):
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "pending"})
 	case errors.Is(err, store.ErrLoginSlowDown):
@@ -229,6 +235,7 @@ type clientLoginRequestResp struct {
 	SourceIP           string    `json:"source_ip"`
 	Status             string    `json:"status"`
 	SuggestedTokenName string    `json:"suggested_token_name"`
+	Scope              string    `json:"scope"`
 	AgeSeconds         int       `json:"age_seconds"`
 	CreatedAt          time.Time `json:"created_at"`
 	ExpiresAt          time.Time `json:"expires_at"`
@@ -248,9 +255,9 @@ func clientLoginRequestOf(v store.LoginRequestView) clientLoginRequestResp {
 	return clientLoginRequestResp{
 		UserCode: v.UserCode, Hostname: v.Hostname, OS: v.OS, Arch: v.Arch,
 		ClientVersion: v.ClientVersion, SourceIP: v.SourceIP, Status: v.Status,
-		SuggestedTokenName: v.SuggestedTokenName,
-		AgeSeconds:         int(v.Age / time.Second),
-		CreatedAt:          v.CreatedAt, ExpiresAt: v.ExpiresAt,
+		SuggestedTokenName: v.SuggestedTokenName, Scope: v.Scope,
+		AgeSeconds: int(v.Age / time.Second),
+		CreatedAt:  v.CreatedAt, ExpiresAt: v.ExpiresAt,
 	}
 }
 
@@ -289,6 +296,8 @@ func (d Deps) writeClientLoginErr(w http.ResponseWriter, r *http.Request, err er
 		writeErr(w, http.StatusNotFound, "sign-in request not found or expired")
 	case errors.Is(err, store.ErrLoginConflict):
 		writeErr(w, http.StatusConflict, "sign-in request was already decided")
+	case errors.Is(err, store.ErrTokenScope):
+		writeErr(w, http.StatusBadRequest, "scope must be all, forward or publish")
 	case errors.Is(err, store.ErrLoginTokenName):
 		writeErr(w, http.StatusBadRequest, "token_name must be 1 to 120 characters without control characters")
 	case errors.Is(err, store.ErrForbidden):
@@ -312,6 +321,9 @@ func (d Deps) GetClientLoginRequest(w http.ResponseWriter, r *http.Request) {
 
 type clientLoginApproveReq struct {
 	TokenName string `json:"token_name"`
+	// Scope is the scope the token gets: all, forward or publish. Missing
+	// keeps the one the client asked for.
+	Scope string `json:"scope"`
 	// Password is the approver's account password. Kept for clients that
 	// send it inline; the dashboard confirms it once (POST /auth/reauth)
 	// instead. While no services domain is set (passwordRequired) either the
@@ -386,7 +398,7 @@ func (d Deps) PostClientLoginApprove(w http.ResponseWriter, r *http.Request) {
 	if !d.checkApproverPassword(w, r, in.Password) {
 		return
 	}
-	v, err := d.ClientLogins.ApproveClientLogin(r.Context(), chi.URLParam(r, "user_code"), userID(r.Context()), in.TokenName)
+	v, err := d.ClientLogins.ApproveClientLogin(r.Context(), chi.URLParam(r, "user_code"), userID(r.Context()), in.TokenName, in.Scope)
 	if err != nil {
 		d.writeClientLoginErr(w, r, err, "approve failed")
 		return

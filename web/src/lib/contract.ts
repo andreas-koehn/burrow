@@ -125,6 +125,17 @@ export interface ClientDiscovery {
  * client version and the suggested token name were sent by that machine and
  * are untrusted display text; the source IP and the age are the relay's own.
  */
+/** What a client token may do: everything, only open forwards, or only publish services. */
+export type TokenScope = "all" | "forward" | "publish";
+
+export const TOKEN_SCOPE_CHOICES: { value: TokenScope; label: string }[] = [
+  { value: "all", label: "Publish and forward" },
+  { value: "forward", label: "Forward only" },
+  { value: "publish", label: "Publish only" },
+];
+
+export const tokenScopeLabel = (s: TokenScope | undefined) => TOKEN_SCOPE_CHOICES.find((c) => c.value === (s ?? "all"))?.label ?? "Publish and forward";
+
 export interface ClientLoginRequest {
   user_code: string;
   hostname: string;
@@ -134,6 +145,8 @@ export interface ClientLoginRequest {
   source_ip: string;
   status: "pending" | "approved" | "denied";
   suggested_token_name: string;
+  /** The scope the client asked for; the approver may change it. */
+  scope: TokenScope;
   age_seconds: number;
   created_at: string;
   expires_at: string;

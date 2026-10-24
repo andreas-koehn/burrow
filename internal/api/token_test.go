@@ -14,17 +14,19 @@ import (
 
 type tokUsers struct {
 	authUsers
-	issued     string
-	issuedUID  string
-	issuedExp  *time.Time
-	tokens     []db.ClientToken
-	listedUID  string
-	revoked    string
-	revokedUID string
-	revErr     error
+	issued      string
+	issuedUID   string
+	issuedExp   *time.Time
+	issuedScope string
+	tokens      []db.ClientToken
+	listedUID   string
+	revoked     string
+	revokedUID  string
+	revErr      error
 }
 
-func (u *tokUsers) IssueClientTokenUntil(_ context.Context, uid, name string, exp *time.Time) (string, error) {
+func (u *tokUsers) IssueClientTokenUntil(_ context.Context, uid, name string, exp *time.Time, scope string) (string, error) {
+	u.issuedScope = scope
 	u.issued = name
 	u.issuedUID = uid
 	u.issuedExp = exp

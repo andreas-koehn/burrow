@@ -144,7 +144,7 @@ func checkClientLoginPerIPCap(t *testing.T, x *DB) {
 		t.Fatal("B started a sixth pending request")
 	}
 	// A decided request is not pending any more and frees a place.
-	if ok, err := x.DecideClientLogin(ctx, "IPCD0001", ClientLoginDenied, "", "", t0); err != nil || !ok {
+	if ok, err := x.DecideClientLogin(ctx, "IPCD0001", ClientLoginDenied, "", "", "", t0); err != nil || !ok {
 		t.Fatalf("deny: %v %v", ok, err)
 	}
 	if !insert(a, t0) {
@@ -249,19 +249,19 @@ func checkClientLogin(t *testing.T, x *DB, userID string) {
 	}
 
 	// Decisions: pending only, once, never after expiry.
-	if ok, err := x.DecideClientLogin(ctx, r1.UserCode, ClientLoginApproved, userID, "", t0.Add(10*time.Minute)); err != nil || ok {
+	if ok, err := x.DecideClientLogin(ctx, r1.UserCode, ClientLoginApproved, userID, "", "", t0.Add(10*time.Minute)); err != nil || ok {
 		t.Fatalf("approve at expiry: %v %v", ok, err)
 	}
-	if ok, err := x.DecideClientLogin(ctx, r1.UserCode, "collected", userID, "", t0); err == nil || ok {
+	if ok, err := x.DecideClientLogin(ctx, r1.UserCode, "collected", userID, "", "", t0); err == nil || ok {
 		t.Fatal("an unknown status was accepted")
 	}
-	if ok, err := x.DecideClientLogin(ctx, r1.UserCode, ClientLoginApproved, userID, "laptop", t0); err != nil || !ok {
+	if ok, err := x.DecideClientLogin(ctx, r1.UserCode, ClientLoginApproved, userID, "laptop", "", t0); err != nil || !ok {
 		t.Fatalf("approve: %v %v", ok, err)
 	}
-	if ok, err := x.DecideClientLogin(ctx, r1.UserCode, ClientLoginDenied, "", "", t0); err != nil || ok {
+	if ok, err := x.DecideClientLogin(ctx, r1.UserCode, ClientLoginDenied, "", "", "", t0); err != nil || ok {
 		t.Fatalf("deny after approve: %v %v", ok, err)
 	}
-	if ok, err := x.DecideClientLogin(ctx, r1.UserCode, ClientLoginApproved, userID, "other", t0); err != nil || ok {
+	if ok, err := x.DecideClientLogin(ctx, r1.UserCode, ClientLoginApproved, userID, "other", "", t0); err != nil || ok {
 		t.Fatalf("second approve: %v %v", ok, err)
 	}
 	got, _ = x.GetClientLoginByUserCode(ctx, r1.UserCode, t0)
@@ -269,7 +269,7 @@ func checkClientLogin(t *testing.T, x *DB, userID string) {
 		t.Fatalf("after approve: %+v", got)
 	}
 	r3 := insert(3)
-	if ok, err := x.DecideClientLogin(ctx, r3.UserCode, ClientLoginDenied, "", "", t0); err != nil || !ok {
+	if ok, err := x.DecideClientLogin(ctx, r3.UserCode, ClientLoginDenied, "", "", "", t0); err != nil || !ok {
 		t.Fatalf("deny: %v %v", ok, err)
 	}
 	got, _ = x.GetClientLoginByUserCode(ctx, r3.UserCode, t0)
@@ -335,7 +335,7 @@ func checkClientLogin(t *testing.T, x *DB, userID string) {
 
 	// A token that cannot be inserted leaves the request in place.
 	r5 := insert(5)
-	if ok, err := x.DecideClientLogin(ctx, r5.UserCode, ClientLoginApproved, userID, "laptop", t0); err != nil || !ok {
+	if ok, err := x.DecideClientLogin(ctx, r5.UserCode, ClientLoginApproved, userID, "laptop", "", t0); err != nil || !ok {
 		t.Fatal(err)
 	}
 	clash := tok(200, userID)
@@ -368,7 +368,7 @@ func checkClientLogin(t *testing.T, x *DB, userID string) {
 	if ok, err := x.InsertClientLogin(ctx, r6, 20, 5); err != nil || !ok {
 		t.Fatal(err)
 	}
-	if ok, err := x.DecideClientLogin(ctx, r6.UserCode, ClientLoginApproved, other, "x", late.CreatedAt); err != nil || !ok {
+	if ok, err := x.DecideClientLogin(ctx, r6.UserCode, ClientLoginApproved, other, "x", "", late.CreatedAt); err != nil || !ok {
 		t.Fatal(err)
 	}
 	if err := x.DeleteUser(ctx, other); err != nil {

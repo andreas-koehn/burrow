@@ -5,10 +5,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
 import { apiFetch, ApiError, REAUTH_CANCELLED } from "@/lib/api";
 import { useAuth } from "@/auth/useAuth";
-import { Button, FormField, Input } from "@/components/ds";
+import { Button, FormField, Input, Select } from "@/components/ds";
 import { Result, Shell } from "@/components/ApprovalShell";
 import { isFramed } from "@/lib/framed";
-import type { ClientLoginRequest } from "@/lib/contract";
+import { TOKEN_SCOPE_CHOICES, type ClientLoginRequest, type TokenScope } from "@/lib/contract";
 
 const INVALID_CODE = "This code is not valid or has expired. Run burrow login again.";
 const TOO_MANY = "Too many wrong codes. Wait a minute, then try again.";
@@ -129,6 +129,7 @@ function Request({ code }: { code: string }) {
 
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [name, setName] = useState<string | null>(null);
+  const [scopeChoice, setScopeChoice] = useState<TokenScope | null>(null);
   const [nameError, setNameError] = useState("");
   const [problem, setProblem] = useState("");
   // A second click arrives before the first one has disabled the button.
@@ -160,10 +161,10 @@ function Request({ code }: { code: string }) {
   const approve = useMutation({
     // While the relay has no services domain it asks for the password first;
     // apiFetch shows the shared dialog for it and repeats the call.
-    mutationFn: (tokenName: string) =>
+    mutationFn: ({ tokenName, scope }: { tokenName: string; scope: TokenScope }) =>
       apiFetch<ClientLoginRequest>(`${path}/approve`, {
         method: "POST",
-        body: JSON.stringify({ token_name: tokenName }),
+        body: JSON.stringify({ token_name: tokenName, scope }),
       }),
     onSuccess: () => setOutcome("approved"),
     onError: (e) => failed(e, "approve"),
@@ -257,6 +258,7 @@ function Request({ code }: { code: string }) {
   const req = lookup.data;
   const tokenName = name ?? req.suggested_token_name;
   const trimmed = tokenName.trim();
+  const scope: TokenScope = scopeChoice ?? req.scope ?? "all";
   const tooLong = [...trimmed].length > TOKEN_NAME_MAX;
   const busy = approve.isPending || deny.isPending;
   const fieldError = tooLong ? `At most ${TOKEN_NAME_MAX} characters.` : nameError;
@@ -266,7 +268,7 @@ function Request({ code }: { code: string }) {
     sent.current = true;
     setProblem("");
     setNameError("");
-    if (what === "approve") approve.mutate(trimmed);
+    if (what === "approve") approve.mutate({ tokenName: trimmed, scope });
     else deny.mutate();
   }
 
@@ -322,6 +324,14 @@ function Request({ code }: { code: string }) {
           value={tokenName}
           onChange={(e) => { setName(e.target.value); setNameError(""); }}
         />
+      </FormField>
+
+      <FormField
+        label="Scope"
+        htmlFor="link-token-scope"
+        help="What the token may do. Forward only never publishes a service; publish only never opens a forward. The client asked for the one preselected."
+      >
+        <Select id="link-token-scope" options={TOKEN_SCOPE_CHOICES} value={scope} onChange={(v) => setScopeChoice(v as TokenScope)} />
       </FormField>
 
       {problem && <p role="alert" className="notice-inline error linkpage-problem"><span className="body">{problem}</span></p>}

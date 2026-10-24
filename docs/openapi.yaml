@@ -1276,10 +1276,11 @@ components:
     Token:
       type: object
       description: A client token as it is listed. The token itself is returned once, when it is created.
-      required: [id, name, last_used, created_at, expires_at]
+      required: [id, name, last_used, created_at, expires_at, scope]
       properties:
         id: { type: string }
         name: { type: string }
+        scope: { $ref: '#/components/schemas/TokenScope' }
         last_used: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
         expires_at:
@@ -1287,15 +1288,27 @@ components:
           format: date-time
           nullable: true
           description: When the token stops working; null for one that never does. A token past it is refused like an unknown one.
+    TokenScope:
+      type: string
+      enum: [all, forward, publish]
+      description: >
+        What a client token may do. `all` registers tunnels and opens
+        forwards; `forward` only opens forwards (registering a tunnel is
+        refused with code `scope_denied`); `publish` only registers tunnels
+        (opening a forward is refused with `scope_denied`). The relay checks it
+        for the whole session, so a reconnect is checked again.
     ClientLoginRequest:
       type: object
       description: >
         A client sign-in request as the dashboard shows it. hostname, os, arch,
         client_version and suggested_token_name were sent by the client: treat
         them as untrusted text. Holds neither the device code nor a token.
-      required: [user_code, hostname, os, arch, client_version, source_ip, status, suggested_token_name, age_seconds, created_at, expires_at, password_required]
+      required: [user_code, hostname, os, arch, client_version, source_ip, status, suggested_token_name, scope, age_seconds, created_at, expires_at, password_required]
       properties:
         user_code: { type: string, example: "ABCD-EFGH" }
+        scope:
+          allOf: [ { $ref: '#/components/schemas/TokenScope' } ]
+          description: The scope the client asked for (`burrow login --scope`); once approved, the one the approver chose. The token gets it.
         hostname: { type: string }
         os: { type: string }
         arch: { type: string }
@@ -3505,6 +3518,9 @@ paths:
               required: [name]
               properties:
                 name: { type: string }
+                scope:
+                  allOf: [ { $ref: '#/components/schemas/TokenScope' } ]
+                  description: Optional; `all` when missing. Anything else than all, forward or publish is a 400. Recorded in the `token.mint` audit row.
                 expires_at:
                   type: string
                   format: date-time
@@ -3524,9 +3540,10 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [name, token, expires_at]
+                required: [name, token, expires_at, scope]
                 properties:
                   name: { type: string }
+                  scope: { $ref: '#/components/schemas/TokenScope' }
                   token: { type: string, description: The client token. Shown this once. }
                   expires_at: { type: string, format: date-time, nullable: true, description: The expiry the token got; null for none. }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -6227,6 +6244,9 @@ paths:
                   type: string
                   maxLength: 120
                   description: Optional name the client suggests for its token; the approver decides.
+                scope:
+                  allOf: [ { $ref: '#/components/schemas/TokenScope' } ]
+                  description: Optional scope the client wishes for (`burrow login --scope`); `all` when missing, 400 for an unknown one. The approver may change it.
       responses:
         '200':
           description: Sign-in request opened.
@@ -6301,11 +6321,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: false
-                required: [token, token_name, email]
+                required: [token, token_name, email, scope]
                 properties:
                   token: { type: string, description: The new client token (plaintext). }
                   token_name: { type: string }
                   email: { type: string, description: Email of the user who approved and owns the token. }
+                  scope: { $ref: '#/components/schemas/TokenScope' }
         '202':
           description: No decision yet; poll again after `interval` seconds.
           content:
@@ -6400,6 +6421,9 @@ paths:
                   minLength: 1
                   maxLength: 120
                   description: Name of the token to create; no control characters.
+                scope:
+                  allOf: [ { $ref: '#/components/schemas/TokenScope' } ]
+                  description: The scope the token gets. Missing keeps the scope the client asked for; an unknown one is a 400.
                 password:
                   type: string
                   format: password

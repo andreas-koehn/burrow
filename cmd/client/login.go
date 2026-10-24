@@ -266,6 +266,7 @@ type browserSignIn struct {
 	hostname                            string // as the machine reports it, "" when it does not
 	name                                string // the token's name when the relay reports none
 	nameGiven                           bool   // --name was given: it is suggested to the approval page
+	scope                               string // --scope: "" (all), forward or publish; suggested to the approval page
 	noBrowser                           bool
 }
 
@@ -287,6 +288,7 @@ func browserLogin(ctx context.Context, d deps, g globalFlags, out, errOut io.Wri
 	if p.nameGiven {
 		dl.Meta.TokenName = p.name
 	}
+	dl.Meta.Scope = p.scope
 	tokenHint := "If this goes on, create a token in the dashboard (Clients, tab Tokens) and run: burrow login " + p.relayArg + " --token -"
 
 	start, err := dl.Start(ctx)
@@ -347,6 +349,12 @@ func browserLogin(ctx context.Context, d deps, g globalFlags, out, errOut io.Wri
 		// The relay gave the token once; it cannot be asked for again.
 		return &exitError{code: exitGeneral, msg: "Could not store the sign-in: " + err.Error() + "\n" +
 			"The token was created but could not be stored; revoke it in the dashboard (Clients, tab Tokens) and run burrow login again."}
+	}
+	switch {
+	case tok.Scope != "" && tok.Scope != "all":
+		fmt.Fprintf(out, "This token is limited to %s.\n", scopeWords(tok.Scope))
+	case tok.Scope == "" && p.scope != "":
+		fmt.Fprintf(out, "Note: this relay does not know token scopes; the token may do everything (you asked for %s).\n", p.scope)
 	}
 	if tok.Email != "" {
 		fmt.Fprintf(out, "signed in as %s (token %q)\n", tok.Email, name)
@@ -410,6 +418,19 @@ func newLoginCmd(d deps) *cobra.Command {
 				}
 			}
 
+			scope, _ := flags.GetString("scope")
+			scope = strings.ToLower(strings.TrimSpace(scope))
+			switch scope {
+			case "", "all", "forward", "publish":
+			default:
+				return usageErrorf("--scope must be all, forward or publish")
+			}
+			if scope == "all" {
+				scope = ""
+			}
+			if scope != "" && flags.Changed("token") {
+				return usageErrorf("--scope applies to the browser sign-in; a token made in the dashboard has the scope it was made with")
+			}
 			name, _ := flags.GetString("name")
 			name = strings.TrimSpace(name)
 			if flags.Changed("name") && name == "" {
@@ -489,7 +510,7 @@ func newLoginCmd(d deps) *cobra.Command {
 				noBrowser, _ := flags.GetBool("no-browser")
 				return browserLogin(ctx, d, g, out, errOut, browserSignIn{
 					relay: relay, relayArg: relayArg, control: control, pin: pin, path: path,
-					hostname: hostname, name: name, nameGiven: flags.Changed("name"), noBrowser: noBrowser,
+					hostname: hostname, name: name, nameGiven: flags.Changed("name"), scope: scope, noBrowser: noBrowser,
 				})
 			}
 			if older && !controlGiven {
@@ -536,6 +557,7 @@ func newLoginCmd(d deps) *cobra.Command {
 	f := cmd.Flags()
 	f.String("token", "", "store a token created in the dashboard; give - and paste the token when asked, so that it stays out of the shell history")
 	f.String("name", "", "name for the token (default: this machine's hostname)")
+	f.String("scope", "all", "what the token may do: all, forward (open forwards only) or publish (register tunnels only); the approver can change it")
 	f.Bool("no-browser", false, "do not open the browser; show the address and the code only")
 	f.String("control", "", "control endpoint host:port (default: the one the relay names, else <relay host>:7000)")
 	f.Bool("force", false, "replace a stored sign-in without asking")
@@ -577,4 +599,15 @@ func newLogoutCmd(d deps) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// scopeWords says what a token scope allows, for a terminal.
+func scopeWords(scope string) string {
+	switch scope {
+	case "forward":
+		return "forwarding (it opens forwards and registers no tunnels)"
+	case "publish":
+		return "publishing (it registers tunnels and opens no forwards)"
+	}
+	return plainText(scope)
 }

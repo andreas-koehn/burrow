@@ -44,6 +44,9 @@ type ClientToken struct {
 	CreatedAt                   time.Time
 	// ExpiresAt is when the token stops working; nil for one that never does.
 	ExpiresAt *time.Time
+	// Scope is what the token may do: TokenScopeAll, TokenScopeForward or
+	// TokenScopePublish. "" is read as TokenScopeAll when the token is made.
+	Scope string
 
 	// The last session that logged in with the token (RecordClientSession).
 	// All zero for a token that never connected. The text fields come from
@@ -480,4 +483,28 @@ type MCPSource struct {
 	// approval.
 	ToolCount    int
 	PendingCount int
+}
+
+// Scopes of a client token.
+const (
+	// TokenScopeAll may register tunnels and open forwards (the default, and
+	// what every token made before scopes does).
+	TokenScopeAll = "all"
+	// TokenScopeForward may open forwards and never registers a tunnel.
+	TokenScopeForward = "forward"
+	// TokenScopePublish may register tunnels and never opens a forward.
+	TokenScopePublish = "publish"
+)
+
+// ValidTokenScope reports whether s is one of the three scopes.
+func ValidTokenScope(s string) bool {
+	return s == TokenScopeAll || s == TokenScopeForward || s == TokenScopePublish
+}
+
+// NormalizeTokenScope returns s, or TokenScopeAll for "".
+func NormalizeTokenScope(s string) string {
+	if s == "" {
+		return TokenScopeAll
+	}
+	return s
 }

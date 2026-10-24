@@ -313,7 +313,7 @@ func (*fullDepsStub) GetUserByID(context.Context, string) (db.User, error) {
 	stubPanic("GetUserByID")
 	return db.User{}, nil
 }
-func (*fullDepsStub) IssueClientTokenUntil(context.Context, string, string, *time.Time) (string, error) {
+func (*fullDepsStub) IssueClientTokenUntil(context.Context, string, string, *time.Time, string) (string, error) {
 	stubPanic("IssueClientTokenUntil")
 	return "", nil
 }

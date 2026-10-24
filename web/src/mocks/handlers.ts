@@ -749,7 +749,7 @@ export const handlers = [
   http.post("/api/v1/client/login/requests/:code/approve", async ({ request, params }) => {
     const g = gate(request); if (g) return g;
     if (!mayManageClientTokens()) return err(403, "tokens:manage required");
-    const b = await body<{ token_name?: unknown; password?: unknown }>(request);
+    const b = await body<{ token_name?: unknown; password?: unknown; scope?: unknown }>(request);
     if (!b) return err(400, "token_name is required");
     // As on the relay: the password (inline, or confirmed with POST /auth/reauth)
     // is checked before the request or the name.
@@ -765,6 +765,10 @@ export const handlers = [
     const found = clientLoginFor(request, String(params.code));
     if ("res" in found) return found.res;
     if (found.row.status !== "pending") return err(409, "sign-in request was already decided");
+    if (b.scope !== undefined) {
+      if (b.scope !== "all" && b.scope !== "forward" && b.scope !== "publish") return err(400, "scope must be all, forward or publish");
+      found.row.scope = b.scope;
+    }
     found.row.status = "approved";
     return json({ ...found.row, password_required: db.clientLoginPasswordRequired });
   }),
@@ -967,8 +971,10 @@ export const handlers = [
   http.get("/api/v1/tokens", ({ request }) => gate(request) ?? json(db.tokens)),
   http.post("/api/v1/tokens", async ({ request }) => {
     const g = gate(request); if (g) return g;
-    const b = await body<{ name?: string; expires_at?: string }>(request);
+    const b = await body<{ name?: string; expires_at?: string; scope?: string }>(request);
     if (!b?.name) return err(400, "name is required");
+    const scope = b.scope ?? "all";
+    if (!["all", "forward", "publish"].includes(scope)) return err(400, "scope must be all, forward or publish");
     let expires: string | null = null;
     if (b.expires_at !== undefined) {
       const t = Date.parse(b.expires_at);
@@ -976,8 +982,8 @@ export const handlers = [
       if (t > Date.now() + 365 * 86_400_000) return err(400, "expires_at must be at most 365 days ahead");
       expires = new Date(t).toISOString();
     }
-    db.tokens.push({ id: `tok_${Math.random().toString(36).slice(2, 7)}`, name: b.name, last_used: null, created_at: new Date().toISOString(), expires_at: expires });
-    return json({ name: b.name, token: `bur_${Math.random().toString(36).slice(2, 18)}`, expires_at: expires }, 201);
+    db.tokens.push({ id: `tok_${Math.random().toString(36).slice(2, 7)}`, name: b.name, scope: scope as "all" | "forward" | "publish", last_used: null, created_at: new Date().toISOString(), expires_at: expires });
+    return json({ name: b.name, scope, token: `bur_${Math.random().toString(36).slice(2, 18)}`, expires_at: expires }, 201);
   }),
 
   // ---- events (inert SSE so Clients/Connect don't error) ----

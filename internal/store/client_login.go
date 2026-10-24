@@ -87,6 +87,7 @@ type LoginStart struct {
 type LoginMeta struct {
 	Hostname, OS, Arch, ClientVersion, SourceIP string
 	TokenName                                   string // the client's suggestion (--name); may be empty
+	Scope                                       string // the scope the client wishes for (--scope); "" is all
 }
 
 // LoginRequestView is a sign-in request as a dashboard user sees it. It holds
@@ -94,13 +95,14 @@ type LoginMeta struct {
 type LoginRequestView struct {
 	UserCode, Hostname, OS, Arch, ClientVersion, SourceIP, Status string
 	SuggestedTokenName                                            string // the client's --name, else the hostname
+	Scope                                                         string // the client's wish, or the approver's choice once decided
 	CreatedAt, ExpiresAt                                          time.Time
 	Age                                                           time.Duration // by the relay's clock
 }
 
 // LoginResult is the outcome of a collected request: the token (the only
 // place its plaintext ever is), its name and the owner's email.
-type LoginResult struct{ Token, TokenName, Email string }
+type LoginResult struct{ Token, TokenName, Email, Scope string }
 
 // SetClientLoginClock replaces the clock of the sign-in requests. For tests;
 // call it before the store is shared.
@@ -116,6 +118,9 @@ func (s *Store) loginNow() time.Time {
 // StartClientLogin opens a sign-in request for a client and returns its two
 // codes. ErrLoginTooMany when the cap on pending requests is reached.
 func (s *Store) StartClientLogin(ctx context.Context, m LoginMeta) (LoginStart, error) {
+	if !db.ValidTokenScope(db.NormalizeTokenScope(m.Scope)) {
+		return LoginStart{}, ErrTokenScope
+	}
 	now := s.loginNow()
 	// Drop what has expired, so the table stays as small as the cap says.
 	// The cap itself counts live rows only and does not depend on this.
@@ -128,6 +133,7 @@ func (s *Store) StartClientLogin(ctx context.Context, m LoginMeta) (LoginStart, 
 		ClientVersion: cleanLoginText(m.ClientVersion, maxLoginMetaField),
 		SourceIP:      cleanLoginText(m.SourceIP, maxLoginMetaField),
 		TokenName:     cleanLoginText(m.TokenName, maxTokenNameLen),
+		Scope:         db.NormalizeTokenScope(m.Scope),
 		CreatedAt:     now,
 		ExpiresAt:     now.Add(clientLoginTTL),
 	}
@@ -197,23 +203,27 @@ func (s *Store) clientLoginView(ctx context.Context, code string, now time.Time)
 // ErrLoginTokenName for a bad name, ErrLoginNotFound for an unknown or
 // expired code, ErrLoginConflict when the request was decided already (it
 // stays as it was decided).
-func (s *Store) ApproveClientLogin(ctx context.Context, userCode, approverID, tokenName string) (LoginRequestView, error) {
+func (s *Store) ApproveClientLogin(ctx context.Context, userCode, approverID, tokenName, scope string) (LoginRequestView, error) {
 	name, ok := cleanTokenName(tokenName)
 	if !ok {
 		return LoginRequestView{}, ErrLoginTokenName
 	}
+	// "" keeps the scope the client wished for (db.DecideClientLogin).
+	if scope != "" && !db.ValidTokenScope(scope) {
+		return LoginRequestView{}, ErrTokenScope
+	}
 	if approverID == "" {
 		return LoginRequestView{}, ErrForbidden
 	}
-	return s.decideClientLogin(ctx, userCode, db.ClientLoginApproved, approverID, approverID, name)
+	return s.decideClientLogin(ctx, userCode, db.ClientLoginApproved, approverID, approverID, name, scope)
 }
 
 // DenyClientLogin denies a pending request. Errors as ApproveClientLogin.
 func (s *Store) DenyClientLogin(ctx context.Context, userCode, userID string) (LoginRequestView, error) {
-	return s.decideClientLogin(ctx, userCode, db.ClientLoginDenied, userID, "", "")
+	return s.decideClientLogin(ctx, userCode, db.ClientLoginDenied, userID, "", "", "")
 }
 
-func (s *Store) decideClientLogin(ctx context.Context, userCode, status, actorID, approvedBy, tokenName string) (LoginRequestView, error) {
+func (s *Store) decideClientLogin(ctx context.Context, userCode, status, actorID, approvedBy, tokenName, scope string) (LoginRequestView, error) {
 	code, ok := normalizeUserCode(userCode)
 	if !ok {
 		return LoginRequestView{}, ErrLoginNotFound
@@ -233,7 +243,7 @@ func (s *Store) decideClientLogin(ctx context.Context, userCode, status, actorID
 	}
 	// The statement carries the state check (pending, not expired), so of
 	// two decisions one wins whatever was read above.
-	decided, err := s.q.DecideClientLogin(ctx, code, status, approvedBy, tokenName, now)
+	decided, err := s.q.DecideClientLogin(ctx, code, status, approvedBy, tokenName, scope, now)
 	if err != nil {
 		return LoginRequestView{}, err
 	}
@@ -252,6 +262,9 @@ func (s *Store) decideClientLogin(ctx context.Context, userCode, status, actorID
 	row.Status = status
 	if tokenName != "" {
 		row.TokenName = tokenName
+	}
+	if scope != "" {
+		row.Scope = scope
 	}
 	action := audit.ActionClientLoginApproved
 	if status == db.ClientLoginDenied {
@@ -332,7 +345,7 @@ func (s *Store) PollClientLogin(ctx context.Context, deviceCode string) (LoginRe
 		return LoginResult{}, err
 	}
 
-	pt, ct, err := newClientToken(approver.ID, row.TokenName)
+	pt, ct, err := newClientToken(approver.ID, row.TokenName, row.Scope)
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -352,7 +365,7 @@ func (s *Store) PollClientLogin(ctx context.Context, deviceCode string) (LoginRe
 		e.SubjectLabel = ct.Name
 		e.Payload = loginAuditPayload(row, "")
 	})
-	return LoginResult{Token: pt, TokenName: ct.Name, Email: approver.Email}, nil
+	return LoginResult{Token: pt, TokenName: ct.Name, Email: approver.Email, Scope: ct.Scope}, nil
 }
 
 // SweepClientLogins removes the expired sign-in requests and reports how
@@ -373,8 +386,8 @@ func loginView(r db.ClientLoginRequest, now time.Time) LoginRequestView {
 	return LoginRequestView{
 		UserCode: formatUserCode(r.UserCode), Hostname: r.Hostname, OS: r.OS, Arch: r.Arch,
 		ClientVersion: r.ClientVersion, SourceIP: r.SourceIP, Status: r.Status,
-		SuggestedTokenName: suggested,
-		CreatedAt:          r.CreatedAt.UTC(), ExpiresAt: r.ExpiresAt.UTC(),
+		SuggestedTokenName: suggested, Scope: db.NormalizeTokenScope(r.Scope),
+		CreatedAt: r.CreatedAt.UTC(), ExpiresAt: r.ExpiresAt.UTC(),
 		Age: age,
 	}
 }
@@ -388,6 +401,7 @@ func loginAuditPayload(r db.ClientLoginRequest, tokenName string) []byte {
 		"os":             r.OS,
 		"arch":           r.Arch,
 		"client_version": r.ClientVersion,
+		"scope":          db.NormalizeTokenScope(r.Scope),
 	}
 	if tokenName != "" {
 		m["token_name"] = tokenName

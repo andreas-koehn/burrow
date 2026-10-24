@@ -11,14 +11,14 @@ import (
 )
 
 const clientTokenCols = `id, user_id, name, token_hash, last_used, created_at,
-	last_seen, last_os, last_arch, last_client_version, last_remote_addr, last_served, expires_at`
+	last_seen, last_os, last_arch, last_client_version, last_remote_addr, last_served, expires_at, scope`
 
 func scanClientToken(row interface{ Scan(...any) error }) (ClientToken, error) {
 	var ct ClientToken
 	var lastUsed, lastSeen, expires sql.NullTime
 	var served string
 	if err := row.Scan(&ct.ID, &ct.UserID, &ct.Name, &ct.TokenHash, &lastUsed, &ct.CreatedAt,
-		&lastSeen, &ct.LastOS, &ct.LastArch, &ct.LastClientVersion, &ct.LastRemoteAddr, &served, &expires); err != nil {
+		&lastSeen, &ct.LastOS, &ct.LastArch, &ct.LastClientVersion, &ct.LastRemoteAddr, &served, &expires, &ct.Scope); err != nil {
 		return ClientToken{}, err
 	}
 	if lastUsed.Valid {
@@ -39,9 +39,12 @@ func scanClientToken(row interface{ Scan(...any) error }) (ClientToken, error) {
 
 // CreateClientToken inserts a new client token row.
 func (x *DB) CreateClientToken(ctx context.Context, ct ClientToken) error {
+	if !ValidTokenScope(NormalizeTokenScope(ct.Scope)) {
+		return fmt.Errorf("create client token: unknown scope %q", ct.Scope)
+	}
 	_, err := x.sqlDB.ExecContext(ctx,
-		`INSERT INTO client_tokens(id, user_id, name, token_hash, expires_at) VALUES(?,?,?,?,?)`,
-		ct.ID, ct.UserID, ct.Name, ct.TokenHash, nullableTime(ct.ExpiresAt),
+		`INSERT INTO client_tokens(id, user_id, name, token_hash, expires_at, scope) VALUES(?,?,?,?,?,?)`,
+		ct.ID, ct.UserID, ct.Name, ct.TokenHash, nullableTime(ct.ExpiresAt), NormalizeTokenScope(ct.Scope),
 	)
 	if err != nil {
 		return fmt.Errorf("create client token: %w", err)

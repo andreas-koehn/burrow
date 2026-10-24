@@ -149,11 +149,23 @@ describe("Link page: approve and deny", () => {
     const posts = calls.filter((c) => c.method === "POST");
     expect(posts).toHaveLength(1);
     expect(posts[0].path).toBe("/api/v1/client/login/requests/BRRW7Q4K/approve");
-    expect(JSON.parse(posts[0].body)).toEqual({ token_name: "build box" });
+    expect(JSON.parse(posts[0].body)).toEqual({ token_name: "build box", scope: "all" });
     expect(posts[0].csrf).toBe(db.csrf);
     expect(request().status).toBe("approved");
     // The request is not looked up again once it is decided.
     expect(calls.filter((c) => c.method === "GET")).toHaveLength(1);
+  });
+
+  it("lets the approver pick the scope of the token", async () => {
+    const calls = recordCalls();
+    renderAt(`/link?code=${CODE}`);
+    await userEvent.click(await screen.findByRole("combobox", { name: "Scope" }));
+    await userEvent.click(await screen.findByRole("option", { name: "Forward only" }));
+    await userEvent.click(approve());
+    await screen.findByRole("status");
+    const posts = calls.filter((c) => c.method === "POST");
+    expect(JSON.parse(posts[0].body)).toEqual({ token_name: "kohns-laptop", scope: "forward" });
+    expect(request().scope).toBe("forward");
   });
 
   it("denies and says the request was discarded", async () => {
@@ -291,7 +303,7 @@ describe("Link page: the password, while the relay has no services domain", () =
     const posts = calls.filter((c) => c.method === "POST");
     // The first try was refused, the repeat went through; neither carries the password.
     expect(posts).toHaveLength(2);
-    for (const p of posts) expect(JSON.parse(p.body)).toEqual({ token_name: "kohns-laptop" });
+    for (const p of posts) expect(JSON.parse(p.body)).toEqual({ token_name: "kohns-laptop", scope: "all" });
     expect(request().status).toBe("approved");
   });
 

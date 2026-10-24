@@ -100,7 +100,7 @@ export interface MockDb {
   settings: SettingsMap;
   smtpPasswordSet: boolean;
   clients: ClientDetail[];
-  tokens: { id: string; name: string; last_used: string | null; created_at: string; expires_at?: string | null }[];
+  tokens: { id: string; name: string; scope?: "all" | "forward" | "publish"; last_used: string | null; created_at: string; expires_at?: string | null }[];
   /** Last session per client token id; a token without an entry and without a live session never connected. */
   clientLastSessions: Record<string, ClientLastSession>;
   services: ServiceRow[];
@@ -186,7 +186,7 @@ function seed(): MockDb {
     clientLogins: [
       {
         user_code: "BRRW-7Q4K", hostname: "kohns-laptop", os: "linux", arch: "amd64", client_version: "0.7.0",
-        source_ip: "203.0.113.24", status: "pending", suggested_token_name: "kohns-laptop", age_seconds: 95,
+        source_ip: "203.0.113.24", status: "pending", suggested_token_name: "kohns-laptop", scope: "all", age_seconds: 95,
         created_at: new Date(Date.now() - 95_000).toISOString(), expires_at: new Date(Date.now() + 505_000).toISOString(),
         password_required: false,
       },

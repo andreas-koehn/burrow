@@ -145,7 +145,7 @@ func refusal(re *client.RefusedError) (msg string, code int, ok bool) {
 		return "The relay refused the slug: " + plainText(re.Message), exitGeneral, true
 	case proto.CodeAccessInvalid:
 		return "The relay refused the access mode: " + plainText(re.Message), exitGeneral, true
-	case proto.CodeForbidden:
+	case proto.CodeForbidden, proto.CodeScopeDenied:
 		return "The relay refused: " + plainText(re.Message), exitGeneral, true
 	}
 	return "", 0, false

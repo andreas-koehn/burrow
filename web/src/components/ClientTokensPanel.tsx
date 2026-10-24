@@ -6,10 +6,11 @@ import { apiFetch } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import { RelativeTime } from "@/components/RelativeTime";
 import { Button, FormField, FormFieldGroup, Input, Select, Dialog, TableEmptyRow } from "@/components/ds";
+import { TOKEN_SCOPE_CHOICES, tokenScopeLabel, type TokenScope } from "@/lib/contract";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 
-interface Token { id: string; name: string; last_used: string | null; created_at: string; /** null when the token never expires. */ expires_at?: string | null; }
+interface Token { id: string; name: string; scope?: TokenScope; last_used: string | null; created_at: string; /** null when the token never expires. */ expires_at?: string | null; }
 
 // The relay accepts an expiry up to 365 days ahead.
 const EXPIRY_CHOICES = [
@@ -30,11 +31,12 @@ export function ClientTokensPanel() {
   const { data } = useQuery({ queryKey: ["tokens"], queryFn: () => apiFetch<Token[]>("/tokens"), staleTime: 30_000 });
   const [name, setName] = useState("");
   const [days, setDays] = useState("0");
+  const [scope, setScope] = useState<TokenScope>("all");
   const [plaintext, setPlaintext] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<{ id: string; name: string } | null>(null);
   const create = useMutation({
-    mutationFn: () => apiFetch<{ name: string; token: string }>("/tokens", { method: "POST", body: JSON.stringify(Number(days) > 0 ? { name, expires_at: new Date(Date.now() + Number(days) * DAY_MS - EXPIRY_MARGIN_MS).toISOString() } : { name }) }),
-    onSuccess: (r) => { setPlaintext(r.token); setName(""); setDays("0"); qc.invalidateQueries({ queryKey: ["tokens"] }); },
+    mutationFn: () => apiFetch<{ name: string; token: string }>("/tokens", { method: "POST", body: JSON.stringify(Number(days) > 0 ? { name, scope, expires_at: new Date(Date.now() + Number(days) * DAY_MS - EXPIRY_MARGIN_MS).toISOString() } : { name, scope }) }),
+    onSuccess: (r) => { setPlaintext(r.token); setName(""); setDays("0"); setScope("all"); qc.invalidateQueries({ queryKey: ["tokens"] }); },
     onError: (e: Error) => toast.error(e.message ? `Failed to create token: ${e.message}` : "Failed to create token"),
   });
   const revoke = useMutation({
@@ -59,6 +61,9 @@ export function ClientTokensPanel() {
           <FormField label="Token name" htmlFor="token-name" w="md">
             <Input id="token-name" placeholder="e.g. laptop" value={name} onChange={(e) => setName(e.target.value)} />
           </FormField>
+          <FormField label="Scope" htmlFor="token-scope" w="sm" help="Forward only never publishes a service; publish only never opens a forward.">
+            <Select id="token-scope" options={TOKEN_SCOPE_CHOICES} value={scope} onChange={(v) => setScope(v as TokenScope)} />
+          </FormField>
           <FormField label="Expires" htmlFor="token-expiry" w="sm">
             <Select id="token-expiry" options={EXPIRY_CHOICES} value={days} onChange={setDays} />
           </FormField>
@@ -75,6 +80,7 @@ export function ClientTokensPanel() {
           <thead>
             <tr>
               <th>Name</th>
+              <th>Scope</th>
               <th>Created</th>
               <th>Last used</th>
               <th>Expires</th>
@@ -83,10 +89,11 @@ export function ClientTokensPanel() {
           </thead>
           <tbody>
             {data && data.length === 0
-              ? <TableEmptyRow colSpan={5} title="No tokens yet.">Create one above, or use Connect a client.</TableEmptyRow>
+              ? <TableEmptyRow colSpan={6} title="No tokens yet.">Create one above, or use Connect a client.</TableEmptyRow>
               : (data ?? []).map((t) => (
               <tr key={t.id} className={isExpired(t) ? "is-expired" : undefined}>
                 <td className="col-name">{t.name}</td>
+                <td className="col-scope">{tokenScopeLabel(t.scope)}</td>
                 <td className="col-created"><RelativeTime value={t.created_at} /></td>
                 <td className={t.last_used ? "col-lastused" : "col-lastused null"}>
                   <RelativeTime value={t.last_used} empty="never" />

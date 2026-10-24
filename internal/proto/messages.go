@@ -236,6 +236,10 @@ const (
 	// CodeRateLimited: too many attempts from this address or session; the
 	// client waits and tries again.
 	CodeRateLimited = "rate_limited"
+	// CodeScopeDenied: the token's scope does not allow the action: a
+	// forward-only token registering a tunnel, or a publish-only token opening
+	// a forward. It ends that action only, not the session.
+	CodeScopeDenied = "scope_denied"
 	// CodeNotFound: a forward to a service that does not exist or that the
 	// caller may not reach; the two are told apart nowhere.
 	CodeNotFound = "not_found"

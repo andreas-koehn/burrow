@@ -98,7 +98,7 @@ type UserStore interface {
 	// GetUserByEmail is used by the login handler after VerifyUserPassword (spec F3).
 	GetUserByEmail(ctx context.Context, email string) (db.User, error)
 	GetUserByID(ctx context.Context, id string) (db.User, error)
-	IssueClientTokenUntil(ctx context.Context, userID, name string, expiresAt *time.Time) (string, error)
+	IssueClientTokenUntil(ctx context.Context, userID, name string, expiresAt *time.Time, scope string) (string, error)
 	ListClientTokens(ctx context.Context, userID string) ([]db.ClientToken, error)
 	RevokeClientToken(ctx context.Context, id, userID string) error
 	CreateSession(ctx context.Context, userID, ua, ip string) (string, error)

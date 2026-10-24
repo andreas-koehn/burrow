@@ -103,6 +103,10 @@ type ClientSession struct {
 	// when the authenticator names none (see HandleHandshakeWith); such a
 	// session is never recorded on a token.
 	TokenID string
+	// Scope is the scope of the token the session logged in with (the
+	// db.TokenScope… values). "" is all: an authenticator that names no scope
+	// limits nothing.
+	Scope string
 	// ConnectedAt is when the handshake succeeded.
 	ConnectedAt time.Time
 	Yamux       *yamux.Session
@@ -444,3 +448,16 @@ func (cs *ClientSession) Pending() *pendingStreams {
 	}
 	return cs.pending
 }
+
+// Texts of a refusal for the scope of the token. They name the scope and say
+// what to do, and travel with proto.CodeScopeDenied.
+const (
+	errScopeNoPublish = "this token is limited to forwarding (scope forward) and may not register tunnels; use a token with scope all or publish"
+	errScopeNoForward = "this token is limited to publishing (scope publish) and may not open forwards; use a token with scope all or forward"
+)
+
+// MayPublish reports whether the session's token may register tunnels.
+func (cs *ClientSession) MayPublish() bool { return cs.Scope != "forward" }
+
+// MayForward reports whether the session's token may open forwards.
+func (cs *ClientSession) MayForward() bool { return cs.Scope != "publish" }
