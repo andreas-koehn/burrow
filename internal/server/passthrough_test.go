@@ -48,6 +48,7 @@ func newPassRelay(t *testing.T, min, max int, mut func(*Options), tweak func(*Se
 	t.Helper()
 	a := newAccessRelay(t, min, max, func(o *Options) {
 		o.TCPDomain = testTCPDomain
+		o.TLSPassthrough = true // as main sets it; ServePassthrough below runs on its own goroutine
 		if mut != nil {
 			mut(o)
 		}
@@ -725,5 +726,91 @@ func TestPassthrough_RefusalsDoNotCrowdOutServiceRefusals(t *testing.T) {
 	}
 	if !r.srv.refusals.sample("svc-x", observe.RejectedIPGeo, "198.51.100.1", time.Now()) {
 		t.Fatal("a passthrough scan crowded out the refusal of a service")
+	}
+}
+
+// A tunnel whose end has begun (its claim is given back; its session is not
+// removed yet) is never picked by name or by service: a registration that
+// claims the service in that window must get the visits, and before it does
+// there is no tunnel.
+func TestPassthrough_AClosingTunnelIsNeverPicked(t *testing.T) {
+	r := newPassRelay(t, 19582, 19582, nil, nil)
+	r.res.mu.Lock()
+	r.res.hosts["svc-app"] = "app.example.com"
+	r.res.mu.Unlock()
+	if rr := r.c.register(t, proto.TunnelRegister{Name: "app", Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	old, ok := r.srv.LookupTunnelByServiceID("svc-app")
+	if !ok || r.srv.passthroughTunnel("app.example.com") != old {
+		t.Fatal("no tunnel to begin with")
+	}
+	// What the end of a session does first, while its session is still in
+	// the registry.
+	r.srv.endTCPTunnel(old)
+	if tn := r.srv.passthroughTunnel("app.example.com"); tn != nil {
+		t.Fatal("the closing tunnel was picked by name")
+	}
+	if tn, ok := r.srv.LookupTunnelByServiceID("svc-app"); ok {
+		t.Fatalf("the closing tunnel was found by service: %p", tn)
+	}
+	// A new registration in the window is the one picked.
+	c2 := r.client(nil)
+	defer c2.close()
+	if rr := c2.register(t, proto.TunnelRegister{Name: "app", Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK {
+		t.Fatalf("second register: %+v", rr)
+	}
+	tn := r.srv.passthroughTunnel("app.example.com")
+	if tn == nil || tn == old {
+		t.Fatalf("picked %p, old %p", tn, old)
+	}
+	if got, ok := r.srv.LookupTunnelByServiceID("svc-app"); !ok || got != tn {
+		t.Fatal("the new tunnel is not found by service")
+	}
+}
+
+// A custom name under the tcp domain never routes (those names are the
+// slugs'), so it does not make a service reachable by name either: such a
+// service set to host name only keeps its port.
+func TestPassthrough_ReachableByNameIsWhatRoutes(t *testing.T) {
+	r := newPassRelay(t, 19583, 19583, func(o *Options) { o.TCPDomain = "tcp.example.com" }, nil)
+	tn := &Tunnel{ServiceID: "svc", accessMode: TCPAccessOpen}
+	tn.setHostname("db.tcp.example.com")
+	if r.srv.reachableByName(tn) || r.srv.nameReaches(tn, "db.tcp.example.com") {
+		t.Fatal("a custom name under the tcp domain counts")
+	}
+	tn.setHostname("db.example.com")
+	if !r.srv.reachableByName(tn) || !r.srv.nameReaches(tn, "db.example.com") {
+		t.Fatal("a custom name of its own does not count")
+	}
+	tn.setHostname("")
+	tn.slug = "k7p2qx"
+	if !r.srv.reachableByName(tn) || !r.srv.nameReaches(tn, "k7p2qx.tcp.example.com") || r.srv.nameReaches(tn, "x.k7p2qx.tcp.example.com") {
+		t.Fatal("the slug name")
+	}
+}
+
+// A tunnel whose session is closed (the client went away; the relay has not
+// ended its tunnels yet) is never picked either: a visitor paired with it
+// would wait for a stream that never comes.
+func TestPassthrough_ATunnelOfAClosedSessionIsNeverPicked(t *testing.T) {
+	r := newPassRelay(t, 19584, 19584, nil, nil)
+	a, b := net.Pipe()
+	defer b.Close()
+	ys, err := yamux.Client(a, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = ys.Close()
+	cs := &ClientSession{SessionID: "closed", UserID: "u1", Yamux: ys}
+	r.srv.reg.AddSession(cs)
+	tn := &Tunnel{ID: "t-closed", Name: "gone", Type: "tcp", ServiceID: "svc-gone", accessMode: TCPAccessOpen, sess: cs}
+	tn.setHostname("gone.example.com")
+	r.srv.reg.AddTunnel(cs, tn)
+	if got := r.srv.passthroughTunnel("gone.example.com"); got != nil {
+		t.Fatal("a tunnel of a closed session was picked by name")
+	}
+	if _, ok := r.srv.LookupTunnelByServiceID("svc-gone"); ok {
+		t.Fatal("a tunnel of a closed session was found by service")
 	}
 }

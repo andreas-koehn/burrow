@@ -183,6 +183,16 @@ describe("tcp service page: host name only", () => {
     expect(db.tcpHostnameOnly.svc_rdp01).toBe(false);
   });
 
+  it("says the port is open again when the service lost its only name", async () => {
+    addTcp({ slug: "" });
+    db.tcpHostnameOnly.svc_rdp01 = true;
+    mount();
+    const card = await region("Host name");
+    await within(card).findByRole("switch", { name: "Host name only" });
+    expect(card).toHaveTextContent(/public port is open again/i);
+    expect(card).toHaveTextContent(/no host name/i);
+  });
+
   it("cannot turn the port off while no name reaches the service", async () => {
     addTcp({ slug: "" });
     mount();
@@ -210,6 +220,10 @@ describe("tcp service page: host name only", () => {
     const card = await region("Host name");
     const sw = await within(card).findByRole("switch", { name: "Host name only" });
     expect(sw).toBeEnabled();
+    // The relay opened the port again: the card says so, and why.
+    expect(card).toHaveTextContent(/public port is open again/i);
+    expect(card).toHaveTextContent(/no TLS passthrough listener/i);
+    expect(card).not.toHaveTextContent(/has no public port/i);
     await userEvent.click(sw);
     await waitFor(() => expect(db.tcpHostnameOnly.svc_rdp01).toBe(false));
   });

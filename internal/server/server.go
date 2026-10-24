@@ -665,8 +665,17 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 
 	defer func() {
 		tunnels := s.reg.snapshotTunnels(cs)
+		// Every tunnel stops serving before any claim is given back, and
+		// all claims go before the slow writes: a client that registers
+		// again at once finds all its services free, and no lookup hands
+		// a visitor to a tunnel of this session meanwhile.
+		for _, tn := range tunnels {
+			tn.ended.Store(true)
+		}
 		for _, tn := range tunnels {
 			s.endTCPTunnel(tn)
+		}
+		for _, tn := range tunnels {
 			_ = s.opts.Tunnels.MarkTunnelSeen(context.Background(), tn.ID)
 		}
 		// After the ports are free, so that a slow write keeps none taken, and
@@ -985,7 +994,7 @@ func (s *Server) LookupTunnelByServiceID(serviceID string) (*Tunnel, bool) {
 	}
 	for _, cs := range s.reg.Sessions() {
 		for _, tn := range s.reg.snapshotTunnels(cs) {
-			if tn.ServiceID == serviceID {
+			if tn.ServiceID == serviceID && tn.serving() {
 				return tn, true
 			}
 		}

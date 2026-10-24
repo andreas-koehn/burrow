@@ -349,8 +349,17 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		}); err != nil {
 			return err
 		}
-		if err := proto.ReadFrame(ctrl, &env); err != nil {
-			return err
+		// The relay may tell of a visitor of a tunnel registered a moment
+		// ago before it answers this registration: such frames are served
+		// as the read loop serves them, and the answer is read after them.
+		for {
+			if err := proto.ReadFrame(ctrl, &env); err != nil {
+				return err
+			}
+			if env.Type == proto.MsgTunnelRegisterResp {
+				break
+			}
+			c.controlFrame(ysess, env)
 		}
 		var rr proto.TunnelRegisterResponse
 		if env.Type != proto.MsgTunnelRegisterResp || proto.DecodePayload(env, &rr) != nil {
@@ -544,38 +553,44 @@ func (c *Client) controlReadLoop(sess *yamux.Session, ctrl io.Reader) error {
 		if err := proto.ReadFrame(ctrl, &env); err != nil {
 			return err
 		}
-		switch env.Type {
-		case proto.MsgNewConnection:
-			var nc proto.NewConnection
-			if proto.DecodePayload(env, &nc) != nil {
-				continue
-			}
-			c.mu.Lock()
-			local := c.tunnelLocal[nc.TunnelID]
-			ownProxy := c.tunnelProxy[nc.TunnelID]
-			c.mu.Unlock()
-			if local == "" {
-				continue
-			}
-			go c.handleNewConnection(sess, nc, local, ownProxy || nc.ProxyProtocol == proto.ProxyProtocolV2)
-		case proto.MsgRequestSummary:
-			c.requestSummary(env)
-		case proto.MsgPong, proto.MsgError:
-			// Pong is informational only. Dead-peer detection is provided by
-			// yamux's built-in keepalive (EnableKeepAlive=true, KeepAliveInterval=30s
-			// in yamux.DefaultConfig). The Ping/Pong messages are retained as a
-			// lightweight application-level liveness signal; yamux keepalive is the
-			// authoritative liveness mechanism.
-			if env.Type == proto.MsgError {
-				c.log.Warn("server error message")
-			} else {
-				c.pongReceived()
-			}
-		default:
-			// A message of a relay newer than this client. It is passed over
-			// without a word: a relay may only send what a client can do
-			// without, and a line in the log for each would help nobody.
+		c.controlFrame(sess, env)
+	}
+}
+
+// controlFrame serves one frame of the control stream that is no answer to
+// a request of the client: a visitor, a request summary, a pong.
+func (c *Client) controlFrame(sess *yamux.Session, env proto.Envelope) {
+	switch env.Type {
+	case proto.MsgNewConnection:
+		var nc proto.NewConnection
+		if proto.DecodePayload(env, &nc) != nil {
+			return
 		}
+		c.mu.Lock()
+		local := c.tunnelLocal[nc.TunnelID]
+		ownProxy := c.tunnelProxy[nc.TunnelID]
+		c.mu.Unlock()
+		if local == "" {
+			return
+		}
+		go c.handleNewConnection(sess, nc, local, ownProxy || nc.ProxyProtocol == proto.ProxyProtocolV2)
+	case proto.MsgRequestSummary:
+		c.requestSummary(env)
+	case proto.MsgPong, proto.MsgError:
+		// Pong is informational only. Dead-peer detection is provided by
+		// yamux's built-in keepalive (EnableKeepAlive=true, KeepAliveInterval=30s
+		// in yamux.DefaultConfig). The Ping/Pong messages are retained as a
+		// lightweight application-level liveness signal; yamux keepalive is the
+		// authoritative liveness mechanism.
+		if env.Type == proto.MsgError {
+			c.log.Warn("server error message")
+		} else {
+			c.pongReceived()
+		}
+	default:
+		// A message of a relay newer than this client. It is passed over
+		// without a word: a relay may only send what a client can do
+		// without, and a line in the log for each would help nobody.
 	}
 }
 

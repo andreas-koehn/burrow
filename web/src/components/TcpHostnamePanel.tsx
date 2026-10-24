@@ -95,7 +95,13 @@ export function TcpHostnamePanel({ serviceId, mode }: { serviceId: string; mode:
                 <span>Reach it by host name only</span>
               </label>
               <p id={`${titleId}-only-desc`} className="muted small">
-                {data.hostname_only
+                {data.hostname_only && !canOnly
+                  ? `Host name only is on, but the public port is open again: ${
+                    !data.passthrough
+                      ? "this relay has no TLS passthrough listener, so no name reaches the service."
+                      : "the service has no host name on the passthrough listener (set a custom name, or ask the operator for a domain for slug names)."
+                  } The relay never leaves a service without a way in; turn this off, or give it a name.`
+                  : data.hostname_only
                   ? "The service has no public port: it is reached by its host names only. The client reconnects on its own when this changes."
                   : canOnly
                     ? "Turn this on to close the service's public port, so that only a client that names the host reaches it. The client reconnects on its own."

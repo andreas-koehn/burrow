@@ -129,6 +129,14 @@ type fakeRelay struct {
 
 func startFakeRelay(t *testing.T, answer func(proto.TunnelRegister) proto.TunnelRegisterResponse) *fakeRelay {
 	t.Helper()
+	return startFakeRelayWith(t, answer, nil)
+}
+
+// startFakeRelayWith is startFakeRelay with before, which may write to the
+// control stream before a registration is answered (a relay that tells of a
+// visitor of a tunnel registered a moment ago).
+func startFakeRelayWith(t *testing.T, answer func(proto.TunnelRegister) proto.TunnelRegisterResponse, before func(w io.Writer, reg proto.TunnelRegister)) *fakeRelay {
+	t.Helper()
 	dir := t.TempDir()
 	if err := devcert.Generate(dir, true); err != nil {
 		t.Fatal(err)
@@ -187,6 +195,9 @@ func startFakeRelay(t *testing.T, answer func(proto.TunnelRegister) proto.Tunnel
 					case proto.MsgTunnelRegister:
 						var reg proto.TunnelRegister
 						_ = proto.DecodePayload(env, &reg)
+						if before != nil {
+							before(stream, reg)
+						}
 						_ = proto.WriteMessage(stream, proto.MsgTunnelRegisterResp, answer(reg))
 					case proto.MsgPing:
 						var p proto.Ping
@@ -754,5 +765,56 @@ func TestClient_CountsArriveInTheOrderTheyWereMade(t *testing.T) {
 			t.Fatalf("round %d: the last counts told are %q, want %q", round, ev[len(ev)-1], want)
 		}
 		stop()
+	}
+}
+
+// A visitor of a tunnel registered a moment ago may be told of while the
+// next tunnel is still being registered: the client serves it and goes on
+// registering, instead of taking the frame for a failed registration and
+// dropping the session.
+func TestClient_AVisitorDuringRegistrationIsServed(t *testing.T) {
+	local, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer local.Close()
+	dialed := make(chan struct{}, 1)
+	go func() {
+		for {
+			c, err := local.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+			select {
+			case dialed <- struct{}{}:
+			default:
+			}
+		}
+	}()
+	relay := startFakeRelayWith(t, func(reg proto.TunnelRegister) proto.TunnelRegisterResponse {
+		return proto.TunnelRegisterResponse{OK: true, TunnelID: "t-" + reg.Name, RemotePort: 9000}
+	}, func(w io.Writer, reg proto.TunnelRegister) {
+		if reg.Name == "b" {
+			_ = proto.WriteMessage(w, proto.MsgNewConnection, proto.NewConnection{TunnelID: "t-a", StreamID: "st1", SourceIP: "198.51.100.7:1"})
+		}
+	})
+	obs := &recObserver{}
+	c := relay.client(obs,
+		TunnelSpec{Name: "a", Type: "tcp", LocalAddr: local.Addr().String(), Access: "open"},
+		TunnelSpec{Name: "b", Type: "tcp", LocalAddr: "127.0.0.1:1", Access: "open"},
+	)
+	runUntilDone(t, c)
+	if !waitTrue(func() bool { return obs.count("registered:") == 2 }, 3*time.Second) {
+		t.Fatalf("events: %v", obs.snapshot())
+	}
+	select {
+	case <-dialed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the visitor told of during the registration was not served")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := obs.count("state:connecting"); n != 1 {
+		t.Fatalf("the session was dropped: %v", obs.snapshot())
 	}
 }

@@ -44,6 +44,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -364,36 +365,43 @@ func readServerName(br *bufio.Reader, failed func(error) string) (string, string
 // stored before the domain was set; the API refuses new ones) never
 // matches, so that one name never names two services.
 func (s *Server) passthroughTunnel(name string) *Tunnel {
-	slug, underDomain := "", false
-	if d := s.opts.TCPDomain; d != "" {
-		label, ok := strings.CutSuffix(name, "."+d)
-		underDomain = ok || name == d
-		if ok && label != "" && !strings.Contains(label, ".") {
-			slug = label
-		}
-	}
 	for _, tn := range s.Tunnels() {
-		if tn.IsHTTP || tn.ServiceID == "" || (tn.accessMode != TCPAccessOpen && tn.accessMode != TCPAccessIP) {
+		if tn.IsHTTP || tn.ServiceID == "" || !tn.serving() || (tn.accessMode != TCPAccessOpen && tn.accessMode != TCPAccessIP) {
 			continue
 		}
-		if underDomain {
-			if slug != "" && tn.slug == slug {
-				return tn
-			}
-			continue
-		}
-		if h := tn.hostname(); h != "" && h == name {
+		if s.nameReaches(tn, name) {
 			return tn
 		}
 	}
 	return nil
 }
 
+// passthroughNames are the names the passthrough listener knows tn by:
+// <slug>.<TCPDomain> when a tcp domain is set, and its own host name unless
+// that is under the tcp domain (those names are the slugs'). One predicate
+// for routing (nameReaches) and for reachableByName.
+func (s *Server) passthroughNames(tn *Tunnel) []string {
+	var out []string
+	d := s.opts.TCPDomain
+	if d != "" && tn.slug != "" && !strings.Contains(tn.slug, ".") {
+		out = append(out, tn.slug+"."+d)
+	}
+	if h := tn.hostname(); h != "" && (d == "" || (h != d && !strings.HasSuffix(h, "."+d))) {
+		out = append(out, h)
+	}
+	return out
+}
+
+// nameReaches reports whether a ClientHello naming name reaches tn.
+func (s *Server) nameReaches(tn *Tunnel, name string) bool {
+	return slices.Contains(s.passthroughNames(tn), name)
+}
+
 // reachableByName reports whether a TLS client reaches tn by a host name on
 // the passthrough listener: the listener runs and the tunnel has a name
 // there (<slug>.<TCPDomain>, or its own). The mode is the caller's to check.
 func (s *Server) reachableByName(tn *Tunnel) bool {
-	return s.passthroughOn.Load() && ((s.opts.TCPDomain != "" && tn.slug != "") || tn.hostname() != "")
+	return s.passthroughOn.Load() && len(s.passthroughNames(tn)) > 0
 }
 
 // refusePassthrough closes a connection of the passthrough listener without a

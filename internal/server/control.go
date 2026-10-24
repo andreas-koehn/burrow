@@ -332,6 +332,8 @@ func (s *Server) endTCPTunnel(tn *Tunnel) {
 	if tn == nil || tn.IsHTTP {
 		return
 	}
+	// Before the claim goes: from now on no lookup returns this tunnel.
+	tn.ended.Store(true)
 	if tn.Listener != nil {
 		_ = tn.Listener.Close()
 		s.ports.Release(tn.RemotePort)
@@ -478,7 +480,13 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 		// that switching back to open or ip gets the same port. It opens
 		// nothing while the service is private.
 		s.releaseAutoPort(svc, serviceID, "private")
-	} else if svc.res.HostnameOnly && s.reachableByName(tn) {
+	} else if svc.res.HostnameOnly && !s.reachableByName(tn) {
+		s.log.Warn("tcp service is set to host name only, but no host name reaches it on this relay; its public port is opened",
+			"service_id", serviceID, "passthrough", s.passthroughOn.Load(), "tcp_domain", s.opts.TCPDomain)
+		if !s.openTCPPort(reg, cs, tr, svc, tn, maxConns, policy, refuseWith) {
+			return
+		}
+	} else if svc.res.HostnameOnly {
 		// By host name only: the passthrough listener reaches it, with the
 		// same policy and limits; no listener and no port. The port is kept
 		// as for a private service (a pinned hold stays for when the port is

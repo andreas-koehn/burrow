@@ -19,6 +19,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -284,6 +285,12 @@ func (d Deps) PostServiceTCPBan(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.BanMin == 0 {
 		writeErr(w, http.StatusBadRequest, "ban_min is required: 1 to 43200 minutes")
+		return
+	}
+	// Checked before the relay is asked about a longer ban: bad input is a
+	// 400, never a 409. The store checks the same.
+	if in.BanMin < store.MinTCPAutoBanBanMin || in.BanMin > store.MaxTCPAutoBanBanMin {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("ban_min must be %d to %d", store.MinTCPAutoBanBanMin, store.MaxTCPAutoBanBanMin))
 		return
 	}
 	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)

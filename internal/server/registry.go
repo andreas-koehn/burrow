@@ -43,6 +43,12 @@ type Tunnel struct {
 	BytesOut atomic.Uint64
 	// sess is the owning session (for control-channel notifies).
 	sess *ClientSession
+	// ended is set by endTCPTunnel before it gives the service's claim
+	// back: the tunnel serves nothing any more, though its session may
+	// still be in the registry for a moment. Lookups by service or by host
+	// name skip it, so a registration that claims the service meanwhile is
+	// the one found.
+	ended atomic.Bool
 
 	// ServiceID is the stable service identity from ServiceResolver (http)
 	// or TCPServiceResolver (tcp); "" for a tunnel without a service.
@@ -278,6 +284,16 @@ func (r *Registry) RemoveSession(cs *ClientSession) {
 }
 
 // AddTunnel records a tunnel under a session and indexes it on the registry.
+// serving reports whether t still serves its service: its end has not
+// begun and its session is not closed. A tunnel that does not serve is never
+// handed a visitor (it would wait for a stream that never comes).
+func (t *Tunnel) serving() bool {
+	if t.ended.Load() {
+		return false
+	}
+	return t.sess == nil || t.sess.Yamux == nil || !t.sess.Yamux.IsClosed()
+}
+
 func (r *Registry) AddTunnel(cs *ClientSession, t *Tunnel) {
 	cs.mu.Lock()
 	if cs.Tunnels == nil {

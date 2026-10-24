@@ -298,6 +298,13 @@ func TestTCPBans_AShorterBanThanTheRelaysIsRefused(t *testing.T) {
 	if a.svcs.lastBan != "" || len(relay.bans) != 0 {
 		t.Fatalf("a refused ban went on: store %q relay %v", a.svcs.lastBan, relay.bans)
 	}
+	// Bad input is a 400, before the relay is asked.
+	for _, min := range []int{-5, 43201} {
+		r = a.c.post(t, "/api/v1/services/rdp/tcp-bans", map[string]any{"source": "203.0.113.7", "ban_min": min})
+		if body := readBody(t, r); r.StatusCode != http.StatusBadRequest || !strings.Contains(body, "ban_min") {
+			t.Fatalf("ban_min %d: %d %s", min, r.StatusCode, body)
+		}
+	}
 	r = a.c.post(t, "/api/v1/services/rdp/tcp-bans", map[string]any{"source": "203.0.113.7", "ban_min": 180})
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("longer: %d %s", r.StatusCode, readBody(t, r))
