@@ -431,6 +431,9 @@ func (o *observer) ObserveTraffic(e observe.Traffic) {
 			r.ObserveHTTPDuration(e.ServiceID, e.Method, e.Duration.Seconds())
 			r.AddHTTPBytesIn(e.ServiceID, e.BytesIn)
 			r.AddHTTPBytesOut(e.ServiceID, e.BytesOut)
+			if e.GRPC {
+				r.IncGRPCRequest(e.ServiceID, e.GRPCStatus)
+			}
 		}
 		r.IncConnections(e.ServiceID, e.Kind, e.Outcome)
 		r.AddConnectionBytesIn(e.ServiceID, e.Kind, e.BytesIn)

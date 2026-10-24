@@ -538,16 +538,13 @@ func (p *Pool) transport(ctx context.Context, src db.MCPSource) (string, http.Ro
 		if host == "" {
 			host = "127.0.0.1"
 		}
+		// The service's upstream protocol and TLS settings, as the proxy
+		// uses them; one tunnel stream per request.
 		serviceID, tunnels := src.ServiceID, p.opts.Tunnels
-		base := &http.Transport{
-			Proxy: nil,
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return tunnels.DialTunnelStreamByServiceID(ctx, serviceID)
-			},
-			DisableCompression: true,
-			DisableKeepAlives:  true, // one tunnel stream per request
-		}
-		endpoint := (&url.URL{Scheme: "http", Host: host, Path: "/mcp"}).String()
+		base, scheme := proxy.GatewayTransport(res, host, func(ctx context.Context) (net.Conn, error) {
+			return tunnels.DialTunnelStreamByServiceID(ctx, serviceID)
+		})
+		endpoint := (&url.URL{Scheme: scheme, Host: host, Path: "/mcp"}).String()
 		return endpoint, &upstreamRT{base: base, host: host, max: p.opts.MaxResponseBytes}, nil
 	}
 	return "", nil, fmt.Errorf("unknown tool source kind %q", src.Kind)

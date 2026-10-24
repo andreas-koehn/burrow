@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"time"
 )
 
 // ErrNotFound is returned by StreamDialer methods when no live tunnel exists
@@ -89,6 +90,9 @@ type Resolved struct {
 	UpstreamTLSVerify     bool
 	UpstreamTLSCAPEM      []byte
 	UpstreamTLSServerName string
+	// GRPCMaxDuration caps every gRPC call to the service, streams
+	// included (grpc_max_duration_s, H8); 0 is no cap.
+	GRPCMaxDuration time.Duration
 }
 
 // StreamDialer is the interface that the proxy uses to:

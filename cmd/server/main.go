@@ -1722,6 +1722,9 @@ func (a proxyConnLogAdapter) Record(ctx context.Context, e proxy.ConnLogEntry) e
 		BytesOut:        e.BytesOut,
 		Status:          connlog.Status(e.Status),
 		Reason:          e.Reason,
+		Protocol:        e.Protocol,
+		GRPCMethod:      e.GRPCMethod,
+		GRPCStatus:      e.GRPCStatus,
 	})
 }
 

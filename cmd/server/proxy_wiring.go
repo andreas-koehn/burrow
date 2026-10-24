@@ -558,6 +558,7 @@ func applyUpstream(r *proxy.Resolved, svc db.Service, tn *server.Tunnel) {
 	if svc.UpstreamTLSCAPEM != "" {
 		r.UpstreamTLSCAPEM = []byte(svc.UpstreamTLSCAPEM)
 	}
+	r.GRPCMaxDuration = time.Duration(svc.GRPCMaxDurationS) * time.Second
 }
 
 // DialTunnelStream implements proxy.StreamDialer.DialTunnelStream.

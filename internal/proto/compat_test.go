@@ -339,3 +339,32 @@ func TestUpstreamProtocolFields(t *testing.T) {
 		}
 	}
 }
+
+// RequestSummary.grpc_status is optional: absent for a request that is no
+// gRPC call, so an older client reads the summary as before, and a summary
+// from an older relay decodes with no status.
+func TestRequestSummaryGRPCStatus(t *testing.T) {
+	plain := RequestSummary{TunnelID: "t", Time: "x", Method: "GET", Path: "/", Status: 200, DurationMs: 3}
+	b, _ := json.Marshal(plain)
+	if want := `{"tunnel_id":"t","time":"x","method":"GET","path":"/","status":200,"duration_ms":3}`; string(b) != want {
+		t.Fatalf("plain summary\n got %s\nwant %s", b, want)
+	}
+	ok := 0
+	call := plain
+	call.Method, call.Path, call.GRPCStatus = "POST", "/pkg.S/M", &ok
+	b, _ = json.Marshal(call)
+	if want := `{"tunnel_id":"t","time":"x","method":"POST","path":"/pkg.S/M","status":200,"duration_ms":3,"grpc_status":0}`; string(b) != want {
+		t.Fatalf("gRPC summary\n got %s\nwant %s", b, want)
+	}
+	var old struct {
+		TunnelID string `json:"tunnel_id"`
+		Status   int    `json:"status"`
+	}
+	if err := json.Unmarshal(b, &old); err != nil || old.Status != 200 {
+		t.Fatalf("older client: %+v %v", old, err)
+	}
+	var back RequestSummary
+	if err := json.Unmarshal([]byte(`{"tunnel_id":"t","status":200}`), &back); err != nil || back.GRPCStatus != nil {
+		t.Fatalf("older relay's summary: %+v %v", back, err)
+	}
+}

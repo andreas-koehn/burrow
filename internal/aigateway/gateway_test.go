@@ -25,6 +25,7 @@ import (
 	"github.com/ankoehn/burrow/internal/aiprovider"
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/guardrails"
+	"github.com/ankoehn/burrow/internal/proto"
 	"github.com/ankoehn/burrow/internal/proxy"
 	"github.com/ankoehn/burrow/internal/redact"
 )
@@ -1941,5 +1942,67 @@ func TestServe_GatewayKeyOnProviderPath_Budget(t *testing.T) {
 	// learns nothing about its budget.
 	if rec := do("bgw_one", "POST", "/v1/chat/completions", `{"model":"llama3"}`); rec.Code != 403 || errCode(t, rec) != "model_not_allowed" {
 		t.Fatalf("not allowed: status %d", rec.Code)
+	}
+}
+
+// A tunnel provider reaches its local service in the service's upstream
+// protocol, as the proxy does: h2c, and h2 or HTTP/1.1 over TLS.
+func TestServe_TunnelUsesTheUpstreamProtocol(t *testing.T) {
+	for _, c := range []struct {
+		protocol  string
+		wantMajor int
+		wantTLS   bool
+	}{
+		{proto.UpstreamH2C, 2, false},
+		{proto.UpstreamH2, 2, true},
+		{proto.UpstreamHTTPS, 1, true},
+		{proto.UpstreamHTTP1, 1, false},
+	} {
+		t.Run(c.protocol, func(t *testing.T) {
+			var mu sync.Mutex
+			var major int
+			var isTLS bool
+			up := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				major, isTLS = r.ProtoMajor, r.TLS != nil
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"ok":true}`)
+			}))
+			var protos http.Protocols
+			protos.SetHTTP1(true)
+			switch c.protocol {
+			case proto.UpstreamH2C:
+				protos.SetUnencryptedHTTP2(true)
+			case proto.UpstreamH2:
+				protos.SetHTTP2(true)
+			}
+			up.Config.Protocols = &protos
+			if c.wantTLS {
+				up.EnableHTTP2 = c.protocol == proto.UpstreamH2
+				up.StartTLS()
+			} else {
+				up.Start()
+			}
+			defer up.Close()
+
+			g := newGateway(nil, nil)
+			g.Tunnels = streamTunnels{
+				res:  &proxy.Resolved{ServiceID: "svc1", AccessMode: "api_key", LocalHost: "127.0.0.1:11434", UpstreamProtocol: c.protocol},
+				addr: up.Listener.Addr().String(),
+			}
+			req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+			req.Header.Set("Authorization", "Bearer sk-good")
+			rec := httptest.NewRecorder()
+			g.Serve(rec, req, "ollama")
+			if rec.Code != 200 {
+				t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if major != c.wantMajor || isTLS != c.wantTLS {
+				t.Fatalf("the local service saw HTTP/%d tls=%v; want HTTP/%d tls=%v", major, isTLS, c.wantMajor, c.wantTLS)
+			}
+		})
 	}
 }

@@ -19,6 +19,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/auth"
+	"github.com/ankoehn/burrow/internal/grpcwire"
 	"github.com/ankoehn/burrow/internal/httpduplex"
 	"github.com/ankoehn/burrow/internal/observe"
 	"github.com/ankoehn/burrow/internal/proto"
@@ -224,6 +225,13 @@ type ConnLogEntry struct {
 	BytesOut        int64
 	Status          string // "closed_clean" | "closed_error" | "closed_idle" | "rejected"
 	Reason          string
+	// Protocol is the request's protocol: "grpc" or "grpc-web" for a gRPC
+	// call, else "h2" or "http/1.1" as the visitor spoke it (H9).
+	Protocol string
+	// GRPCMethod (the request path) and GRPCStatus are set for a gRPC call
+	// only; GRPCStatus is nil when the call ended without a grpc-status.
+	GRPCMethod string
+	GRPCStatus *int
 }
 
 // WithConnLogSink registers the v0.5.0 connection-log sink. When non-nil,
@@ -342,7 +350,22 @@ func WithTLSBase(c *tls.Config) Option {
 }
 
 // ServeHTTP implements http.Handler.
+//
+// A grpc or grpc-web call gets its writer wrapped first (H7): whatever
+// refuses it below, the relay or the upstream, the caller gets a gRPC status
+// in a trailers-only reply instead of an HTTP error. A 200 and a response
+// that carries grpc-status pass untouched.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if grpcwire.Classify(r).GRPCShaped() {
+		gw := newGRPCWriter(w, r)
+		p.serveHTTP(gw, r)
+		gw.finish()
+		return
+	}
+	p.serveHTTP(w, r)
+}
+
+func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	// Strip optional port from Host.
 	host := r.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
@@ -465,8 +488,7 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 	}
 
 	// Step 2: enforce access mode BEFORE opening a stream.
-	ok, status, body, hdr := p.checker.Allow(ctx, res, r)
-	if !ok {
+	if ok, status, body, hdr := p.checker.Allow(ctx, res, r); !ok {
 		logStatus, ost.rejected = StatusRejected, observe.RejectedAccess
 		for k, vs := range hdr {
 			for _, v := range vs {
@@ -481,16 +503,16 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 		return
 	}
 
-	// v0.5.1 P2.3: wrap context with per-request idle timeout when configured.
-	// The cancel is called at function return (deferred). recordOnClose was
-	// deferred first, so it runs last (defer is LIFO): it sees the final
-	// logStatus value, after the context was released.
-	if p.idleTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, p.idleTimeout)
-		defer cancel()
-		r = r.WithContext(ctx)
+	// The idle timeout (v0.5.1 P2.3) or a gRPC call's deadline (H8); a gRPC
+	// call the service cannot take is answered here. The release is
+	// deferred after recordOnClose, so it runs first (defer is LIFO) and
+	// recordOnClose sees the final logStatus, after the context was released.
+	r, release, ok := p.prepareUpstream(w, r, res)
+	defer release()
+	if !ok {
+		return
 	}
+	ctx = r.Context()
 
 	upstreamHost := res.LocalHost
 	if upstreamHost == "" {
@@ -556,6 +578,11 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 			p.log.Warn("proxy custom domain upstream error", "host", host, "err", err)
 			if IsUpstreamTLSError(err) {
 				ost.reason = ReasonUpstreamTLS
+			}
+			if answerDeadline(w, r, err) {
+				// A gRPC call's deadline (H8): DEADLINE_EXCEEDED, which
+				// makes the row closed_error.
+				return
 			}
 			if errors.Is(err, context.DeadlineExceeded) {
 				logStatus = StatusClosedIdle
@@ -653,8 +680,7 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 	}
 
 	// Step 2: enforce access mode BEFORE opening a stream.
-	ok, status, body, hdr := p.checker.Allow(ctx, res, r)
-	if !ok {
+	if ok, status, body, hdr := p.checker.Allow(ctx, res, r); !ok {
 		logStatus, ost.rejected = StatusRejected, observe.RejectedAccess
 		for k, vs := range hdr {
 			for _, v := range vs {
@@ -669,16 +695,16 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 		return
 	}
 
-	// v0.5.1 P2.3: wrap context with per-request idle timeout when configured.
-	// The cancel is called at function return (deferred). recordOnClose was
-	// deferred first, so it runs last (defer is LIFO): it sees the final
-	// logStatus value, after the context was released.
-	if p.idleTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, p.idleTimeout)
-		defer cancel()
-		r = r.WithContext(ctx)
+	// The idle timeout (v0.5.1 P2.3) or a gRPC call's deadline (H8); a gRPC
+	// call the service cannot take is answered here. The release is
+	// deferred after recordOnClose, so it runs first (defer is LIFO) and
+	// recordOnClose sees the final logStatus, after the context was released.
+	r, release, ok := p.prepareUpstream(w, r, res)
+	defer release()
+	if !ok {
+		return
 	}
+	ctx = r.Context()
 
 	// Determine upstream Host value.
 	upstreamHost := res.LocalHost
@@ -791,6 +817,11 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 			p.log.Warn("proxy upstream error", "subdomain", label, "err", err)
 			if IsUpstreamTLSError(err) {
 				ost.reason = ReasonUpstreamTLS
+			}
+			if answerDeadline(w, r, err) {
+				// A gRPC call's deadline (H8): DEADLINE_EXCEEDED, which
+				// makes the row closed_error.
+				return
 			}
 			if errors.Is(err, context.DeadlineExceeded) {
 				logStatus = StatusClosedIdle
@@ -1054,7 +1085,10 @@ func (p *Proxy) GetConfigForClient(hello *tls.ClientHelloInfo) (*tls.Config, err
 //     ErrorHandler closure and post-ServeHTTP 5xx promotion in
 //     serveResolved / serveCustomDomain.
 //   - Reason is ReasonUpstreamTLS when the TLS handshake with the local
-//     service failed, and empty otherwise.
+//     service failed, ReasonGRPCNoStatus for a gRPC call that ended without
+//     a grpc-status, and empty otherwise.
+//   - A gRPC call's method and grpc-status are recorded (grpcResult); an
+//     error code promotes the row to closed_error.
 func (p *Proxy) recordOnClose(
 	r *http.Request,
 	res *Resolved,
@@ -1079,8 +1113,9 @@ func (p *Proxy) recordOnClose(
 		}
 		defer panic(panicked)
 	}
-	p.summarise(r, res, started, ww)
-	p.observe(r, res, sourceIP, started, rc, ww, *status, ost)
+	gc := p.grpcResult(r, res, started, ww, status, ost)
+	p.summarise(r, res, started, ww, gc)
+	p.observe(r, res, sourceIP, started, rc, ww, *status, ost, gc)
 	if p.connLogSink == nil {
 		return
 	}
@@ -1102,6 +1137,9 @@ func (p *Proxy) recordOnClose(
 		BytesOut:        ww.bytes(),
 		Status:          *status,
 		Reason:          ost.reason,
+		Protocol:        gc.protocol,
+		GRPCMethod:      gc.method,
+		GRPCStatus:      gc.status,
 	}
 	// SQLSink.Record spawns its own goroutine + uses context.WithoutCancel,
 	// so passing r.Context() is safe even if the handler has already
@@ -1121,7 +1159,7 @@ func (p *Proxy) recordOnClose(
 //
 // Requests to the /ai/ gateway do not pass through the proxy and are not
 // summarised; tcp tunnels have no requests.
-func (p *Proxy) summarise(r *http.Request, res *Resolved, started time.Time, ww *countingResponseWriter) {
+func (p *Proxy) summarise(r *http.Request, res *Resolved, started time.Time, ww *countingResponseWriter, gc grpcOutcome) {
 	if p.summaries == nil || res == nil || !p.summaries.SummaryWanted(res.TunnelID) {
 		return
 	}
@@ -1141,6 +1179,7 @@ func (p *Proxy) summarise(r *http.Request, res *Resolved, started time.Time, ww 
 		Path:       proto.SummaryPath(r.URL.Path),
 		Status:     status,
 		DurationMs: time.Since(started).Milliseconds(),
+		GRPCStatus: gc.status,
 	})
 }
 
@@ -1149,7 +1188,7 @@ func (p *Proxy) summarise(r *http.Request, res *Resolved, started time.Time, ww 
 // after its response. Nothing of the request's context is used: the visitor
 // may be gone already.
 func (p *Proxy) observe(r *http.Request, res *Resolved, sourceIP string, started time.Time,
-	rc *countingBody, ww *countingResponseWriter, outcome string, ost *obsState) {
+	rc *countingBody, ww *countingResponseWriter, outcome string, ost *obsState, gc grpcOutcome) {
 	if p.observer == nil || res == nil {
 		return
 	}
@@ -1170,6 +1209,7 @@ func (p *Proxy) observe(r *http.Request, res *Resolved, sourceIP string, started
 		SourceIP:   observedIP(sourceIP),
 		BytesIn:    rc.bytes(), BytesOut: ww.bytes(),
 		Started: started, Duration: time.Since(started),
+		GRPC: gc.call, GRPCStatus: gc.status,
 	})
 }
 

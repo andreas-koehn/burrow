@@ -233,8 +233,14 @@ func TestObserver_Traffic(t *testing.T) {
 	})
 	// A method nobody knows and a status no server sends stay bounded.
 	o.ObserveTraffic(observe.Traffic{Kind: observe.TrafficHTTP, ServiceID: "svc1", Method: "BREW\n", Status: 799, Outcome: observe.OutcomeClean})
+	// gRPC calls count by code as well, and a call without a status as none.
+	unavailable := 14
+	o.ObserveTraffic(observe.Traffic{Kind: observe.TrafficHTTP, ServiceID: "svc-grpc", Method: "POST", Status: 200, Outcome: observe.OutcomeError, GRPC: true, GRPCStatus: &unavailable})
+	o.ObserveTraffic(observe.Traffic{Kind: observe.TrafficHTTP, ServiceID: "svc-grpc", Method: "POST", Status: 200, Outcome: observe.OutcomeError, GRPC: true})
 	text := expo(t, rec)
 	wantLines(t, text,
+		`burrow_grpc_requests_total{service="svc-grpc",code="UNAVAILABLE"} 1`,
+		`burrow_grpc_requests_total{service="svc-grpc",code="none"} 1`,
 		`burrow_http_requests_total{service="svc1",method="POST",status="2xx"} 1`,
 		`burrow_http_requests_total{service="svc1",method="other",status="none"} 1`,
 		`burrow_http_request_duration_seconds_count{service="svc1",method="POST"} 1`,

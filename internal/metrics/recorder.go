@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/ankoehn/burrow/internal/grpcwire"
 )
 
 // numBuckets is the fixed bucket-count constant — kept as a top-level const
@@ -78,6 +80,9 @@ var closedSet = []metricDef{
 	{name: "burrow_http_request_bytes_out_total", kind: kindCounter,
 		help:   "Total HTTP response bytes sent.",
 		labels: []string{"service"}},
+	{name: "burrow_grpc_requests_total", kind: kindCounter,
+		help:   "Total gRPC and grpc-web calls through the proxy. code is the grpc-status name (OK, UNAVAILABLE, ...), or none for a call that ended without one.",
+		labels: []string{"service", "code"}},
 
 	// Connection per client.
 	{name: "burrow_client_session_count", kind: kindGauge,
@@ -465,6 +470,22 @@ func (r *Recorder) IncHTTPRequest(service, method string, status int) {
 		[]string{"service", "method", "status"},
 		[]string{service, Method(method), StatusClass(status)},
 		1)
+}
+
+// IncGRPCRequest records one gRPC or grpc-web call through the proxy: it
+// increments burrow_grpc_requests_total{service,code}. code is the call's
+// grpc-status, nil for a call that ended without one ("none"); a number
+// beyond the known codes is UNKNOWN, so the label set stays closed.
+func (r *Recorder) IncGRPCRequest(service string, code *int) {
+	label := "none"
+	if code != nil {
+		label = grpcwire.Code(*code).String()
+		if *code < 0 || *code > int(grpcwire.CodeUnauthenticated) {
+			label = grpcwire.CodeUnknown.String()
+		}
+	}
+	r.incCounter("burrow_grpc_requests_total",
+		[]string{"service", "code"}, []string{service, label}, 1)
 }
 
 // ObserveHTTPDuration records one HTTP request duration sample (seconds).

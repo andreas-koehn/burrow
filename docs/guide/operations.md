@@ -348,6 +348,7 @@ Requests to the model gateway (`/openai`, `/anthropic`, `/ai/…`) are not proxi
 | `burrow_http_request_duration_seconds` | `service`, `method` | their duration up to the last byte, as a summary: quantiles 0.5, 0.95 and 0.99 plus `_count` and `_sum` |
 | `burrow_http_request_bytes_in_total` | `service` | request body bytes |
 | `burrow_http_request_bytes_out_total` | `service` | response body bytes |
+| `burrow_grpc_requests_total` | `service`, `code` | gRPC and grpc-web calls among them. `code` is the call's grpc-status by name (`OK`, `UNAVAILABLE`, …), also for a refusal by the relay, or `none` for a call that ended without one |
 | `burrow_connections_total` | `service`, `kind`, `status` | finished connections. `kind` is `http_proxy` (one per request), `tcp_proxy` (one per visitor connection), `tcp_forward` (one per forward stream of `burrow forward`) or `control` (one per client session). `status` is `closed_clean`, `closed_error`, `closed_idle` or `rejected`; a tcp connection gives only `closed_clean` and `closed_error`, `rejected` and `closed_idle` come from http requests only. A model request through the gateway (a caller with a gateway key) is not a proxied request and never reaches this family. `service` is empty for `tcp_proxy` and `control` |
 | `burrow_connection_bytes_in_total` | `service`, `kind` | bytes visitors sent, by the same `service` and `kind` |
 | `burrow_connection_bytes_out_total` | `service`, `kind` | bytes sent back to visitors |

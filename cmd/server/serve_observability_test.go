@@ -767,6 +767,10 @@ var metricFamiliesWithoutSamples = map[string]string{
 	// binding API refuses an unknown slot and the environment is read once,
 	// at start: it takes a restart without the variable.
 	"burrow_ai_credential_misses_total": "needs a restart without a bound slot's variable",
+	// Counts gRPC calls, which need an HTTP/2 service behind the tunnel; the
+	// driven traffic is HTTP/1.1. cmd/server's TestObserver_Traffic and
+	// internal/proxy's TestGRPC_* cover the path, test/grpce2e the whole.
+	"burrow_grpc_requests_total": "needs a gRPC call to an h2c or h2 service",
 	// Fed by the retention compaction, which runs once a day at 00:30 UTC.
 	// The test boots the whole relay and the run has no seam from outside
 	// (Compactor.OnRun is set inside serve); cmd/server's

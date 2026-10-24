@@ -5,11 +5,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ankoehn/burrow/internal/proto"
 )
@@ -83,6 +85,7 @@ type upstreamTransport struct {
 	mu       sync.Mutex
 	conns    []net.Conn
 	tracked  bool
+	finished bool // done was called: a stream dialled from now on is closed at once
 }
 
 // done releases the transport when the request is over: its idle
@@ -99,15 +102,23 @@ func (u *upstreamTransport) done() {
 	}
 	u.mu.Lock()
 	conns := u.conns
-	u.conns = nil
+	u.conns, u.finished = nil, true
 	u.mu.Unlock()
 	for _, c := range conns {
 		_ = c.Close()
 	}
 }
 
+// track keeps c to be closed by done. A dial that completes after done (the
+// transport may dial for a request that was given up) is closed at once: no
+// one would close it otherwise.
 func (u *upstreamTransport) track(c net.Conn) {
 	u.mu.Lock()
+	if u.finished {
+		u.mu.Unlock()
+		_ = c.Close()
+		return
+	}
 	u.conns = append(u.conns, c)
 	u.mu.Unlock()
 }
@@ -119,6 +130,12 @@ func (u *upstreamTransport) track(c net.Conn) {
 // http1 is the transport of the releases before, field for field. An
 // upgrade goes as HTTP/1.1 on every protocol: plain for h2c, over TLS for h2.
 func (p *Proxy) newUpstreamTransport(r *http.Request, res *Resolved, upstreamHost string,
+	dial func(ctx context.Context) (net.Conn, error),
+) *upstreamTransport {
+	return newUpstreamTransport(&p.upstreamTLS, r, res, upstreamHost, dial)
+}
+
+func newUpstreamTransport(tlsCache *upstreamTLSCache, r *http.Request, res *Resolved, upstreamHost string,
 	dial func(ctx context.Context) (net.Conn, error),
 ) *upstreamTransport {
 	protocol := effectiveUpstream(res)
@@ -160,7 +177,7 @@ func (p *Proxy) newUpstreamTransport(r *http.Request, res *Resolved, upstreamHos
 		u.scheme, u.tracked = "https", true
 		u.rt = &http.Transport{
 			DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				c, err := p.dialUpstreamTLS(ctx, res, upstreamHost, alpn, dial)
+				c, err := dialUpstreamTLS(ctx, tlsCache, res, upstreamHost, alpn, dial)
 				if err != nil {
 					return nil, err
 				}
@@ -191,10 +208,14 @@ func (p *Proxy) newUpstreamTransport(r *http.Request, res *Resolved, upstreamHos
 // local service over it, offering alpn only. For h2 the service must choose
 // h2; for http/1.1 it may also choose nothing. A failed handshake is an
 // errUpstreamTLS; a stream that cannot be opened is dial's own error.
-func (p *Proxy) dialUpstreamTLS(ctx context.Context, res *Resolved, upstreamHost, alpn string,
+//
+// The handshake is bounded by upstreamTLSHandshakeTimeout as well as by ctx:
+// a local service that accepts the connection and never answers must not
+// hold a request (a gRPC call may have no deadline at all) for good.
+func dialUpstreamTLS(ctx context.Context, cache *upstreamTLSCache, res *Resolved, upstreamHost, alpn string,
 	dial func(ctx context.Context) (net.Conn, error),
 ) (*tls.Conn, error) {
-	base, err := p.upstreamTLS.config(res, upstreamHost)
+	base, err := cache.config(res, upstreamHost)
 	if err != nil {
 		return nil, &errUpstreamTLS{err}
 	}
@@ -205,8 +226,19 @@ func (p *Proxy) dialUpstreamTLS(ctx context.Context, res *Resolved, upstreamHost
 	cfg := base.Clone()
 	cfg.NextProtos = []string{alpn}
 	tc := tls.Client(raw, cfg)
-	if err := tc.HandshakeContext(ctx); err != nil {
+	hctx, cancel := context.WithTimeout(ctx, upstreamTLSHandshakeTimeout)
+	defer cancel()
+	if err := tc.HandshakeContext(hctx); err != nil {
 		_ = raw.Close()
+		if ctx.Err() != nil {
+			// The request was given up or its own deadline passed: not a
+			// failure of the local service's TLS.
+			return nil, ctx.Err()
+		}
+		if hctx.Err() != nil {
+			// Not the request's deadline (closed_idle): the local service's.
+			err = errors.New("the TLS handshake did not finish within " + upstreamTLSHandshakeTimeout.String())
+		}
 		return nil, &errUpstreamTLS{err}
 	}
 	if got := tc.ConnectionState().NegotiatedProtocol; got != alpn && (alpn == "h2" || got != "") {
@@ -215,6 +247,10 @@ func (p *Proxy) dialUpstreamTLS(ctx context.Context, res *Resolved, upstreamHost
 	}
 	return tc, nil
 }
+
+// upstreamTLSHandshakeTimeout bounds the TLS handshake with a local service.
+// A variable for the tests only.
+var upstreamTLSHandshakeTimeout = 10 * time.Second
 
 // upstreamTLSServerName is the TLS server name for res: its
 // UpstreamTLSServerName, else the host of upstreamHost (the service's local
@@ -237,7 +273,14 @@ func upstreamTLSServerName(res *Resolved, upstreamHost string) string {
 //     self-signed certificates, and the hop already runs inside the tunnel's
 //     TLS.
 func buildUpstreamTLS(res *Resolved, upstreamHost string) (*tls.Config, error) {
-	cfg := &tls.Config{ServerName: upstreamTLSServerName(res, upstreamHost)}
+	// Every request is a TLS connection of its own (one tunnel stream per
+	// request): the session cache lets the next one resume, sparing a full
+	// handshake. It lives as long as the configuration, so a changed
+	// setting or tunnel starts afresh.
+	cfg := &tls.Config{
+		ServerName:         upstreamTLSServerName(res, upstreamHost),
+		ClientSessionCache: tls.NewLRUClientSessionCache(64),
+	}
 	switch {
 	case len(res.UpstreamTLSCAPEM) > 0:
 		pool := x509.NewCertPool()
@@ -293,4 +336,65 @@ func (c *upstreamTLSCache) config(res *Resolved, upstreamHost string) (*tls.Conf
 	c.m[res.ServiceID] = upstreamTLSEntry{key: key, cfg: cfg}
 	c.mu.Unlock()
 	return cfg, nil
+}
+
+// gatewayTLS keeps the upstream TLS configurations of the gateways' requests.
+var gatewayTLS upstreamTLSCache
+
+// GatewayTransport is how the AI gateway and the MCP gateway reach the local
+// service of res, a tunnel's: in the service's upstream protocol, with its
+// TLS settings, as the proxy does (H2–H4). scheme is the scheme the request
+// URLs must have ("https" for https and h2). upstreamHost is the Host the
+// requests are sent with, the default TLS server name.
+//
+// Every request gets a transport and a tunnel stream of its own, without
+// keep-alive, and both are released when its response body is closed or
+// read to its end (or when the round trip fails).
+func GatewayTransport(res *Resolved, upstreamHost string, dial func(ctx context.Context) (net.Conn, error)) (rt http.RoundTripper, scheme string) {
+	scheme = "http"
+	switch effectiveUpstream(res) {
+	case proto.UpstreamHTTPS, proto.UpstreamH2:
+		scheme = "https"
+	}
+	return &gatewayRT{res: res, host: upstreamHost, dial: dial}, scheme
+}
+
+type gatewayRT struct {
+	res  *Resolved
+	host string
+	dial func(ctx context.Context) (net.Conn, error)
+}
+
+func (g *gatewayRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	up := newUpstreamTransport(&gatewayTLS, req, g.res, g.host, g.dial)
+	up.rt.DisableKeepAlives = true // one tunnel stream per request
+	resp, err := up.rt.RoundTrip(req)
+	if err != nil {
+		up.done()
+		return nil, err
+	}
+	resp.Body = &releasingBody{ReadCloser: resp.Body, release: up.done}
+	return resp, nil
+}
+
+// releasingBody calls release once, when the body is closed or read to its
+// end.
+type releasingBody struct {
+	io.ReadCloser
+	once    sync.Once
+	release func()
+}
+
+func (b *releasingBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err == io.EOF {
+		b.once.Do(b.release)
+	}
+	return n, err
+}
+
+func (b *releasingBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(b.release)
+	return err
 }

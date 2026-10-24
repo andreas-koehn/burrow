@@ -158,6 +158,11 @@ type Traffic struct {
 	BytesIn, BytesOut int64
 	Started           time.Time
 	Duration          time.Duration
+
+	// GRPC: the request was a grpc or grpc-web call (TrafficHTTP), and
+	// GRPCStatus its grpc-status; nil when it ended without one.
+	GRPC       bool
+	GRPCStatus *int
 }
 
 // The outcomes of a ModelRequest.

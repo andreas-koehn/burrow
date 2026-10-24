@@ -67,6 +67,7 @@ import (
 	"github.com/ankoehn/burrow/internal/cache/exact"
 	"github.com/ankoehn/burrow/internal/cache/semantic"
 	"github.com/ankoehn/burrow/internal/credinject"
+	"github.com/ankoehn/burrow/internal/grpcwire"
 	"github.com/ankoehn/burrow/internal/guardrails"
 	"github.com/ankoehn/burrow/internal/httpduplex"
 	"github.com/ankoehn/burrow/internal/inspector"
@@ -401,6 +402,18 @@ func (c *Chain) ServeHTTP(w http.ResponseWriter, r *http.Request, svc Service, p
 		return
 	}
 
+	// A gRPC-like call (grpc, grpc-web, Connect streaming) goes to the
+	// upstream as it arrives, whatever AI sections the service has (H6): its
+	// body is a stream of binary messages, never buffered, inspected,
+	// redacted, cached or metered, and no system text is put into it. The
+	// rate limit and quota above applied per call; the service's upstream
+	// credential is still put on it.
+	if grpcwire.Classify(r).Streaming() {
+		c.injectCredential(r, svc)
+		httpduplex.Serve(w, r, proxyHandler)
+		return
+	}
+
 	// A request that carries system text needs the buffered path even when
 	// the service has no AI feature: the text is put into the body there.
 	if IsAIPassThrough(svc.AIConfig) && (SystemTextFrom(r.Context()) == "" || !SystemTextApplies(r.Method, r.URL.Path)) {
@@ -416,6 +429,24 @@ func (c *Chain) ServeHTTP(w http.ResponseWriter, r *http.Request, svc Service, p
 		return
 	}
 	c.run(w, r, svc, proxyHandler, false)
+}
+
+// injectCredential strips the visitor's credential header and puts the
+// upstream's real one on r (spec B.3). It does nothing when no injector is
+// wired, and when the upstream handler applies the credential itself
+// (WithOwnCredential).
+func (c *Chain) injectCredential(r *http.Request, svc Service) {
+	if c.CredInjector == nil || ownCredential(r.Context()) {
+		return
+	}
+	if _, err := c.CredInjector.Apply(r.Context(), svc.ID, r); err != nil {
+		c.Log.Warn("aigw: credential injection failed",
+			slog.String("service_id", svc.ID),
+			slog.String("err", err.Error()))
+		// Fail open: continue without injected credential so the upstream
+		// receives the request unchanged. The upstream will 401/403 if its
+		// credential is absent.
+	}
 }
 
 // allow runs the rate limiter for one request. It returns the request with
@@ -987,16 +1018,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// Skipped when c.CredInjector is nil (nil-safe), and when the upstream
 	// handler applies the credential itself (WithOwnCredential).
 	// ---------------------------------------------------------------
-	if c.CredInjector != nil && !ownCredential(r.Context()) {
-		if _, err := c.CredInjector.Apply(r.Context(), svc.ID, r); err != nil {
-			c.Log.Warn("aigw: credential injection failed",
-				slog.String("service_id", svc.ID),
-				slog.String("err", err.Error()))
-			// Fail open: continue without injected credential so the upstream
-			// receives the request unchanged. The upstream will 401/403 if its
-			// credential is absent.
-		}
-	}
+	c.injectCredential(r, svc)
 
 	// ---------------------------------------------------------------
 	// Step 9: proxy + inspector.post + meter — wrap the visitor writer

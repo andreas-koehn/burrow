@@ -247,6 +247,9 @@ type RequestSummary struct {
 	Path       string `json:"path"` // the path the app saw, without the query; at most MaxSummaryPath bytes
 	Status     int    `json:"status"`
 	DurationMs int64  `json:"duration_ms"` // 0 when the relay does not measure it
+	// GRPCStatus is the grpc-status of a gRPC call (0 is OK); absent for any
+	// other request and for a call that ended without one.
+	GRPCStatus *int `json:"grpc_status,omitempty"`
 }
 
 // Codes of control-plane refusals. They travel next to the text, which stays

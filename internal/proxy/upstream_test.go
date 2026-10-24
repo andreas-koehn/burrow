@@ -397,6 +397,10 @@ func TestUpstream_UpgradeIsHTTP1(t *testing.T) {
 			if err != nil || line != "echo ping\n" {
 				t.Fatalf("echo %q %v", line, err)
 			}
+			// The upgraded connection's tunnel stream is closed once both
+			// ends are done, on every protocol.
+			_ = conn.Close()
+			streamsClosed(t, d)
 			mu.Lock()
 			defer mu.Unlock()
 			if major != 1 || isTLS != c.wantTLS {
@@ -557,4 +561,96 @@ func frontServer(h http.Handler, front string) *httptest.Server {
 	ts.EnableHTTP2 = true
 	ts.StartTLS()
 	return ts
+}
+
+// multiDialer routes each subdomain to a dialer of its own, so services can
+// have local services with TLS certificates of their own.
+type multiDialer map[string]*fakeDialer
+
+func (m multiDialer) Lookup(ctx context.Context, sub string) (*proxy.Resolved, error) {
+	if d, ok := m[sub]; ok {
+		return d.Lookup(ctx, sub)
+	}
+	return nil, proxy.ErrNotFound
+}
+
+func (m multiDialer) LookupByServiceID(ctx context.Context, id string) (*proxy.Resolved, error) {
+	for _, d := range m {
+		if res, err := d.LookupByServiceID(ctx, id); err == nil {
+			return res, nil
+		}
+	}
+	return nil, proxy.ErrNotFound
+}
+
+func (m multiDialer) DialTunnelStream(ctx context.Context, sub string) (net.Conn, error) {
+	if d, ok := m[sub]; ok {
+		return d.DialTunnelStream(ctx, sub)
+	}
+	return nil, proxy.ErrNotFound
+}
+
+func (m multiDialer) DialTunnelStreamByServiceID(ctx context.Context, id string) (net.Conn, error) {
+	for _, d := range m {
+		if _, err := d.LookupByServiceID(ctx, id); err == nil {
+			return d.DialTunnelStreamByServiceID(ctx, id)
+		}
+	}
+	return nil, proxy.ErrNotFound
+}
+
+// Two services with CAs of their own keep their own TLS configuration: each
+// verifies against its own CA, request after request.
+func TestUpstream_TwoServicesTwoCAs(t *testing.T) {
+	m := multiDialer{}
+	for _, sub := range []string{"a", "b"} {
+		ca := newTestCA(t, sub+".internal")
+		s := &seen{}
+		d := newFakeDialer(http.HandlerFunc(s.handler))
+		d.tlsConfig, _ = ca.localTLS("h2", "http/1.1")
+		d.register(sub, &proxy.Resolved{ServiceID: "svc-" + sub, TunnelID: "t-" + sub, AccessMode: "open",
+			LocalHost: sub + ".internal:443", UpstreamProtocol: proto.UpstreamH2, UpstreamTLSCAPEM: ca.caPEM})
+		m[sub] = d
+	}
+	ts := httptest.NewServer(proxy.New(m, openChecker{}, authDomain, testLog()))
+	defer ts.Close()
+	for i, sub := range []string{"a", "b", "a", "b", "b", "a"} {
+		if code, body := upstreamGet(t, ts, sub); code != http.StatusOK {
+			t.Fatalf("request %d to %s: %d %q", i, sub, code, body)
+		}
+	}
+	for _, d := range m {
+		streamsClosed(t, d)
+	}
+}
+
+// A local service that accepts the stream and never answers the TLS
+// handshake is given up after the handshake bound: 502, reason upstream_tls.
+func TestUpstream_TLSHandshakeBounded(t *testing.T) {
+	defer proxy.SetUpstreamTLSHandshakeTimeoutForTest(200 * time.Millisecond)()
+	d := newFakeDialer(http.NotFoundHandler())
+	d.register("app", &proxy.Resolved{ServiceID: "s1", AccessMode: "open", LocalHost: "127.0.0.1:443", UpstreamProtocol: proto.UpstreamH2})
+	logs := &connLogRec{}
+	ts := httptest.NewServer(proxy.New(silentDialer{d}, openChecker{}, authDomain, testLog(), proxy.WithConnLogSink(logs)))
+	defer ts.Close()
+	start := time.Now()
+	code, _ := upstreamGet(t, ts, "app")
+	if code != http.StatusBadGateway {
+		t.Fatalf("status %d", code)
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Fatalf("the handshake held the request %v", took)
+	}
+	if e := logs.last(t); e.Reason != proxy.ReasonUpstreamTLS || e.Status != proxy.StatusClosedError {
+		t.Fatalf("row %+v", e)
+	}
+}
+
+// silentDialer's streams take every byte and never answer.
+type silentDialer struct{ *fakeDialer }
+
+func (silentDialer) DialTunnelStreamByServiceID(context.Context, string) (net.Conn, error) {
+	a, b := net.Pipe()
+	go func() { _, _ = io.Copy(io.Discard, b) }()
+	return a, nil
 }

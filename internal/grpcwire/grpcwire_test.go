@@ -236,6 +236,21 @@ func TestWriteTrailersOnly(t *testing.T) {
 	if _, ok := res.Header["Grpc-Message"]; ok {
 		t.Error("stale grpc-message kept")
 	}
+
+	// Trailers set with http.TrailerPrefix before the reply are not sent:
+	// a trailers-only reply has none.
+	rec = httptest.NewRecorder()
+	rec.Header().Set(http.TrailerPrefix+"Grpc-Status", "0")
+	rec.Header()["trailer:x-other"] = []string{"v"}
+	WriteTrailersOnly(rec, "", CodeInternal, "")
+	for k := range rec.Header() {
+		if strings.HasPrefix(strings.ToLower(k), "trailer:") {
+			t.Errorf("prefixed key %q kept", k)
+		}
+	}
+	if res = rec.Result(); len(res.Trailer) != 0 || res.Header.Get("Grpc-Status") != "13" {
+		t.Errorf("trailers %v, grpc-status %q", res.Trailer, res.Header.Get("Grpc-Status"))
+	}
 }
 
 func TestStatus(t *testing.T) {
@@ -249,6 +264,8 @@ func TestStatus(t *testing.T) {
 		{"header", http.Header{"Grpc-Status": {"14"}}, CodeUnavailable, true},
 		{"ok", http.Header{"Grpc-Status": {"0"}}, CodeOK, true},
 		{"prefixed", http.Header{http.TrailerPrefix + "Grpc-Status": {"4"}}, CodeDeadlineExceeded, true},
+		{"prefixed lower case", http.Header{"Trailer:grpc-status": {"4"}}, CodeDeadlineExceeded, true},
+		{"prefix in other case", http.Header{"TRAILER:GRPC-STATUS": {"7"}}, CodePermissionDenied, true},
 		{"spaces", http.Header{"Grpc-Status": {" 13 "}}, CodeInternal, true},
 		{"unknown number", http.Header{"Grpc-Status": {"99"}}, CodeUnknown, true},
 		{"not a number", http.Header{"Grpc-Status": {"abc"}}, 0, false},
@@ -313,6 +330,10 @@ func TestMessage(t *testing.T) {
 	h = http.Header{http.TrailerPrefix + "Grpc-Message": {"x%20y"}}
 	if got := Message(h); got != "x y" {
 		t.Errorf("prefixed Message = %q", got)
+	}
+	h = http.Header{"Trailer:grpc-message": {"lower"}}
+	if got := Message(h); got != "lower" {
+		t.Errorf("lower-case prefixed Message = %q", got)
 	}
 	if Message(nil) != "" {
 		t.Error("nil")

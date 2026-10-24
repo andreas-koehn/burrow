@@ -20,6 +20,8 @@ var allMetricNames = []string{
 	"burrow_http_request_duration_seconds",
 	"burrow_http_request_bytes_in_total",
 	"burrow_http_request_bytes_out_total",
+	// gRPC calls through the proxy.
+	"burrow_grpc_requests_total",
 	// Connection per client.
 	"burrow_client_session_count",
 	"burrow_client_session_duration_seconds",
@@ -303,6 +305,8 @@ func TestWriteTextClosedSetPresent(t *testing.T) {
 	r.IncAICredentialMisses("svc")
 	// v0.12.0 — MCP tool calls.
 	r.IncMCPToolCall("burrow", "ok")
+	// gRPC calls.
+	r.IncGRPCRequest("svc", nil)
 	// v0.5.0 — custom domains.
 	r.SetCustomDomainCount(3)
 	// v0.5.0 — connection logs.
@@ -751,5 +755,32 @@ func TestMCPToolCallMetric(t *testing.T) {
 	}
 	if strings.Contains(out, `tool="`) {
 		t.Error("a tool label appeared")
+	}
+}
+
+// burrow_grpc_requests_total counts calls by service and code name: a known
+// code, UNKNOWN for a number beyond them, none for a call without status.
+func TestIncGRPCRequest(t *testing.T) {
+	r := New()
+	code := func(c int) *int { return &c }
+	r.IncGRPCRequest("svc", code(0))
+	r.IncGRPCRequest("svc", code(0))
+	r.IncGRPCRequest("svc", code(14))
+	r.IncGRPCRequest("svc", code(99))
+	r.IncGRPCRequest("svc", code(-3))
+	r.IncGRPCRequest("svc", nil)
+	var buf bytes.Buffer
+	if err := r.WriteText(&buf); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`burrow_grpc_requests_total{service="svc",code="OK"} 2`,
+		`burrow_grpc_requests_total{service="svc",code="UNAVAILABLE"} 1`,
+		`burrow_grpc_requests_total{service="svc",code="UNKNOWN"} 2`,
+		`burrow_grpc_requests_total{service="svc",code="none"} 1`,
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("missing %s in\n%s", want, buf.String())
+		}
 	}
 }

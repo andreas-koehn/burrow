@@ -632,26 +632,25 @@ func (g *Gateway) tunnelUpstream(w http.ResponseWriter, r *http.Request, p db.AI
 	}
 
 	serviceID, host, publicHost := p.ServiceID, res.LocalHost, g.PublicHost
+	// The service's upstream protocol and TLS settings, as the proxy uses
+	// them; one tunnel stream per request.
+	transport, scheme := proxy.GatewayTransport(res, host, func(ctx context.Context) (net.Conn, error) {
+		return g.Tunnels.DialTunnelStreamByServiceID(ctx, serviceID)
+	})
 	rp := &httputil.ReverseProxy{
 		FlushInterval: -1, // token streams must not be buffered
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.Header.Del("X-Forwarded-Port")
 			pr.Out.Header.Set("X-Forwarded-Proto", "https")
 			pr.Out.Header.Set("X-Forwarded-Host", publicHost)
-			pr.Out.URL = &url.URL{Scheme: "http", Host: host, Path: pr.In.URL.Path, RawPath: pr.In.URL.RawPath, RawQuery: pr.In.URL.RawQuery}
+			pr.Out.URL = &url.URL{Scheme: scheme, Host: host, Path: pr.In.URL.Path, RawPath: pr.In.URL.RawPath, RawQuery: pr.In.URL.RawQuery}
 			pr.Out.Host = host
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			aiprovider.DropSetCookie(resp.Header)
 			return nil
 		},
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return g.Tunnels.DialTunnelStreamByServiceID(ctx, serviceID)
-			},
-			DisableCompression: true,
-			DisableKeepAlives:  true, // one tunnel stream per request
-		},
+		Transport: transport,
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
 			g.Log.Warn("aigateway: tunnel upstream error", "provider", p.Slug, "err", err)
 			if errors.Is(err, proxy.ErrNotFound) {

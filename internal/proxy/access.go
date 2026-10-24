@@ -10,6 +10,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/grpcwire"
 )
 
 // AccessMode is the string enum carried in Resolved.AccessMode. The four
@@ -326,6 +327,16 @@ func (ac *accessChecker) checkBurrowLogin(ctx context.Context, res *Resolved, r 
 		}
 	}
 
+	// A gRPC client cannot follow the sign-in: it gets 401, which the
+	// proxy's gRPC writer turns into UNAUTHENTICATED (H7). The mode stays
+	// allowed: a service may serve browsers and gRPC both, and a browser's
+	// grpc-web call with a session passed above.
+	if grpcwire.Classify(r).GRPCShaped() {
+		h := make(http.Header)
+		h.Set("Content-Type", "text/plain; charset=utf-8")
+		return false, http.StatusUnauthorized, msgBrowserSignIn, h
+	}
+
 	// Path-routed requests carry a synthetic Host; rebuild the URL the visitor
 	// actually used so the gate sends them back to the same origin. r.URL has
 	// the /svc/<slug> prefix already stripped, r.RequestURI does not.
@@ -339,6 +350,10 @@ func (ac *accessChecker) checkBurrowLogin(ctx context.Context, res *Resolved, r 
 	h.Set("Location", gateURL)
 	return false, http.StatusFound, "", h
 }
+
+// msgBrowserSignIn is the refusal of a gRPC call to a burrow_login service
+// without a session.
+const msgBrowserSignIn = "this service needs a browser sign-in; use access mode api_key for gRPC"
 
 // parseBearer extracts the token from an Authorization header value that
 // follows the "Bearer <token>" scheme. Returns the trimmed token, or an empty

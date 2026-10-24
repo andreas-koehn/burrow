@@ -268,11 +268,17 @@ func unhex(c byte) (byte, bool) {
 // the content type (application/grpc when empty), and grpc-status and
 // grpc-message as headers, with no body. Other headers already set, such as
 // Retry-After, are kept; headers that described a body, and an earlier
-// grpc-status or grpc-message, are removed.
+// grpc-status or grpc-message, are removed, and so are trailers set with
+// http.TrailerPrefix: a trailers-only reply has no trailers.
 func WriteTrailersOnly(w http.ResponseWriter, contentType string, code Code, message string) {
 	h := w.Header()
 	for _, k := range []string{"Content-Length", "Content-Encoding", "Content-Range", "Etag", "Trailer", "Grpc-Status", "Grpc-Message", "Grpc-Status-Details-Bin"} {
 		h.Del(k)
+	}
+	for k := range h {
+		if hasTrailerPrefix(k) {
+			delete(h, k)
+		}
 	}
 	if contentType == "" {
 		contentType = "application/grpc"
@@ -295,13 +301,34 @@ func Status(h http.Header) (Code, bool) {
 		return 0, false
 	}
 	for _, k := range []string{"Grpc-Status", http.TrailerPrefix + "Grpc-Status"} {
-		if v, ok := h[k]; ok && len(v) > 0 {
+		if v := lookup(h, k); len(v) > 0 {
 			if c, ok := parseCode(v[0]); ok {
 				return c, true
 			}
 		}
 	}
 	return 0, false
+}
+
+// lookup is h[k], and for a key with http.TrailerPrefix also any key that
+// differs from it in case only: the name after the prefix is whatever the
+// handler wrote, canonical or not.
+func lookup(h http.Header, k string) []string {
+	if v, ok := h[k]; ok || !hasTrailerPrefix(k) {
+		return v
+	}
+	for hk, v := range h {
+		if hasTrailerPrefix(hk) && strings.EqualFold(hk, k) {
+			return v
+		}
+	}
+	return nil
+}
+
+// hasTrailerPrefix reports whether k starts with http.TrailerPrefix, in any
+// case.
+func hasTrailerPrefix(k string) bool {
+	return len(k) >= len(http.TrailerPrefix) && strings.EqualFold(k[:len(http.TrailerPrefix)], http.TrailerPrefix)
 }
 
 func parseCode(s string) (Code, bool) {
@@ -328,7 +355,7 @@ func ResponseStatus(header, trailer http.Header) (Code, bool) {
 // Message reads and decodes grpc-message from h, as Status reads grpc-status.
 func Message(h http.Header) string {
 	for _, k := range []string{"Grpc-Message", http.TrailerPrefix + "Grpc-Message"} {
-		if v, ok := h[k]; ok && len(v) > 0 {
+		if v := lookup(h, k); len(v) > 0 {
 			return DecodeMessage(v[0])
 		}
 	}

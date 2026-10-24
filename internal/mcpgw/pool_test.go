@@ -411,18 +411,19 @@ func TestPool_RestartsDoNotLeakGoroutines(t *testing.T) {
 
 // fakeTunnels reaches an upstream over plain TCP as if through a tunnel.
 type fakeTunnels struct {
-	addr   string // the listener the "client" forwards to
-	local  string // the tunnel's local address (Host header)
-	online bool
-	mu     sync.Mutex
-	dials  int
+	addr     string // the listener the "client" forwards to
+	local    string // the tunnel's local address (Host header)
+	protocol string // the service's upstream protocol; "" is http1
+	online   bool
+	mu       sync.Mutex
+	dials    int
 }
 
 func (f *fakeTunnels) LookupByServiceID(_ context.Context, id string) (*proxy.Resolved, error) {
 	if !f.online {
 		return nil, proxy.ErrNotFound
 	}
-	return &proxy.Resolved{ServiceID: id, LocalHost: f.local}, nil
+	return &proxy.Resolved{ServiceID: id, LocalHost: f.local, UpstreamProtocol: f.protocol}, nil
 }
 
 func (f *fakeTunnels) DialTunnelStreamByServiceID(ctx context.Context, _ string) (net.Conn, error) {
@@ -476,6 +477,31 @@ func TestTunnelSource_SyncAndCallThroughTheTunnel(t *testing.T) {
 	after, _ := st.MCPSourceBySlug(context.Background(), "notes")
 	if after.LastSyncError != ErrTunnelOffline.Error() || after.ToolCount != 5 {
 		t.Fatalf("after offline sync: %q, %d tools", after.LastSyncError, after.ToolCount)
+	}
+}
+
+// A tunnel source is reached in its service's upstream protocol: here
+// HTTP/1.1 over TLS to a local MCP server with a self-signed certificate.
+func TestTunnelSource_UsesTheUpstreamProtocol(t *testing.T) {
+	up := mcptest.NewServer(t, mcptest.Opts{TLS: true})
+	st, uid := newStore(t)
+	svc := db.Service{ID: "svc-tls", UserID: uid, Name: "tlsnotes", Type: "http", Subdomain: "tlsnotes", AccessMode: "api_key"}
+	if err := st.CreateService(context.Background(), svc); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(up.URL)
+	tun := &fakeTunnels{addr: u.Host, local: "127.0.0.1:8931", protocol: "https", online: true}
+	p := New(Options{Store: st, Tunnels: tun})
+	t.Cleanup(p.Close)
+	src, err := st.CreateMCPSource(context.Background(), uid, store.MCPSourceInput{Slug: "tlsnotes", Name: "tlsnotes", Kind: "tunnel", ServiceID: svc.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := p.Sync(context.Background(), "tlsnotes"); err != nil || res.Added != 5 {
+		t.Fatalf("sync over TLS: %+v %v", res, err)
+	}
+	if _, err := echo(t, p, src, "x"); err != nil {
+		t.Fatal(err)
 	}
 }
 
