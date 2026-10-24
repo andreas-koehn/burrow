@@ -152,7 +152,8 @@ func (d Deps) PutRole(w http.ResponseWriter, r *http.Request) {
 //
 // The store hands back the users the database moved off the role, which is
 // empty unless a user was given the role between its check and the delete;
-// the handler discards the list.
+// the live forwards of each such user are checked again, as after a role
+// change through PATCH /users.
 func (d Deps) DeleteRole(w http.ResponseWriter, r *http.Request) {
 	if d.Roles == nil {
 		writeErr(w, http.StatusInternalServerError, "role store unavailable")
@@ -162,12 +163,16 @@ func (d Deps) DeleteRole(w http.ResponseWriter, r *http.Request) {
 	if !d.mayChangeRole(w, r, name) {
 		return
 	}
-	if _, err := d.Roles.DeleteRole(r.Context(), name); err != nil {
+	moved, err := d.Roles.DeleteRole(r.Context(), name)
+	if err != nil {
 		if writeRoleErr(w, err) {
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, "delete role failed")
 		return
+	}
+	for _, uid := range moved {
+		d.recheckUserForwards(r.Context(), uid)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

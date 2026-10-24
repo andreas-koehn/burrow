@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -541,5 +542,49 @@ func TestStoreErrUnknownPermissionIsValueType(t *testing.T) {
 	err := store.ErrUnknownPermission{Key: "x"}
 	if !errors.As(err, &unk) || unk.Key != "x" {
 		t.Fatalf("errors.As broke: unk=%+v", unk)
+	}
+}
+
+// recordedRechecks is a ForwardRechecker that records whom it was asked about.
+type recordedRechecks struct {
+	mu       sync.Mutex
+	users    []string
+	services []string
+}
+
+func (r *recordedRechecks) RecheckForwards(_ context.Context, serviceID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.services = append(r.services, serviceID)
+	return 0
+}
+
+func (r *recordedRechecks) RecheckUserForwards(_ context.Context, userID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.users = append(r.users, userID)
+	return 0
+}
+
+// A user the delete moved to the fallback role gets their live forwards
+// checked again, as a role change through PATCH /users does; nobody else.
+func TestRoleDelete_MovedUsersHaveTheirForwardsRechecked(t *testing.T) {
+	rs := newFakeRoleStore()
+	_ = rs.CreateRole(context.Background(), "analyst", "", []string{"ai:read:any"}, false)
+	rs.users["u1"] = "analyst"
+	rs.users["u2"] = "analyst"
+	rs.users["u3"] = "user"
+	rec := &recordedRechecks{}
+	d := Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, Roles: rs, Forwards: rec}
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+	if r := c.delete(t, "/api/v1/roles/analyst"); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE status=%d body=%s want 204", r.StatusCode, readBody(t, r))
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if strings.Join(rec.users, ",") != "u1,u2" {
+		t.Fatalf("rechecked users %v, want u1,u2", rec.users)
 	}
 }

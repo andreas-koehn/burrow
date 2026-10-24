@@ -119,6 +119,11 @@ v0.13.0 makes TCP services first-class: access modes `open`, `ip` and
 `private`, and `burrow forward`. See
 [Remote desktop and other TCP services](/guide/remote-desktop-and-tcp).
 
+- **Upgrade the relay before the clients.** A v0.13.0 client never sends a
+  `private` service (asked for, or the default of a new one) to an older
+  relay, so a client upgraded first stops serving a tcp entry without
+  `access:` until the relay is upgraded too (or the entry gets
+  `access: open`).
 - **Sign in once more on every client.** Run `burrow login --force <relay>`
   once on each machine. It stores the SHA-256 fingerprint of the relay's
   control certificate, and from then on the client accepts port 7000 only with
@@ -138,7 +143,13 @@ v0.13.0 makes TCP services first-class: access modes `open`, `ip` and
   Rename one of them.
 - **New TCP services are private.** A v0.13.0 client creates a new TCP service
   `private` when no access mode is given. Services that exist keep their
-  mode; services created by older clients are `open`.
+  mode: services created by older clients **stay `open`** until you change
+  them in the dashboard (`burrow tcp` without `--access` then says "this
+  service is open in the dashboard; use --access private or change it
+  there"). Two cases still create `open`: a `burrow.yaml` entry with
+  `remote:` and no `access:` (a fixed public port is what it asks for), and
+  `burrow connect --config`, which does not read `access:` at all. Use
+  `burrow up` with `access:` for new services.
 - **Do not roll back** to an older image once a TCP service uses `ip` or
   `private`. An older relay does not know these modes and would serve those
   services `open`, on a public port. Set them to `open` first, or restore a

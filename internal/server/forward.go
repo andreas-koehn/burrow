@@ -352,6 +352,7 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 	defer limits.done()
 
 	notFound := fmt.Sprintf("no tcp service %q that you may reach", fo.Target)
+	epoch := s.forwardEpoch.Load()
 	ctx, cancel := context.WithTimeout(context.Background(), forwardAuthTimeout)
 	target, err := s.opts.Forwards.AuthorizeForward(ctx, cs.UserID, fo.Target)
 	cancel()
@@ -419,6 +420,11 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 	c.closeFn = func() { endStream(st); endStream(home) }
 	tn.addConn(c)
 	cs.addForward(c)
+	// A recheck that ran since the authorization above did not see this
+	// forward: ask again now that a later recheck will.
+	if !target.Owner && s.forwardEpoch.Load() != epoch {
+		s.recheck(context.Background(), []*liveConn{c})
+	}
 	s.log.Info("forward opened", "service_id", target.ServiceID, "tunnel_id", tn.ID, "user_id", cs.UserID,
 		"token_name", cs.TokenName, "session_id", cs.SessionID, "source_ip", c.sourceIP)
 	ev := sessionEvent(observe.ForwardOpened, cs)
@@ -501,6 +507,7 @@ func (s *Server) RecheckForwards(ctx context.Context, serviceID string) int {
 	if !s.forwarding() {
 		return 0
 	}
+	s.forwardEpoch.Add(1)
 	tn, ok := s.LookupTunnelByServiceID(serviceID)
 	if !ok || tn.IsHTTP {
 		return 0
@@ -515,6 +522,7 @@ func (s *Server) RecheckUserForwards(ctx context.Context, userID string) int {
 	if !s.forwarding() || userID == "" {
 		return 0
 	}
+	s.forwardEpoch.Add(1)
 	var conns []*liveConn
 	for _, cs := range s.reg.Sessions() {
 		if cs.UserID != userID {
@@ -529,6 +537,9 @@ func (s *Server) RecheckUserForwards(ctx context.Context, userID string) int {
 	return s.recheck(ctx, conns)
 }
 
+// recheck authorizes conns again. Its callers count the recheck in
+// forwardEpoch before they list the conns, so that an open registered after
+// the list was taken sees the new epoch and asks again.
 func (s *Server) recheck(ctx context.Context, conns []*liveConn) int {
 	n := 0
 	for _, c := range conns {

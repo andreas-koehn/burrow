@@ -222,6 +222,21 @@ func TestNotes_TCPServices(t *testing.T) {
 	if got := tcpNote(stricter, "relay.example.com", true); !strings.Contains(got, "--access open was asked for; the dashboard keeps the service private.") {
 		t.Errorf("stricter: %s", got)
 	}
+	// Started without --access (a private default), and the service that
+	// exists is less strict: said plainly, with the two ways to change it.
+	for _, mode := range []string{"open", "ip"} {
+		kept := open
+		kept.Wished, kept.Default, kept.AccessMode, kept.LocalAddr = "", "private", mode, "127.0.0.1:8080"
+		want := "This service is " + mode + " in the dashboard; use --access private or change it there."
+		if got := tcpNote(kept, "relay.example.com", true); !strings.Contains(got, want) {
+			t.Errorf("default private, stored %s: %s", mode, got)
+		}
+	}
+	privateKept := private
+	privateKept.Wished, privateKept.Default = "", "private"
+	if got := tcpNote(privateKept, "relay.example.com", true); strings.Contains(got, "in the dashboard;") {
+		t.Errorf("default private, stored private: %s", got)
+	}
 	// What the relay says goes to a terminal.
 	evil := private
 	evil.Slug = "t\x1b[2J"

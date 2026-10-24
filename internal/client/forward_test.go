@@ -672,6 +672,9 @@ func TestTCPAccess_TheDefaultIsAppliedOnlyToANewService(t *testing.T) {
 	modes := map[string]string{}
 	for _, reg := range obs.regs {
 		modes[reg.Name] = reg.AccessMode
+		if reg.Default != "private" {
+			t.Errorf("%s: default %q not reported", reg.Name, reg.Default)
+		}
 		if reg.Wished != "" {
 			t.Errorf("%s: a default is no wish: %+v", reg.Name, reg)
 		}

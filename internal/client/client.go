@@ -357,6 +357,9 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		}
 		if tn.Type == "tcp" {
 			reg.Wished = tn.Access
+			if tn.Access == "" {
+				reg.Default = accessDefault
+			}
 		}
 		for _, name := range rr.Ignored {
 			switch name {

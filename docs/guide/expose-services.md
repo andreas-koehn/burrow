@@ -92,7 +92,9 @@ with "relay too old".
 
 Without `--access`, `burrow tcp` asks for no mode: a service that exists is
 served in the mode stored in the dashboard, and a new one is created
-`private`. With `--access`, a mode set in the dashboard that is stricter is
+`private`. Services created by older clients stay `open`; the client then
+says "this service is open in the dashboard; use --access private or change
+it there". With `--access`, a mode set in the dashboard that is stricter is
 kept; a looser one is not widened by the client: the relay refuses with
 "restart with --access `<mode>`". Against a relay too old for tcp access
 modes, `ip` and `private` (asked for, or the default of a new service) are
@@ -103,8 +105,9 @@ without `access:` works like `burrow tcp` without `--access`: an existing
 service keeps its stored mode, and a new one is created `private`. An entry
 with `remote:` and no `access:` is created `open`, as before, because a fixed
 public port is what it asks for. Clients older than v0.13.0 create every new
-tcp service `open`. Use `access: ip` when other machines must connect
-directly. `access: private` together with `remote:` is refused. A `forwards:` section runs
+tcp service `open`, and so does `burrow connect --config`, which does not
+read `access:`; use `burrow up`. Use `access: ip` when other machines must
+connect directly. `access: private` together with `remote:` is refused. A `forwards:` section runs
 forwards with `burrow up`; a file may hold forwards alone:
 
 ```yaml

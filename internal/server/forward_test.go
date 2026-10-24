@@ -51,9 +51,24 @@ type fakeForwards struct {
 	allowed map[string]bool
 	err     error
 	calls   int
+	// afterAuth runs once, after the next authorization and before its
+	// answer is returned, outside the lock.
+	afterAuth func()
 }
 
-func (f *fakeForwards) AuthorizeForward(_ context.Context, userID, target string) (ForwardTarget, error) {
+func (f *fakeForwards) AuthorizeForward(ctx context.Context, userID, target string) (ForwardTarget, error) {
+	t, err := f.authorize(ctx, userID, target)
+	f.mu.Lock()
+	hook := f.afterAuth
+	f.afterAuth = nil
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return t, err
+}
+
+func (f *fakeForwards) authorize(_ context.Context, userID, target string) (ForwardTarget, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
@@ -846,5 +861,38 @@ func TestVisitor_TheRowSaysTheSessionClosed(t *testing.T) {
 		if e.Kind == observe.TrafficTCP && e.Status == observe.OutcomeClean && e.Reason != ConnLogReasonSessionClosed {
 			t.Fatalf("visitor row %+v", e)
 		}
+	}
+}
+
+// A recheck that runs while a forward is between its authorization and its
+// registration as a live connection does not miss it: the open sees that a
+// recheck ran, asks again, and ends the forward.
+func TestForward_ARecheckDuringTheOpenIsNotMissed(t *testing.T) {
+	r := newForwardRelay(t, 19564, nil)
+	if rr := r.home.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x", Access: "private"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	r.fwd.allow("u3")
+	r.fwd.mu.Lock()
+	r.fwd.afterAuth = func() {
+		r.fwd.mu.Lock()
+		delete(r.fwd.allowed, "u3")
+		r.fwd.mu.Unlock()
+		if n := r.srv.RecheckForwards(context.Background(), "svc-rdp"); n != 0 {
+			t.Errorf("the recheck found %d live forwards; the open is not registered yet", n)
+		}
+	}
+	r.fwd.mu.Unlock()
+	st, _, err := r.forwarder("friend").open(t, "rdp")
+	if err == nil && !ended(st, 5*time.Second) {
+		t.Fatal("the forward runs although its right was taken during the open")
+	}
+	if row := r.rowOf("u3"); row.Reason != ConnLogReasonAccessRevoked {
+		t.Fatalf("row %+v", row)
+	}
+	// The owner's open is not asked twice and runs.
+	ownerSt, resp, _ := r.forwarder("secret").open(t, "rdp")
+	if !resp.OK || readN(t, ownerSt, 3) != "hi " {
+		t.Fatalf("owner: %+v", resp)
 	}
 }

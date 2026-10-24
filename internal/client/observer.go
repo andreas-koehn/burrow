@@ -31,6 +31,9 @@ type RegisteredTunnel struct {
 	// AccessMode differs from it when the dashboard keeps a tcp service
 	// stricter than the wish.
 	Wished string
+	// Default is the mode a new tcp service would have been created in
+	// (TunnelSpec.AccessDefault) when nothing was wished; "" otherwise.
+	Default string
 
 	// What follows is known only from a relay that reports it; an older one
 	// leaves it empty.

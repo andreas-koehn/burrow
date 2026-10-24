@@ -239,6 +239,11 @@ func tcpWarning(t client.RegisteredTunnel, single bool) string {
 		parts = append(parts, "Port "+port+" ("+what+") on a public port is scanned and attacked within minutes: "+
 			"use --access private and burrow forward, or keep it to known addresses with --access ip.")
 	}
+	// Started without --access: a service that exists keeps its mode, and
+	// one less strict than the default a new one would have gets said.
+	if t.Wished == "" && t.Default == "private" && (t.AccessMode == "open" || t.AccessMode == "ip") {
+		parts = append(parts, "This service is "+t.AccessMode+" in the dashboard; use --access private or change it there.")
+	}
 	if t.Wished != "" && t.Wished != t.AccessMode {
 		switch t.AccessMode {
 		case "open", "ip", "private":
