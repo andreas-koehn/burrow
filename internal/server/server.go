@@ -21,6 +21,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/proto"
+	"github.com/ankoehn/burrow/internal/relaynames"
 	"github.com/ankoehn/burrow/internal/tcpsniff"
 )
 
@@ -357,6 +358,13 @@ type Options struct {
 	// service has it too: the http side owns it. An error terminates as
 	// well. nil: no custom domain covers any name.
 	CustomDomainCovers func(ctx context.Context, name string) (bool, error)
+	// RelayNames are the names the relay serves itself on its HTTPS port
+	// (the dashboard's: its auth domain and the names under it, the
+	// services domain, the ACME names, the names of its file certificate).
+	// The mux on that port (SplitPassthrough) always terminates them.
+	// nil: AuthDomain (and the names under it), ServicesDomain and
+	// CertNames.
+	RelayNames *relaynames.Set
 	// TCPGuards keeps the bans and the daily usage of tcp services so that
 	// they survive a restart (tcp_guard.go). nil: they live in memory only.
 	TCPGuards TCPGuardStore
@@ -414,6 +422,16 @@ type Server struct {
 	// passthrough_mux.go).
 	helloTimeout, helloTimeoutBusy time.Duration
 	passPeek, muxPeek              peekBudget
+	// relayNames are Options.RelayNames (or what New makes of the domains);
+	// muxOn: SplitPassthrough runs.
+	relayNames *relaynames.Set
+	muxOn      atomic.Bool
+	// covers caches Options.CustomDomainCovers for the mux (under coversMu):
+	// coversTTL long, at most coversMax names.
+	coversMu  sync.Mutex
+	covers    map[string]coversEntry
+	coversTTL time.Duration
+	coversMax int
 	// shadowWarned holds the tcp passthrough names the HTTPS port's mux
 	// terminated as the relay's own and warned about (once each).
 	shadowWarned sync.Map
@@ -485,8 +503,9 @@ func New(o Options) (*Server, error) {
 		usageFlush: defaultUsageFlush, clock: time.Now,
 
 		helloTimeout: defaultHelloTimeout, helloTimeoutBusy: defaultHelloTimeoutBusy,
-		passPeek: peekBudget{max: defaultPeekMax, perPeer: defaultPeekPerPeer, trustedMax: defaultPeekTrusted},
-		muxPeek:  peekBudget{max: defaultMuxPeekMax, perPeer: defaultMuxPeekPerPeer, trustedMax: defaultMuxPeekTrusted},
+		passPeek:  peekBudget{max: defaultPeekMax, perPeer: defaultPeekPerPeer, trustedMax: defaultPeekTrusted},
+		muxPeek:   peekBudget{max: defaultMuxPeekMax, perPeer: defaultMuxPeekPerPeer, trustedMax: defaultMuxPeekTrusted},
+		coversTTL: defaultCoversTTL, coversMax: defaultCoversMax,
 	}
 	if o.clock != nil {
 		s.clock = o.clock
@@ -495,6 +514,10 @@ func New(o Options) (*Server, error) {
 		s.usageFlush = o.usageFlush
 	}
 	s.ports = newPortAllocator(o.PortMin, o.PortMax)
+	s.relayNames = o.RelayNames
+	if s.relayNames == nil {
+		s.relayNames = relaynames.New([]string{o.AuthDomain}, append([]string{o.ServicesDomain}, o.CertNames...)...)
+	}
 	s.passthroughOn.Store(o.TLSPassthrough)
 	return s, nil
 }
@@ -571,6 +594,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", s.opts.Listen, err)
 	}
+	// Counted before the listener is published: whoever sees Addr() may
+	// call Wait, and an Add after a Wait has begun is a race.
+	s.wg.Add(1)
 	s.mu.Lock()
 	s.ln = ln
 	s.mu.Unlock()
@@ -578,7 +604,6 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	go func() { <-ctx.Done(); _ = ln.Close() }()
 
-	s.wg.Add(1)
 	go s.byteTicker(ctx)
 
 	// B11: capped exponential backoff on transient accept errors (EMFILE etc.)

@@ -152,6 +152,10 @@ func (d Deps) PutServiceTCPHostname(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "tcp_hostname must not be "+dom+" or a name under it: the relay gives those names out itself")
 			return
 		}
+		if d.RelayNames.Owns(name) {
+			writeErr(w, http.StatusConflict, "tcp_hostname "+name+" is a name the relay serves itself on its HTTPS port (its certificate or ACME names)")
+			return
+		}
 	}
 	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
 	if err != nil {

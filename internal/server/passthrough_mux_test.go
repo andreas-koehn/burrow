@@ -22,16 +22,15 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/ankoehn/burrow/internal/devcert"
 	"github.com/ankoehn/burrow/internal/observe"
 	"github.com/ankoehn/burrow/internal/proto"
 	"github.com/ankoehn/burrow/internal/proxyproto"
+	"github.com/ankoehn/burrow/internal/relaynames"
 	"github.com/ankoehn/burrow/internal/testutil"
 )
 
@@ -46,6 +45,8 @@ type muxRelay struct {
 	// tlsConns counts the connections the HTTPS server was handed (each a
 	// *tls.Conn).
 	tlsConns atomic.Int32
+	// mux is the listener the HTTPS server serves.
+	mux net.Listener
 }
 
 // newMuxRelay starts the relay with BURROW_TCP_DOMAIN and an auth domain;
@@ -92,7 +93,8 @@ func newMuxRelay(t *testing.T, min, max int, mut func(*Options), tweak func(*Ser
 	hs.Protocols.SetHTTP2(true)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { _ = hs.ServeTLS(a.srv.SplitPassthrough(ctx, ln), "", ""); close(done) }()
+	m.mux = a.srv.SplitPassthrough(ctx, ln)
+	go func() { _ = hs.ServeTLS(m.mux, "", ""); close(done) }()
 	t.Cleanup(func() {
 		sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer scancel()
@@ -516,7 +518,7 @@ func TestMux_TheHTTPSideWinsAName(t *testing.T) {
 			}
 			return name == "shop.example.com", nil
 		}
-	}, nil)
+	}, func(s *Server) { s.coversTTL = 0 }) // every hello asks
 	for _, name := range []string{"shop.example.com", "apps.example.com", "app.relay.example.com", "free.example.com"} {
 		r.res.mu.Lock()
 		r.res.hosts["svc-"+strings.Split(name, ".")[0]] = name
@@ -550,20 +552,44 @@ func TestMux_TheHTTPSideWinsAName(t *testing.T) {
 	_ = tc.Close()
 }
 
+// File-certificate mode without an auth domain: the names of the
+// dashboard's certificate (Options.RelayNames) are the relay's own, a
+// wildcard over exactly one label. A tcp service with such a name is not
+// reached on 443; one with a name a label deeper is.
+func TestMux_TheCertificatesNamesAreTheRelays(t *testing.T) {
+	r := newMuxRelay(t, 19714, 19716, func(o *Options) {
+		o.AuthDomain = ""
+		o.RelayNames = relaynames.New(nil, "dash.example.com", "*.wild.example.com")
+	}, nil)
+	for svc, name := range map[string]string{"dash": "dash.example.com", "one": "x.wild.example.com", "deep": "a.b.wild.example.com"} {
+		r.res.mu.Lock()
+		r.res.hosts["svc-"+svc] = name
+		r.res.mu.Unlock()
+		if rr := r.c.register(t, proto.TunnelRegister{Name: svc, Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK {
+			t.Fatalf("register %s: %+v", svc, rr)
+		}
+	}
+	for _, name := range []string{"dash.example.com", "x.wild.example.com"} {
+		tc, cn, err := muxHandshake(r.addr, name, nil, nil)
+		if err != nil || cn != "relay" {
+			t.Fatalf("%s: %q %v", name, cn, err)
+		}
+		_ = tc.Close()
+		if _, ok := r.srv.shadowWarned.Load(name); !ok {
+			t.Errorf("no warning for %s", name)
+		}
+	}
+	if got, err := rawVisit(r.addr, clientHello(t, "a.b.wild.example.com"), 5*time.Second); err != nil || len(got) == 0 {
+		t.Fatalf("a label deeper: %v", err)
+	}
+}
+
 // Closing the mux (http.Server.Shutdown, or the end of its context) closes
 // every connection that waits for its hello or for Accept, and leaves no
 // goroutine behind; Accept then reports net.ErrClosed. The mux marks the
 // relay as reaching tcp services by name.
 func TestMux_CloseStopsPendingPeeks(t *testing.T) {
-	// A server that is not served: the mux needs none of the control port.
-	dir := t.TempDir()
-	if err := devcert.Generate(dir, true); err != nil {
-		t.Fatal(err)
-	}
-	srv, err := New(Options{TLSCert: filepath.Join(dir, "dev-server.pem"), TLSKey: filepath.Join(dir, "dev-server-key.pem"), Auth: fakeAuth{uid: "u1"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	srv := newObservedRelay(t, 19708, nil).srv
 	if srv.passthroughOn.Load() {
 		t.Fatal("passthrough on before the mux")
 	}
@@ -623,5 +649,219 @@ func TestMux_CloseStopsPendingPeeks(t *testing.T) {
 			t.Fatalf("%d still waiting", srv.muxPeek.waiting())
 		}
 		leak()
+	}
+}
+
+// dialAddrFrom connects to addr from the loopback address src (127.0.0.x), a
+// peer of its own for the budgets.
+func dialAddrFrom(t *testing.T, src, addr string) net.Conn {
+	t.Helper()
+	d := net.Dialer{Timeout: 2 * time.Second, LocalAddr: &net.TCPAddr{IP: net.ParseIP(src)}}
+	c, err := d.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial from %s: %v", src, err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// handshakeOn runs a TLS handshake with server name sni on c and returns the
+// common name of the certificate it saw.
+func handshakeOn(c net.Conn, sni string) (string, error) {
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	tc := tls.Client(c, &tls.Config{ServerName: sni, InsecureSkipVerify: true}) //nolint:gosec // self-signed
+	if err := tc.Handshake(); err != nil {
+		return "", err
+	}
+	return tc.ConnectionState().PeerCertificates[0].Subject.CommonName, nil
+}
+
+// A full global budget of untrusted peers does not close new connections:
+// they go to the TLS server without a peek (so HTTPS stays up under a
+// flood), and a tcp service's name among them is terminated, not passed
+// through. The per-peer cap still closes.
+func TestMux_AFullGlobalBudgetFallsThroughToTLS(t *testing.T) {
+	r := newMuxRelay(t, 19717, 19717, nil, func(s *Server) {
+		s.helloTimeout = 5 * time.Second
+		s.muxPeek.max, s.muxPeek.perPeer = 3, 1
+	})
+	if rr := r.c.register(t, proto.TunnelRegister{Name: "web", Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	for _, src := range []string{"127.0.0.2", "127.0.0.3", "127.0.0.4"} {
+		dialAddrFrom(t, src, r.addr)
+	}
+	r.waitFor("the budget is full", func() bool { return r.srv.muxPeek.waiting() == 3 })
+	for _, c := range []struct{ src, sni string }{{"127.0.0.5", muxAuthDomain}, {"127.0.0.6", "s-web.tcp.example.com"}} {
+		start := time.Now()
+		if cn, err := handshakeOn(dialAddrFrom(t, c.src, r.addr), c.sni); err != nil || cn != "relay" {
+			t.Fatalf("%s over the global budget: %q %v", c.sni, cn, err)
+		}
+		if took := time.Since(start); took > 2*time.Second {
+			t.Fatalf("%s: served after %v", c.sni, took)
+		}
+	}
+	// A second silent connection of a peer that waits already is closed.
+	if err := closedWithoutAByte(dialAddrFrom(t, "127.0.0.2", r.addr), time.Second); err != nil {
+		t.Fatalf("over the per-peer cap: %v", err)
+	}
+	if n := r.srv.passRefusals.count(muxRefusalKey, PassthroughRefusedBusy); n != 1 {
+		t.Fatalf("%d busy refusals, want the per-peer one only", n)
+	}
+	settle()
+	if r.told.Load() != 0 {
+		t.Fatalf("the home client was told of %d connections", r.told.Load())
+	}
+}
+
+// The trusted proxies have a budget of their own, across their addresses
+// and without a per-peer cap; over it a connection is closed (busy), and
+// untrusted peers are not affected.
+func TestMux_TheTrustedBudget(t *testing.T) {
+	r := newMuxRelay(t, 19718, 19718, func(o *Options) {
+		o.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/29")}
+	}, func(s *Server) {
+		s.helloTimeout = 5 * time.Second
+		s.muxPeek.max, s.muxPeek.perPeer, s.muxPeek.trustedMax = 10, 10, 3
+	})
+	held := []net.Conn{dialAddrFrom(t, "127.0.0.2", r.addr), dialAddrFrom(t, "127.0.0.2", r.addr), dialAddrFrom(t, "127.0.0.3", r.addr)}
+	r.waitFor("the trusted budget is full", func() bool { return r.srv.muxPeek.waiting() == 3 })
+	for i, c := range held {
+		if err := closedWithoutAByte(c, 200*time.Millisecond); err == nil || err.Error() != "still open" {
+			t.Fatalf("trusted wait %d: %v", i, err)
+		}
+	}
+	if err := closedWithoutAByte(dialAddrFrom(t, "127.0.0.4", r.addr), time.Second); err != nil {
+		t.Fatalf("over the trusted budget: %v", err)
+	}
+	if n := r.srv.passRefusals.count(muxRefusalKey, PassthroughRefusedBusy); n != 1 {
+		t.Fatalf("%d busy", n)
+	}
+	if cn, err := handshakeOn(dialAddrFrom(t, "127.0.0.9", r.addr), muxAuthDomain); err != nil || cn != "relay" {
+		t.Fatalf("an untrusted peer: %q %v", cn, err)
+	}
+}
+
+// Once a budget is more than three quarters full, a new connection gets
+// the busy wait (2 s) instead of 5 s.
+func TestMux_AFullBudgetWaitsTwoSeconds(t *testing.T) {
+	r := newMuxRelay(t, 19719, 19719, nil, func(s *Server) { s.muxPeek.max, s.muxPeek.perPeer = 4, 1 })
+	if s := r.srv; s.helloTimeout != 5*time.Second || s.helloTimeoutBusy != 2*time.Second {
+		t.Fatalf("timeouts %v / %v", s.helloTimeout, s.helloTimeoutBusy)
+	}
+	for _, src := range []string{"127.0.0.2", "127.0.0.3", "127.0.0.4"} { // three quarters: the full wait
+		dialAddrFrom(t, src, r.addr)
+	}
+	r.waitFor("three wait", func() bool { return r.srv.muxPeek.waiting() == 3 })
+	start := time.Now()
+	if err := closedWithoutAByte(dialAddrFrom(t, "127.0.0.5", r.addr), 4*time.Second); err != nil {
+		t.Fatalf("the fourth: %v", err)
+	}
+	if took := time.Since(start); took < 1800*time.Millisecond || took > 3*time.Second {
+		t.Fatalf("the fourth was closed after %v, want about 2 s", took)
+	}
+	if n := r.srv.passRefusals.count(muxRefusalKey, PassthroughRefusedTimeout); n != 1 {
+		t.Fatalf("%d timeouts", n)
+	}
+}
+
+// The custom-domain lookup of a tcp service's name is cached for a short
+// while (a hello per connection must not be a query per connection), in a
+// bounded cache; a failed lookup is not cached.
+func TestMux_TheCustomDomainLookupIsCached(t *testing.T) {
+	var calls atomic.Int32
+	fail := atomic.Bool{}
+	r := newMuxRelay(t, 19720, 19722, func(o *Options) {
+		o.CustomDomainCovers = func(context.Context, string) (bool, error) {
+			calls.Add(1)
+			if fail.Load() {
+				return false, errors.New("db down")
+			}
+			return false, nil
+		}
+	}, func(s *Server) { s.coversTTL, s.coversMax = 500*time.Millisecond, 2 })
+	for _, n := range []string{"a", "b", "c"} {
+		if rr := r.c.register(t, proto.TunnelRegister{Name: n, Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK {
+			t.Fatalf("register %s: %+v", n, rr)
+		}
+	}
+	// Each visit from a source of its own: short visits of one source
+	// count towards a ban.
+	src := 10
+	visit := func(sni string) {
+		t.Helper()
+		src++
+		c := dialAddrFrom(t, fmt.Sprintf("127.0.0.%d", src), r.addr)
+		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+		hello := clientHello(t, sni)
+		if _, err := c.Write(hello); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.ReadFull(c, make([]byte, len(hello))); err != nil {
+			t.Fatalf("%s: %v", sni, err)
+		}
+		_ = c.Close()
+	}
+	for range 5 {
+		visit("s-a.tcp.example.com")
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("%d lookups for five hellos", n)
+	}
+	time.Sleep(600 * time.Millisecond)
+	visit("s-a.tcp.example.com")
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("%d lookups after the ttl", n)
+	}
+	visit("s-b.tcp.example.com")
+	visit("s-c.tcp.example.com")
+	if n := r.srv.coversLen(); n > 2 {
+		t.Fatalf("%d cached names, at most 2", n)
+	}
+	// A failure is not remembered: each hello asks again (and is terminated).
+	time.Sleep(600 * time.Millisecond)
+	fail.Store(true)
+	before := calls.Load()
+	for range 2 {
+		tc, cn, err := muxHandshake(r.addr, "s-a.tcp.example.com", nil, nil)
+		if err != nil || cn != "relay" {
+			t.Fatalf("lookup failing: %q %v", cn, err)
+		}
+		_ = tc.Close()
+	}
+	if n := calls.Load() - before; n != 2 {
+		t.Fatalf("%d lookups for two hellos while failing", n)
+	}
+}
+
+// A lookup still running when the mux closes is cancelled: Close does not
+// wait for its timeout.
+func TestMux_CloseCancelsALookup(t *testing.T) {
+	started := make(chan struct{}, 1)
+	r := newMuxRelay(t, 19723, 19723, func(o *Options) {
+		o.CustomDomainCovers = func(ctx context.Context, _ string) (bool, error) {
+			started <- struct{}{}
+			<-ctx.Done()
+			return false, ctx.Err()
+		}
+	}, nil)
+	if rr := r.c.register(t, proto.TunnelRegister{Name: "a", Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	conn, err := net.Dial("tcp", r.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, _ = conn.Write(clientHello(t, "s-a.tcp.example.com"))
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no lookup")
+	}
+	start := time.Now()
+	_ = r.mux.Close()
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Fatalf("Close took %v", took)
 	}
 }

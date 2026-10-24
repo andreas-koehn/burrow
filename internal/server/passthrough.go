@@ -167,11 +167,21 @@ type peekBudget struct {
 	by             map[string]int
 }
 
+// What start says about a new wait.
+type peekVerdict int
+
+const (
+	peekOK          peekVerdict = iota // counted; it may wait
+	peekFullTotal                      // the untrusted peers' total is reached
+	peekFullPeer                       // this source's share is reached
+	peekFullTrusted                    // the trusted proxies' budget is reached
+)
+
 // start counts a connection that waits for its hello and returns how long it
-// may take, or reports that there is no room. A trusted proxy counts against
-// trustedMax only; anyone else against max and perPeer. The wait is
+// may take (peekOK), or which limit leaves no room. A trusted proxy counts
+// against trustedMax only; anyone else against max and perPeer. The wait is
 // busyTimeout (at most timeout) once the budget is over three quarters full.
-func (b *peekBudget) start(peer netip.Addr, trusted bool, timeout, busyTimeout time.Duration) (time.Duration, bool) {
+func (b *peekBudget) start(peer netip.Addr, trusted bool, timeout, busyTimeout time.Duration) (time.Duration, peekVerdict) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	wait := func(n, max int) time.Duration {
@@ -182,24 +192,24 @@ func (b *peekBudget) start(peer netip.Addr, trusted bool, timeout, busyTimeout t
 	}
 	if trusted {
 		if b.trusted >= b.trustedMax {
-			return 0, false
+			return 0, peekFullTrusted
 		}
 		b.trusted++
-		return wait(b.trusted, b.trustedMax), true
-	}
-	if b.total >= b.max {
-		return 0, false
+		return wait(b.trusted, b.trustedMax), peekOK
 	}
 	key := peekKey(peer)
 	if b.by[key] >= b.perPeer {
-		return 0, false
+		return 0, peekFullPeer
+	}
+	if b.total >= b.max {
+		return 0, peekFullTotal
 	}
 	if b.by == nil {
 		b.by = map[string]int{}
 	}
 	b.total++
 	b.by[key]++
-	return wait(b.total, b.max), true
+	return wait(b.total, b.max), peekOK
 }
 
 // end ends a wait of start.
@@ -228,7 +238,8 @@ func (b *peekBudget) waiting() int {
 
 // startPeek starts a wait of the passthrough listener (passPeek).
 func (s *Server) startPeek(peer netip.Addr, trusted bool) (time.Duration, bool) {
-	return s.passPeek.start(peer, trusted, s.helloTimeout, s.helloTimeoutBusy)
+	d, v := s.passPeek.start(peer, trusted, s.helloTimeout, s.helloTimeoutBusy)
+	return d, v == peekOK
 }
 
 // endPeek ends a wait of startPeek.

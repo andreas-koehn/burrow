@@ -237,7 +237,11 @@ func bootObsRelayEnv(t *testing.T, extra map[string]string) *obsRelay {
 			start := time.Now()
 			cancel()
 			select {
-			case <-done:
+			case err := <-done:
+				// A graceful stop returns nil.
+				if err != nil {
+					t.Errorf("serve returned %v on a graceful stop", err)
+				}
 			case <-time.After(90 * time.Second):
 				t.Error("serve did not stop after its context was cancelled")
 			}

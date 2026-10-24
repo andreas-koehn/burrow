@@ -468,6 +468,7 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 	}
 	tn.slug = svc.res.Slug
 	tn.setHostname(svc.res.TCPHostname)
+	s.warnShadowedNames(tn, mode)
 	if tr.ProxyProtocol == proto.ProxyProtocolV2 {
 		tn.clientProxy = proto.ProxyProtocolV2
 	}
@@ -701,6 +702,7 @@ func (s *Server) reconcileTCP(ctx context.Context, tn *Tunnel) error {
 	}
 	tn.setTCPSettings(acc.ProxyProtocol, acc.IdleTimeout)
 	tn.setHostname(acc.Hostname)
+	s.warnShadowedNames(tn, mode)
 	if tn.guard != nil {
 		tn.guard.apply(acc.Limits, s.now())
 	}

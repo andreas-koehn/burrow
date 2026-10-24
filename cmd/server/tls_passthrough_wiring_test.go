@@ -13,6 +13,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/binary"
+	"encoding/pem"
 	"errors"
 	"io"
 	"math/big"
@@ -20,12 +21,15 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ankoehn/burrow/internal/client"
+	"github.com/ankoehn/burrow/internal/config"
+	"github.com/ankoehn/burrow/internal/devcert"
 	"github.com/ankoehn/burrow/internal/proxyproto"
 	"github.com/ankoehn/burrow/internal/server"
 )
@@ -389,5 +393,37 @@ func TestServe_IngressTrustsItsProxies(t *testing.T) {
 	}
 	if code := get("203.0.113.9"); code != http.StatusOK {
 		t.Fatalf("another visitor behind the proxy: %d", code)
+	}
+}
+
+// relayNameSet is built once for the mux and the API: the dashboard's
+// host and the names under it, the services host, the ACME names and, in
+// file-certificate mode, the names of BURROW_HTTP_TLS_CERT, also without
+// an auth domain. A certificate that cannot be read stops the relay.
+func TestRelayNameSet(t *testing.T) {
+	dir := t.TempDir()
+	if err := devcert.Generate(dir, false); err != nil {
+		t.Fatal(err)
+	}
+	cert := filepath.Join(dir, "dev-server.pem") // names localhost
+	set, err := relayNameSet(&config.ServerConfig{HTTPTLSCert: cert, HTTPTLSKey: "k"}, "", nil)
+	if err != nil || !set.Owns("localhost") || set.Owns("rdp.example.com") {
+		t.Fatalf("file certificate: %v", err)
+	}
+	wild := filepath.Join(dir, "wild.pem")
+	c := selfSignedTLS(t) // *.example.com, *.tcp.example.com
+	if err := os.WriteFile(wild, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Certificate[0]}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	set, err = relayNameSet(&config.ServerConfig{HTTPTLSCert: wild, HTTPTLSKey: "k", ServicesDomain: "apps.other.test"}, "", nil)
+	if err != nil || !set.Owns("dash.example.com") || set.Owns("a.b.example.com") || !set.Owns("apps.other.test") {
+		t.Fatalf("wildcard certificate: %v", err)
+	}
+	set, err = relayNameSet(&config.ServerConfig{}, "burrow.example.com", []string{"burrow.example.com", "Other.Example.org"})
+	if err != nil || !set.Owns("x.burrow.example.com") || !set.Owns("other.example.org") || set.Owns("rdp.example.com") {
+		t.Fatalf("acme: %v", err)
+	}
+	if _, err := relayNameSet(&config.ServerConfig{HTTPTLSCert: filepath.Join(dir, "missing.pem"), HTTPTLSKey: "k"}, "", nil); err == nil {
+		t.Fatal("a missing certificate accepted")
 	}
 }

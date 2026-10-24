@@ -637,6 +637,14 @@ func newRootCmd() *cobra.Command {
 			// compaction path, NOT the per-connection Record hot path.
 			connLogSink := connlog.NewSQLSink(db.Wrap(database), log).WithSettings(st)
 
+			// The names the relay serves itself on its HTTPS port: the 443
+			// mux always terminates them and the API refuses them as a tcp
+			// service's host name (H11/H12).
+			relayNames, rnErr := relayNameSet(cfg, proxyAuthDomain, acmeCertNames(cfg, acmeMgr))
+			if rnErr != nil {
+				return rnErr
+			}
+
 			srv, err := server.New(server.Options{
 				Listen: cfg.Listen, TLSCert: cfg.TLSCert, TLSKey: cfg.TLSKey,
 				PublicBind: cfg.PublicBind, PortMin: cfg.PortMin, PortMax: cfg.PortMax,
@@ -679,6 +687,7 @@ func newRootCmd() *cobra.Command {
 				// H11/H12: the mux on the HTTPS port terminates a name a
 				// custom domain covers, whatever tcp service has it too.
 				CustomDomainCovers: db.Wrap(database).CustomDomainCovers,
+				RelayNames:         relayNames,
 				// tcp complete (E6, E7): bans and daily usage of tcp services
 				// survive a restart.
 				TCPGuards: tcpGuardStore{db: db.Wrap(database)},
@@ -1146,6 +1155,7 @@ func newRootCmd() *cobra.Command {
 				HostRouting: cfg.HTTPProxyListen != "",
 				// What the tcp-hostname route says and refuses.
 				TCPDomain:      cfg.TCPDomain,
+				RelayNames:     relayNames,
 				TLSPassthrough: passthroughOn(cfg),
 				// A fixed port given when a tcp service is created.
 				TCPPortMin: cfg.PortMin, TCPPortMax: cfg.PortMax,
@@ -1340,8 +1350,10 @@ func newRootCmd() *cobra.Command {
 			// serveAPITLS serves apiSrv over TLS on httpListen; with
 			// BURROW_TLS_PASSTHROUGH_ON_HTTPS (H11; the config makes sure
 			// apiSrv terminates TLS then) its listener is the mux that hands
-			// the names of tcp services to them raw. The mux stops with
-			// apiSrv.Shutdown, and with the control listener's context.
+			// the names of tcp services to them raw. The mux stops when
+			// apiSrv.Shutdown closes it (its context never ends first: a
+			// mux closed before Shutdown would make ServeTLS return an error
+			// on a graceful stop), or when ServeTLS returns.
 			serveAPITLS := func(certFile, keyFile string) error {
 				if !cfg.TLSPassthroughOnHTTPS {
 					return apiSrv.ListenAndServeTLS(certFile, keyFile)
@@ -1351,7 +1363,10 @@ func newRootCmd() *cobra.Command {
 					return err
 				}
 				log.Info("tls passthrough on the https port", "addr", httpListen, "tcp_domain", cfg.TCPDomain)
-				return apiSrv.ServeTLS(srv.SplitPassthrough(srvCtx, ln), certFile, keyFile)
+				mux := srv.SplitPassthrough(context.Background(), ln)
+				err = apiSrv.ServeTLS(mux, certFile, keyFile)
+				_ = mux.Close()
+				return err
 			}
 			go func() {
 				if acmeMgr != nil {

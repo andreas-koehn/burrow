@@ -42,7 +42,6 @@ import (
 	"io"
 	"net"
 	"net/netip"
-	"strings"
 	"sync"
 	"time"
 
@@ -67,8 +66,62 @@ const (
 // acmeTLSALPN is the ALPN protocol of the TLS-ALPN-01 challenge (RFC 8737).
 const acmeTLSALPN = "acme-tls/1"
 
-// customDomainTimeout bounds one CustomDomainCovers call of the mux.
-const customDomainTimeout = 2 * time.Second
+// customDomainTimeout bounds one CustomDomainCovers call of the mux. Its
+// answers are kept defaultCoversTTL, for at most defaultCoversMax names: a
+// custom domain bound a moment ago takes its name over within that time.
+const (
+	customDomainTimeout = 2 * time.Second
+	defaultCoversTTL    = 5 * time.Second
+	defaultCoversMax    = 4096
+)
+
+// coversEntry is a cached CustomDomainCovers answer.
+type coversEntry struct {
+	covers bool
+	until  time.Time
+}
+
+// customDomainCovers is Options.CustomDomainCovers through the cache. An
+// error is not cached.
+func (s *Server) customDomainCovers(ctx context.Context, name string) (bool, error) {
+	now := time.Now()
+	s.coversMu.Lock()
+	e, ok := s.covers[name]
+	s.coversMu.Unlock()
+	if ok && now.Before(e.until) {
+		return e.covers, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, customDomainTimeout)
+	defer cancel()
+	covers, err := s.opts.CustomDomainCovers(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	s.coversMu.Lock()
+	defer s.coversMu.Unlock()
+	if s.covers == nil {
+		s.covers = map[string]coversEntry{}
+	}
+	if _, have := s.covers[name]; !have && len(s.covers) >= s.coversMax {
+		for k, old := range s.covers {
+			if !now.Before(old.until) {
+				delete(s.covers, k)
+			}
+		}
+		if len(s.covers) >= s.coversMax {
+			clear(s.covers)
+		}
+	}
+	s.covers[name] = coversEntry{covers: covers, until: now.Add(s.coversTTL)}
+	return covers, nil
+}
+
+// coversLen is how many names the cache holds (tests).
+func (s *Server) coversLen() int {
+	s.coversMu.Lock()
+	defer s.coversMu.Unlock()
+	return len(s.covers)
+}
 
 // SplitPassthrough returns a listener over ln for the HTTPS server: its
 // Accept yields the connections the relay terminates itself (serve it with
@@ -79,8 +132,15 @@ const customDomainTimeout = 2 * time.Second
 // name (Options.TLSPassthrough).
 func (s *Server) SplitPassthrough(ctx context.Context, ln net.Listener) net.Listener {
 	s.passthroughOn.Store(true)
+	s.muxOn.Store(true)
+	for _, tn := range s.Tunnels() {
+		if !tn.IsHTTP {
+			s.warnShadowedNames(tn, tn.accessMode)
+		}
+	}
+	lookups, cancel := context.WithCancel(context.Background())
 	m := &muxListener{
-		s: s, ln: ln,
+		s: s, ln: ln, lookups: lookups, cancelLookups: cancel,
 		conns:   make(chan net.Conn),
 		done:    make(chan struct{}),
 		pending: map[net.Conn]struct{}{},
@@ -98,6 +158,10 @@ type muxListener struct {
 	ln    net.Listener
 	conns chan net.Conn // to terminate, for Accept
 	done  chan struct{} // closed by stop
+	// lookups is the context of the mux's custom-domain lookups; stop
+	// cancels it.
+	lookups       context.Context
+	cancelLookups context.CancelFunc
 
 	once sync.Once
 	mu   sync.Mutex
@@ -111,19 +175,32 @@ type muxListener struct {
 	wg sync.WaitGroup
 }
 
-// Accept returns the next connection to terminate.
+// Accept returns the next connection to terminate. Once the listener is
+// closed it returns the error only: a connection that was on its way is
+// closed (a select between both would pick one at random).
 func (m *muxListener) Accept() (net.Conn, error) {
 	select {
 	case c := <-m.conns:
-		return c, nil
-	case <-m.done:
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if m.err != nil {
-			return nil, m.err
+		select {
+		case <-m.done:
+			_ = c.Close()
+			return nil, m.closedErr()
+		default:
+			return c, nil
 		}
-		return nil, net.ErrClosed
+	case <-m.done:
+		return nil, m.closedErr()
 	}
+}
+
+// closedErr is what Accept returns once the listener is closed.
+func (m *muxListener) closedErr() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
+	return net.ErrClosed
 }
 
 // Close stops the listener: it closes ln and every connection that waits
@@ -146,12 +223,15 @@ func (m *muxListener) stop(cause error) error {
 		m.mu.Lock()
 		m.shut = true
 		m.err = cause
+		// done first: whoever sees a waiting connection closed sees Accept
+		// closed too.
+		close(m.done)
+		m.cancelLookups()
 		for c := range m.pending {
 			_ = c.Close()
 		}
 		m.pending = nil
 		m.mu.Unlock()
-		close(m.done)
 		err = m.ln.Close()
 	})
 	return err
@@ -206,8 +286,26 @@ func (m *muxListener) acceptLoop() {
 		delay = 0
 		peer := visitorAddr(conn)
 		trusted := s.trustedProxy(peer)
-		timeout, ok := s.muxPeek.start(peer, trusted, s.helloTimeout, s.helloTimeoutBusy)
-		if !ok {
+		timeout, verdict := s.muxPeek.start(peer, trusted, s.helloTimeout, s.helloTimeoutBusy)
+		switch verdict {
+		case peekOK:
+		case peekFullTotal:
+			// Deviation from H11, which closes every connection over the
+			// budget: when the untrusted peers' total is reached, the
+			// connection goes to the TLS server without a peek (and so is
+			// terminated, never passed through), so that a flood of silent
+			// connections cannot take the relay's HTTPS down. http.Server's
+			// own timeouts bound it from there. The per-peer cap and the
+			// trusted proxies' budget still close.
+			if !m.track(conn) {
+				_ = conn.Close()
+				return
+			}
+			m.untrack(conn)
+			m.wg.Add(1)
+			go m.toTLS(conn)
+			continue
+		default:
 			s.refuseSNI(conn, peer, muxRefusalKey, PassthroughRefusedBusy)
 			continue
 		}
@@ -221,11 +319,21 @@ func (m *muxListener) acceptLoop() {
 	}
 }
 
+// toTLS hands conn to Accept unread (see peekFullTotal in acceptLoop).
+func (m *muxListener) toTLS(conn net.Conn) {
+	defer m.wg.Done()
+	select {
+	case m.conns <- conn:
+	case <-m.done:
+		_ = conn.Close()
+	}
+}
+
 // handle peeks at one connection and passes it on: to its tcp service, to
 // Accept, or closed.
 func (m *muxListener) handle(conn net.Conn, peer netip.Addr, trusted bool, timeout time.Duration) {
 	s := m.s
-	visitor, tun, reason := s.readMux(conn, trusted, timeout)
+	visitor, tun, reason := s.readMux(m.lookups, conn, trusted, timeout)
 	s.muxPeek.end(peer, trusted)
 	m.untrack(conn)
 	switch {
@@ -264,7 +372,7 @@ func (m *muxListener) handle(conn net.Conn, peer netip.Addr, trusted bool, timeo
 // header names) and the tunnel it goes to raw, nil to terminate it; or the
 // reason it is closed (visitor is set when the PROXY header was read, for
 // the address to count). The read deadline is cleared on a hand-over.
-func (s *Server) readMux(conn net.Conn, trusted bool, timeout time.Duration) (net.Conn, *Tunnel, string) {
+func (s *Server) readMux(ctx context.Context, conn net.Conn, trusted bool, timeout time.Duration) (net.Conn, *Tunnel, string) {
 	_ = conn.SetReadDeadline(time.Now().Add(timeout))
 	br := bufio.NewReaderSize(conn, proxyproto.MaxHeader+tcpsniff.MaxClientHello)
 	isTimeout := func(err error) bool {
@@ -342,30 +450,27 @@ func (s *Server) readMux(conn net.Conn, trusted bool, timeout time.Duration) (ne
 	if err != nil {
 		return handOver(nil)
 	}
-	return handOver(s.muxRoute(hello))
+	return handOver(s.muxRoute(ctx, hello))
 }
 
 // muxRoute is the tcp tunnel a ClientHello goes to raw, nil to terminate it
 // (see the order at the top of this file).
-func (s *Server) muxRoute(h tcpsniff.Hello) *Tunnel {
+func (s *Server) muxRoute(ctx context.Context, h tcpsniff.Hello) *Tunnel {
 	if h.Offers(acmeTLSALPN) || h.ServerName == "" {
 		return nil
 	}
 	name := h.ServerName
 	if s.relayOwnsName(name) {
-		if s.passthroughTunnel(name) != nil {
-			s.warnShadowed(name, "relay")
-		}
+		// A tcp service with such a name was warned about when it got it
+		// (warnShadowedNames): no scan of the tunnels per hello.
 		return nil
 	}
 	tun := s.passthroughTunnel(name)
 	if tun == nil {
 		return nil
 	}
-	if covers := s.opts.CustomDomainCovers; covers != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), customDomainTimeout)
-		ok, err := covers(ctx, name)
-		cancel()
+	if s.opts.CustomDomainCovers != nil {
+		ok, err := s.customDomainCovers(ctx, name)
 		if err != nil {
 			s.log.Warn("https mux: custom domain lookup failed; the relay terminates the name", "name", name, "err", err)
 			return nil
@@ -379,29 +484,24 @@ func (s *Server) muxRoute(h tcpsniff.Hello) *Tunnel {
 }
 
 // relayOwnsName reports whether name (normalised) is one the relay serves
-// itself on the HTTPS port: the auth domain or a name under it, the
-// services domain, an ACME name, localhost or an address.
-func (s *Server) relayOwnsName(name string) bool {
-	if name == "localhost" {
-		return true
+// itself on the HTTPS port (relayNames: the auth domain and the names under
+// it, the services domain, the ACME names, the names of the file
+// certificate, a wildcard of them over one label; localhost and addresses).
+func (s *Server) relayOwnsName(name string) bool { return s.relayNames.Owns(name) }
+
+// warnShadowedNames warns once per name when the mux runs and a tcp
+// service in mode open or ip has a passthrough name the relay terminates on
+// the HTTPS port itself. It runs when a tunnel gets its names (registration,
+// a refresh) and when the mux starts, not per hello.
+func (s *Server) warnShadowedNames(tn *Tunnel, mode string) {
+	if !s.muxOn.Load() || (mode != TCPAccessOpen && mode != TCPAccessIP) {
+		return
 	}
-	if _, err := netip.ParseAddr(name); err == nil {
-		return true
-	}
-	norm := func(d string) string { return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(d)), ".") }
-	auth := norm(s.opts.AuthDomain)
-	if auth != "" && (name == auth || strings.HasSuffix(name, "."+auth)) {
-		return true
-	}
-	if d := norm(s.opts.ServicesDomain); d != "" && name == d {
-		return true
-	}
-	for _, d := range s.opts.CertNames {
-		if norm(d) == name {
-			return true
+	for _, n := range s.passthroughNames(tn) {
+		if s.relayOwnsName(n) {
+			s.warnShadowed(n, "relay")
 		}
 	}
-	return false
 }
 
 // warnShadowed logs once per name that a tcp service's passthrough name is

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/relaynames"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -101,6 +102,37 @@ func TestTCPHostname_GetAndPut(t *testing.T) {
 	a.svcs.tcpHostnameErr = store.ErrServiceNotTCP
 	if r := a.c.get(t, "/api/v1/services/web/tcp-hostname"); r.StatusCode != http.StatusConflict {
 		t.Fatalf("GET http: %d", r.StatusCode)
+	}
+}
+
+// A name the relay serves itself on its HTTPS port (a name of its file
+// certificate, a wildcard of it over one label, an ACME name) is refused
+// with 409 even without an auth domain: the 443 mux would terminate it, and
+// a tcp service must not take the dashboard's host. Nothing is stored and
+// the relay is not told.
+func TestTCPHostname_TheRelaysOwnNamesAreRefused(t *testing.T) {
+	a := newTCPAPI(t, func(d *Deps) {
+		d.TLSPassthrough = true
+		d.RelayNames = relaynames.New(nil, "dash.example.com", "*.wild.example.com")
+	})
+	a.svcs.tcpHostname = store.TCPHostname{Slug: "t0a1b2c3d4e", AccessMode: "open"}
+	for _, name := range []string{"dash.example.com", "DASH.example.com.", "a.wild.example.com"} {
+		r := a.c.putRaw(t, "/api/v1/services/rdp/tcp-hostname", `{"tcp_hostname": "`+name+`"}`)
+		if body := readBody(t, r); r.StatusCode != http.StatusConflict || !strings.Contains(body, "relay serves itself") {
+			t.Fatalf("%s: %d %s", name, r.StatusCode, body)
+		}
+	}
+	if a.svcs.lastTCPHostname != "" {
+		t.Fatalf("stored %q", a.svcs.lastTCPHostname)
+	}
+	if refreshed, _ := a.relay.snapshot(); len(refreshed) != 0 {
+		t.Fatalf("relay told %v", refreshed)
+	}
+	// One label deeper than the wildcard, and a sibling, are free.
+	for _, name := range []string{"a.b.wild.example.com", "rdp.example.com"} {
+		if got := decodeTCPHostname(t, a.c.put(t, "/api/v1/services/rdp/tcp-hostname", map[string]string{"tcp_hostname": name})); got.TCPHostname != name {
+			t.Fatalf("%s: %+v", name, got)
+		}
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/mcpgw"
 	"github.com/ankoehn/burrow/internal/oauth"
+	"github.com/ankoehn/burrow/internal/relaynames"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -515,6 +516,10 @@ type Deps struct {
 	// (BURROW_TLS_PASSTHROUGH_LISTEN). Both only shape what the tcp-hostname
 	// route says and refuses.
 	TCPDomain string
+	// RelayNames are the names the relay serves itself on its HTTPS port
+	// (relaynames): a tcp service's host name must not be one (409). nil:
+	// none beyond the domains above.
+	RelayNames *relaynames.Set
 	// TCPPortMin and TCPPortMax are the range of public tcp ports
 	// (BURROW_PORT_MIN, BURROW_PORT_MAX): POST /services refuses a fixed port
 	// outside it. 0 for both: no range check.
