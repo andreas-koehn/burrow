@@ -473,16 +473,86 @@ func TestResolveTCP_FindsAServiceCreatedBeforeAnyClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := serviceResolverAdapter{db: x}
-	r, err := a.ResolveTCP(ctx, uid, "ssh-box", server.ResolveOptions{})
+	// A new client sends no wish and the default private: the row is found
+	// in its own mode, and the registration did not create it (POST did), so
+	// the client does not take ip for its default ignored.
+	r, err := a.ResolveTCP(ctx, uid, "ssh-box", server.ResolveOptions{AccessDefault: server.TCPAccessPrivate})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if r.ServiceID != "pre-1" || r.Slug != "pre1slug" || r.AccessMode != "ip" || r.TCPPort != 9042 || !r.TCPPortPinned ||
-		r.ProxyProtocol != "v2" || r.IdleTimeout != 10*time.Minute || !r.Created {
+		r.ProxyProtocol != "v2" || r.IdleTimeout != 10*time.Minute || r.Created {
 		t.Fatalf("resolved %+v", r)
+	}
+	// A row a registration made (in the mode it asked for) and nobody served
+	// yet keeps its announcement for the next try.
+	if err := x.CreateService(ctx, db.Service{ID: "pre-2", UserID: uid, Name: "rdp-box", Type: "tcp", Subdomain: "pre2slug", AccessMode: "private"}); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := a.ResolveTCP(ctx, uid, "rdp-box", server.ResolveOptions{AccessDefault: server.TCPAccessPrivate}); err != nil || !r.Created || r.AccessMode != "private" {
+		t.Fatalf("resolved %+v %v", r, err)
 	}
 	held, err := a.TCPPortReservations(ctx)
 	if h := held[9042]; err != nil || h.ServiceID != "pre-1" || !h.Pinned {
 		t.Fatalf("the port is held from the start: %v %v", held, err)
+	}
+}
+
+// The whole relay: a tcp service created in the dashboard as open, before any
+// client, is served by `burrow tcp <port> --name <name>`. That client sends
+// no wish and the default private for a service it would create. The relay
+// must tell it the stored mode of a service it found, not that the
+// registration created it: a client told "created, open" takes the relay for
+// one that ignored its default and closes the session.
+func TestServe_ATCPServiceCreatedInTheDashboardIsServed(t *testing.T) {
+	r := bootObsRelay(t)
+	r.mustAdmin(http.MethodPost, "/api/v1/auth/reauth", map[string]string{"password": obsAdminPass}, http.StatusOK, nil)
+	r.mustAdmin(http.MethodPost, "/api/v1/services", map[string]any{"type": "tcp", "name": "dash-open", "access_mode": "open"}, http.StatusCreated, nil)
+	target, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+	go func() {
+		for {
+			c, err := target.Accept()
+			if err != nil {
+				return
+			}
+			go func() { defer c.Close(); _, _ = io.Copy(c, c) }()
+		}
+	}()
+	var token struct {
+		Token string `json:"token"`
+	}
+	r.mustAdmin(http.MethodPost, "/api/v1/tokens", map[string]string{"name": "dash-open"}, http.StatusCreated, &token)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := client.New(client.Options{
+		Server: r.control, Token: token.Token, RootCAs: r.caPool, ServerName: "localhost",
+		Tunnels: []client.TunnelSpec{{Name: "dash-open", Type: "tcp", LocalAddr: target.Addr().String(), AccessDefault: "private"}},
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	errc := make(chan error, 1)
+	go func() { errc <- c.Run(ctx) }()
+	r.eventually("the relay lists the tunnel", func() bool { _, ok := r.tunnels()["dash-open"]; return ok })
+	// A client that refused the answer closes its session at once.
+	select {
+	case err := <-errc:
+		t.Fatalf("the client stopped: %v", err)
+	case <-time.After(time.Second):
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(r.tcpPort)), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(conn, buf); err != nil || string(buf) != "ping" {
+		t.Fatalf("echo %q %v", buf, err)
 	}
 }

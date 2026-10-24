@@ -294,7 +294,11 @@ func (a serviceResolverAdapter) create(ctx context.Context, userID, name, typ st
 // by (never an http address); a row without one (from before) gets one
 // here. Created is true until a client served the service once (last_seen is
 // set when a registration succeeds), so a registration that created the row
-// and then failed for want of a port does not use up the announcement.
+// and then failed for want of a port does not use up the announcement. A row
+// in another mode than this registration would have created was not made by
+// a registration (POST /services made it, and announced it): Created is false
+// there, so that a client sees the stored mode as found, not as its default
+// ignored.
 func (a serviceResolverAdapter) ResolveTCP(ctx context.Context, userID, name string, o server.ResolveOptions) (server.Resolved, error) {
 	// A wish, else the default a new client sends for a service it creates
 	// (applied only below, on create), else open, as old clients got.
@@ -329,7 +333,7 @@ func (a serviceResolverAdapter) ResolveTCP(ctx context.Context, userID, name str
 				}
 			}
 			return server.Resolved{
-				ServiceID: svc.ID, Slug: slug, AccessMode: svc.AccessMode, Created: svc.LastSeen == nil,
+				ServiceID: svc.ID, Slug: slug, AccessMode: svc.AccessMode, Created: svc.LastSeen == nil && svc.AccessMode == mode,
 				TCPPort: svc.TCPPort, TCPPortPinned: svc.TCPPortPinned, TCPPortLimit: limit,
 				MaxConnections: svc.MaxConnections,
 				ProxyProtocol:  svc.ProxyProtocol,
