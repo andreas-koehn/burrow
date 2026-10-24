@@ -156,3 +156,50 @@ func TestSummaries_GRPCStatusReachesAnObserverThatWantsIt(t *testing.T) {
 		t.Fatalf("both calls went to Request too: %v", obs.snapshot())
 	}
 }
+
+// `burrow up` with several services: the one that needs a protocol the relay
+// cannot apply is skipped and the observer is told; the others are served,
+// and the run does not end.
+func TestUpstream_OldRelayMixedServicesTellsTheObserver(t *testing.T) {
+	r := startRawRelay(t, oldAuthOK, newRegister)
+	obs := &refusalRecorder{}
+	o := r.options(
+		TunnelSpec{Name: "api", Type: "http", LocalAddr: "127.0.0.1:50051", UpstreamProtocol: proto.UpstreamH2C},
+		TunnelSpec{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000"},
+		TunnelSpec{Name: "pg", Type: "tcp", LocalAddr: "127.0.0.1:5432"},
+	)
+	o.Observer = obs
+	c := New(o)
+	runUntilDone(t, c)
+	if !waitTrue(func() bool { return c.Registered() && len(obs.errs()) == 1 }, 3*time.Second) {
+		t.Fatalf("registered %v, refusals %v", c.Registered(), obs.errs())
+	}
+	var ue *UpstreamNotAppliedError
+	if got := obs.errs()[0]; !errors.As(got, &ue) || ue.Name != "api" {
+		t.Fatalf("refusal: %v", got)
+	}
+	if _, regs := r.sent(); len(regs) != 2 {
+		t.Fatalf("registrations: %v", regs)
+	}
+	if auths, _ := r.sent(); len(auths) != 1 {
+		t.Fatalf("%d sessions: the run did not stay up", len(auths))
+	}
+}
+
+type refusalRecorder struct {
+	recObserver
+	rmu sync.Mutex
+	rs  []error
+}
+
+func (r *refusalRecorder) Refused(_ string, err error) {
+	r.rmu.Lock()
+	r.rs = append(r.rs, err)
+	r.rmu.Unlock()
+}
+
+func (r *refusalRecorder) errs() []error {
+	r.rmu.Lock()
+	defer r.rmu.Unlock()
+	return append([]error(nil), r.rs...)
+}

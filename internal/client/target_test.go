@@ -223,3 +223,9 @@ func TestResolveUpstream(t *testing.T) {
 		}
 	}
 }
+
+// ParseTarget is ParseTargetProtocol without the protocol.
+func ParseTarget(s string) (string, error) {
+	addr, _, err := ParseTargetProtocol(s)
+	return addr, err
+}

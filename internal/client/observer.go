@@ -34,6 +34,9 @@ type RegisteredTunnel struct {
 	// Default is the mode a new tcp service would have been created in
 	// (TunnelSpec.AccessDefault) when nothing was wished; "" otherwise.
 	Default string
+	// UpstreamProtocol is the protocol the client asked for an http service
+	// (TunnelSpec.UpstreamProtocol); "" when it chose none.
+	UpstreamProtocol string
 
 	// What follows is known only from a relay that reports it; an older one
 	// leaves it empty.

@@ -21,15 +21,8 @@ func (e *TargetError) Error() string {
 		"\nAccepted forms: 3000   localhost:3000   192.168.1.20:8080   http://localhost:3000   https://localhost:8443   h2c://localhost:50051"
 }
 
-// ParseTarget turns what the user typed into the local address to forward to.
-// A bare port means 127.0.0.1. https:// and h2c:// are accepted like http://;
-// ParseTargetProtocol also says what the scheme asks for.
-func ParseTarget(s string) (string, error) {
-	addr, _, err := ParseTargetProtocol(s)
-	return addr, err
-}
-
-// ParseTargetProtocol is ParseTarget that also returns the upstream protocol
+// ParseTargetProtocol turns what the user typed into the local address to
+// forward to (a bare port means 127.0.0.1) and returns the upstream protocol
 // the scheme names: proto.UpstreamHTTPS for https://, proto.UpstreamH2C for
 // h2c://, and "" for http:// and for a target without a scheme. The scheme is
 // no more than a wish: ResolveUpstream weighs it against --upstream-protocol.

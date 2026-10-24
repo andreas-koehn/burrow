@@ -414,6 +414,7 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		reg := RegisteredTunnel{
 			TunnelID: rr.TunnelID, Name: tn.Name, Type: tn.Type, LocalAddr: tn.LocalAddr,
 			AccessMode: rr.AccessMode, Created: rr.Created, DashboardURL: rr.DashboardURL, GatewayOnly: rr.GatewayOnly,
+			UpstreamProtocol: tn.UpstreamProtocol,
 		}
 		if tn.Type == "tcp" {
 			reg.Wished = tn.Access

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -804,5 +805,85 @@ func TestStatusView_APanicInTheViewDoesNotEndTheClient(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "status view") {
 		t.Fatalf("stderr = %q", errOut.String())
+	}
+}
+
+// The observer the client is given in the view is the run's notes, wrapped
+// around the store: it must pass the grpc-status on, or the view never shows
+// it (the client looks for client.GRPCObserver on what it was given).
+func TestStatusView_ShowsGRPCStatus(t *testing.T) {
+	cleanEnv(t)
+	defer testutil.AssertNoGoroutineLeak(t)()
+	term := useTerminal(t, nil, 100, 40, true)
+	pr := useProbes(t)
+	day := func(s int) time.Time { return time.Date(2026, 10, 5, 14, 2, s, 0, time.UTC) }
+	useClient(t, func(_ context.Context, o client.Options) error {
+		ob := o.Observer
+		pr.wait(t, 2)
+		ob.State(client.StateConnected, "", 0)
+		ob.Registered(client.RegisteredTunnel{TunnelID: "t1", Name: "my-app", Type: "http", LocalAddr: "127.0.0.1:3000",
+			URL: "https://relay.example.com/svc/p7baeh/", UpstreamProtocol: "h2c"})
+		g, ok := ob.(client.GRPCObserver)
+		if !ok {
+			t.Error("the view's observer does not take the grpc-status")
+			return nil
+		}
+		code, ok14 := 14, 0
+		g.RequestGRPC("t1", day(11), "POST", "/pkg.S/Down", 200, &code)
+		g.RequestGRPC("t1", day(12), "POST", "/pkg.S/Ok", 200, &ok14)
+		g.RequestGRPC("t1", day(13), "GET", "/plain", 200, nil)
+		return nil
+	})
+	if err := runClient(context.Background(), viewCreds, viewTunnels, viewFlags); err != nil {
+		t.Fatal(err)
+	}
+	final := strings.Join(term.out.lastView(), "\n")
+	for _, w := range []string{
+		"  14:02:11  POST  /pkg.S/Down     grpc 14",
+		"  14:02:12  POST  /pkg.S/Ok       grpc 0",
+		"  14:02:13  GET   /plain          200",
+		"custom domain",
+	} {
+		if !strings.Contains(final, w) {
+			t.Errorf("%q is missing in the final view:\n%s", w, final)
+		}
+	}
+	if !strings.Contains(term.out.String(), "\x1b[31mgrpc 14\x1b[0m") {
+		t.Error("grpc 14 is not red")
+	}
+}
+
+// With a plain observer behind the notes, a gRPC request still arrives as an
+// ordinary request.
+func TestRunNotes_RequestGRPCFallsBackToRequest(t *testing.T) {
+	var got []string
+	n := newRunNotes(&reqRecorder{noObserver: noObserver{}, got: &got}, "relay.example.com:7000", 1)
+	code := 14
+	n.RequestGRPC("t1", time.Time{}, "POST", "/pkg.S/M", 200, &code)
+	if len(got) != 1 || got[0] != "t1 POST /pkg.S/M 200" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+type reqRecorder struct {
+	noObserver
+	got *[]string
+}
+
+func (r *reqRecorder) Request(id string, _ time.Time, method, path string, status int) {
+	*r.got = append(*r.got, id+" "+method+" "+path+" "+itoaStatus(status))
+}
+
+func itoaStatus(i int) string { return strconv.Itoa(i) }
+
+// A service that cannot be served by an old relay is a note in the view; the
+// others run.
+func TestRunNotes_UpstreamRefusalNote(t *testing.T) {
+	var notes []string
+	n := newRunNotes(noObserver{}, "relay.example.com:7000", 2)
+	n.inView, n.note = true, func(s string) { notes = append(notes, s) }
+	n.Refused("api", &client.UpstreamNotAppliedError{Name: "api", Protocol: "h2c"})
+	if len(notes) != 1 || !strings.Contains(notes[0], "api") || !strings.Contains(notes[0], "h2c") || !strings.Contains(notes[0], "not served") {
+		t.Fatalf("notes: %q", notes)
 	}
 }

@@ -40,6 +40,9 @@ const (
 	// msgSharedOrigin is the warning for an open http service: it is served
 	// under the dashboard's own address.
 	msgSharedOrigin = "This app shares the dashboard's origin; expose only apps you trust."
+	// msgGRPCHostName is the note of an HTTP/2 service: gRPC clients cannot
+	// use the /svc/<slug>/ path.
+	msgGRPCHostName = "gRPC visitors need a host name of their own: add a custom domain to this service in the dashboard."
 	// maxDashboardURL is the longest dashboard address that is repeated.
 	maxDashboardURL = 300
 )
@@ -134,6 +137,9 @@ func (n *runNotes) Registered(t client.RegisteredTunnel) {
 	if n.inView && t.Type == "http" && t.AccessMode == "open" {
 		n.once(msgSharedOrigin)
 	}
+	if n.inView && t.Type == "http" && (t.UpstreamProtocol == "h2c" || t.UpstreamProtocol == "h2") {
+		n.once(msgGRPCHostName)
+	}
 	if t.Type == "tcp" && t.AccessMode != "" {
 		if n.inView {
 			// The view shows the address and the mode itself.
@@ -154,6 +160,16 @@ func (n *runNotes) Refused(name string, err error) {
 	if n.inView {
 		n.once(refusedNote(name, err))
 	}
+}
+
+// RequestGRPC implements client.GRPCObserver for the observer behind it, with
+// the grpc-status; an observer that does not take it gets a plain request.
+func (n *runNotes) RequestGRPC(id string, at time.Time, method, path string, status int, grpc *int) {
+	if g, ok := n.Observer.(client.GRPCObserver); ok {
+		g.RequestGRPC(id, at, method, path, status, grpc)
+		return
+	}
+	n.Request(id, at, method, path, status)
 }
 
 // Forward implements client.ForwardObserver for the observer behind it.
