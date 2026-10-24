@@ -673,8 +673,12 @@ func newRootCmd() *cobra.Command {
 				TCPDomain:      cfg.TCPDomain,
 				TrustedProxies: trustedPrefixes(cfg.TLSPassthroughTrustedProxies),
 				// A tcp service set to host name only opens no port while a
-				// name reaches it on the listener.
-				TLSPassthrough: cfg.TLSPassthroughListen != "",
+				// name reaches it on a passthrough listener (the dedicated
+				// one or the mux on the HTTPS port).
+				TLSPassthrough: passthroughOn(cfg),
+				// H11/H12: the mux on the HTTPS port terminates a name a
+				// custom domain covers, whatever tcp service has it too.
+				CustomDomainCovers: db.Wrap(database).CustomDomainCovers,
 				// tcp complete (E6, E7): bans and daily usage of tcp services
 				// survive a restart.
 				TCPGuards: tcpGuardStore{db: db.Wrap(database)},
@@ -1142,7 +1146,7 @@ func newRootCmd() *cobra.Command {
 				HostRouting: cfg.HTTPProxyListen != "",
 				// What the tcp-hostname route says and refuses.
 				TCPDomain:      cfg.TCPDomain,
-				TLSPassthrough: cfg.TLSPassthroughListen != "",
+				TLSPassthrough: passthroughOn(cfg),
 				// A fixed port given when a tcp service is created.
 				TCPPortMin: cfg.PortMin, TCPPortMax: cfg.PortMax,
 				// feat/builtin-acme B3: single-origin /svc/{slug} tunnel routing.
@@ -1333,12 +1337,28 @@ func newRootCmd() *cobra.Command {
 				// the control listener: both carry tcp visitors.
 				go func() { errc <- srv.ListenPassthrough(srvCtx, cfg.TLSPassthroughListen) }()
 			}
+			// serveAPITLS serves apiSrv over TLS on httpListen; with
+			// BURROW_TLS_PASSTHROUGH_ON_HTTPS (H11; the config makes sure
+			// apiSrv terminates TLS then) its listener is the mux that hands
+			// the names of tcp services to them raw. The mux stops with
+			// apiSrv.Shutdown, and with the control listener's context.
+			serveAPITLS := func(certFile, keyFile string) error {
+				if !cfg.TLSPassthroughOnHTTPS {
+					return apiSrv.ListenAndServeTLS(certFile, keyFile)
+				}
+				ln, err := net.Listen("tcp", httpListen)
+				if err != nil {
+					return err
+				}
+				log.Info("tls passthrough on the https port", "addr", httpListen, "tcp_domain", cfg.TCPDomain)
+				return apiSrv.ServeTLS(srv.SplitPassthrough(srvCtx, ln), certFile, keyFile)
+			}
 			go func() {
 				if acmeMgr != nil {
 					// Certs come from apiSrv.TLSConfig.GetCertificate (ACME),
-					// not from files — pass empty strings to ListenAndServeTLS.
+					// not from files — pass empty strings to ServeTLS.
 					log.Info("http api listening (ACME TLS)", "addr", httpListen)
-					if err := apiSrv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+					if err := serveAPITLS("", ""); err != nil && err != http.ErrServerClosed {
 						errc <- err
 						return
 					}
@@ -1347,7 +1367,7 @@ func newRootCmd() *cobra.Command {
 				}
 				if httpsEnabled {
 					log.Info("http api listening (TLS)", "addr", httpListen)
-					if err := apiSrv.ListenAndServeTLS(cfg.HTTPTLSCert, cfg.HTTPTLSKey); err != nil && err != http.ErrServerClosed {
+					if err := serveAPITLS(cfg.HTTPTLSCert, cfg.HTTPTLSKey); err != nil && err != http.ErrServerClosed {
 						errc <- err
 						return
 					}

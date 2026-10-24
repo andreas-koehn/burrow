@@ -489,7 +489,7 @@ func TestPassthrough_TheHelloReadIsBounded(t *testing.T) {
 	const timeout = time.Second
 	r := newPassRelay(t, 19582, 19582, nil, func(s *Server) {
 		s.helloTimeout = timeout
-		s.peekMax, s.peekPerPeer = 3, 2
+		s.passPeek.max, s.passPeek.perPeer = 3, 2
 	})
 	if rr := r.c.register(t, proto.TunnelRegister{Name: "open", Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK {
 		t.Fatalf("register: %+v", rr)
@@ -575,7 +575,7 @@ func closesWithin(addr string, d time.Duration) error {
 // shorter wait once a budget is more than three quarters full.
 func TestPassthrough_PeekBudgets(t *testing.T) {
 	t.Run("the total of untrusted peers", func(t *testing.T) {
-		r := newPassRelay(t, 19583, 19583, nil, func(s *Server) { s.peekMax, s.peekPerPeer, s.helloTimeout = 2, 10, 5*time.Second })
+		r := newPassRelay(t, 19583, 19583, nil, func(s *Server) { s.passPeek.max, s.passPeek.perPeer, s.helloTimeout = 2, 10, 5*time.Second })
 		holdSilent(t, r.addr, 2)
 		if err := closesWithin(r.addr, 500*time.Millisecond); err != nil {
 			t.Fatalf("over the total: %v", err)
@@ -587,7 +587,9 @@ func TestPassthrough_PeekBudgets(t *testing.T) {
 	t.Run("trusted proxies have their own budget", func(t *testing.T) {
 		r := newPassRelay(t, 19584, 19584, func(o *Options) {
 			o.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
-		}, func(s *Server) { s.peekMax, s.peekPerPeer, s.peekTrustedMax, s.helloTimeout = 1, 1, 3, 5*time.Second })
+		}, func(s *Server) {
+			s.passPeek.max, s.passPeek.perPeer, s.passPeek.trustedMax, s.helloTimeout = 1, 1, 3, 5*time.Second
+		})
 		// Three from one trusted address: beyond the per-peer cap and the
 		// untrusted total, within the trusted budget.
 		held := holdSilent(t, r.addr, 3)
@@ -602,7 +604,7 @@ func TestPassthrough_PeekBudgets(t *testing.T) {
 	})
 	t.Run("a full budget waits less", func(t *testing.T) {
 		r := newPassRelay(t, 19585, 19585, nil, func(s *Server) {
-			s.peekMax, s.peekPerPeer, s.helloTimeout, s.helloTimeoutBusy = 4, 10, 5*time.Second, 300*time.Millisecond
+			s.passPeek.max, s.passPeek.perPeer, s.helloTimeout, s.helloTimeoutBusy = 4, 10, 5*time.Second, 300*time.Millisecond
 		})
 		held := holdSilent(t, r.addr, 3) // three quarters: the full wait
 		start := time.Now()

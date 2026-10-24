@@ -22,6 +22,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -67,6 +68,9 @@ const (
 	obsWait       = 30 * time.Second
 	// obsCustomDomain is the custom domain bound to the open service.
 	obsCustomDomain = "app.customer.test"
+	// obsDevCert as BURROW_HTTP_TLS_CERT in bootObsRelayEnv's extra serves
+	// the dashboard over TLS with the relay's dev certificate (and key).
+	obsDevCert = "<dev>"
 	// obsAIConfig turns the cache, redaction and guardrails on for the
 	// service behind the first provider.
 	obsAIConfig = `{"cache":{"enabled":true,"applies_per":"per_endpoint","ttl_seconds":300,"max_entries":100,"max_per_entry_kb":64},"redaction":{"enabled":true},"guardrails":{"enabled":true,"action":"refuse_403"}}`
@@ -209,7 +213,15 @@ func bootObsRelayEnv(t *testing.T, extra map[string]string) *obsRelay {
 	} {
 		t.Setenv(k, v)
 	}
+	scheme, hcTransport := "http", http.RoundTripper(nil)
 	for k, v := range extra {
+		if k == "BURROW_HTTP_TLS_CERT" && v == obsDevCert {
+			t.Setenv(k, filepath.Join(certs, "dev-server.pem"))
+			t.Setenv("BURROW_HTTP_TLS_KEY", filepath.Join(certs, "dev-server-key.pem"))
+			scheme = "https"
+			hcTransport = &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true}
+			continue
+		}
 		t.Setenv(k, v)
 	}
 
@@ -237,8 +249,8 @@ func bootObsRelayEnv(t *testing.T, extra map[string]string) *obsRelay {
 
 	jar, _ := cookiejar.New(nil)
 	r := &obsRelay{
-		t: t, base: "http://" + httpAddr, control: controlAddr, tcpPort: tcpPort, caPool: pool,
-		hc:      &http.Client{Jar: jar, Timeout: 30 * time.Second},
+		t: t, base: scheme + "://" + httpAddr, control: controlAddr, tcpPort: tcpPort, caPool: pool,
+		hc:      &http.Client{Jar: jar, Timeout: 30 * time.Second, Transport: hcTransport},
 		certPEM: certPEM, keyPEM: keyPEM,
 		stop: stop, dbPath: filepath.Join(dir, "burrow.db"),
 	}
@@ -265,7 +277,7 @@ func bootObsRelayEnv(t *testing.T, extra map[string]string) *obsRelay {
 	}
 	u, _ := url.Parse(r.base)
 	for _, ck := range jar.Cookies(u) {
-		if ck.Name == "burrow_csrf" {
+		if ck.Name == "burrow_csrf" || ck.Name == "__Host-burrow_csrf" {
 			r.csrf = ck.Value
 		}
 	}

@@ -7,8 +7,17 @@ import (
 	"net/netip"
 	"strings"
 
+	"github.com/ankoehn/burrow/internal/config"
 	"github.com/ankoehn/burrow/internal/server"
 )
+
+// passthroughOn reports whether the relay reaches tcp services by host name:
+// the dedicated passthrough listener (BURROW_TLS_PASSTHROUGH_LISTEN) or the
+// mux on the HTTPS port (BURROW_TLS_PASSTHROUGH_ON_HTTPS) runs. Host name
+// only and the API's "reachable" go by it.
+func passthroughOn(cfg *config.ServerConfig) bool {
+	return cfg.TLSPassthroughListen != "" || cfg.TLSPassthroughOnHTTPS
+}
 
 // trustedPrefixes reads BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES (addresses and CIDRs, already
 // validated by the config) as the prefixes the relay's tcp listeners believe

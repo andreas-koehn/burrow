@@ -1114,6 +1114,55 @@ func TestLoadServer_OAuthGrantRPM(t *testing.T) {
 	}
 }
 
+// BURROW_TLS_PASSTHROUGH_ON_HTTPS (H11): off by default, a boolean, and only
+// while the dashboard's listener terminates TLS itself (ACME or its own
+// certificate); otherwise the error names the variable.
+func TestLoadServer_TLSPassthroughOnHTTPS(t *testing.T) {
+	c, err := LoadServer(nil)
+	if err != nil || c.TLSPassthroughOnHTTPS {
+		t.Fatalf("default: %v %v", c, err)
+	}
+	t.Setenv("BURROW_TLS_PASSTHROUGH_ON_HTTPS", "")
+	if c, err := LoadServer(nil); err != nil || c.TLSPassthroughOnHTTPS {
+		t.Fatalf("empty: %v", err)
+	}
+	t.Setenv("BURROW_TLS_PASSTHROUGH_ON_HTTPS", "false")
+	if c, err := LoadServer(nil); err != nil || c.TLSPassthroughOnHTTPS {
+		t.Fatalf("false: %v", err)
+	}
+	// On without TLS of its own: refused, naming the variable. A file
+	// certificate of the proxy listener or the control port is not the
+	// dashboard's.
+	t.Setenv("BURROW_TLS_PASSTHROUGH_ON_HTTPS", "true")
+	t.Setenv("BURROW_HTTP_PROXY_TLS_CERT", "proxy.pem")
+	t.Setenv("BURROW_HTTP_PROXY_TLS_KEY", "proxy-key.pem")
+	if _, err := LoadServer(nil); err == nil || !strings.Contains(err.Error(), "BURROW_TLS_PASSTHROUGH_ON_HTTPS") {
+		t.Fatalf("on without TLS: %v", err)
+	}
+	t.Setenv("BURROW_HTTP_PROXY_TLS_CERT", "")
+	t.Setenv("BURROW_HTTP_PROXY_TLS_KEY", "")
+	// With the dashboard's own certificate, and with ACME.
+	t.Setenv("BURROW_HTTP_TLS_CERT", "dash.pem")
+	t.Setenv("BURROW_HTTP_TLS_KEY", "dash-key.pem")
+	if c, err := LoadServer(nil); err != nil || !c.TLSPassthroughOnHTTPS {
+		t.Fatalf("file certificate: %v", err)
+	}
+	t.Setenv("BURROW_HTTP_TLS_CERT", "")
+	t.Setenv("BURROW_HTTP_TLS_KEY", "")
+	t.Setenv("BURROW_ACME_DOMAIN", "burrow.example.com")
+	t.Setenv("BURROW_ACME_EMAIL", "ops@example.com")
+	t.Setenv("BURROW_TLS_PASSTHROUGH_LISTEN", ":8444") // both may be on
+	if c, err := LoadServer(nil); err != nil || !c.TLSPassthroughOnHTTPS || c.TLSPassthroughListen != ":8444" {
+		t.Fatalf("acme: %v", err)
+	}
+	for _, bad := range []string{"yes", "2", "on"} {
+		t.Setenv("BURROW_TLS_PASSTHROUGH_ON_HTTPS", bad)
+		if _, err := LoadServer(nil); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
 func TestServerHTTPH2CDefaultAndValues(t *testing.T) {
 	c, err := LoadServer(nil)
 	if err != nil {

@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -246,6 +247,82 @@ func TestServe_TLSPassthrough(t *testing.T) {
 		_, body := r.admin(http.MethodGet, "/api/v1/audit/events?action=service.tcp_hostname_only.update", nil)
 		return strings.Count(string(body), "service.tcp_hostname_only.update") >= 2
 	})
+}
+
+// The whole relay with BURROW_TLS_PASSTHROUGH_ON_HTTPS: the dashboard's
+// HTTPS listener serves the dashboard (h2 by ALPN) and hands a tcp
+// service's name raw to the service; an unknown name gets the relay's own
+// certificate. The API says the service is reachable by name with only the
+// mux on. A shutdown with a connection still waiting for its hello is not
+// held up by it, and closes it.
+func TestServe_TLSPassthroughOnHTTPS(t *testing.T) {
+	r := bootObsRelayEnv(t, map[string]string{
+		"BURROW_HTTP_TLS_CERT":            obsDevCert,
+		"BURROW_TLS_PASSTHROUGH_ON_HTTPS": "true",
+		"BURROW_TCP_DOMAIN":               "tcp.example.com",
+	})
+	httpAddr := strings.TrimPrefix(r.base, "https://")
+	resp, err := r.hc.Get(r.base + "/api/v1/tunnels")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.ProtoMajor != 2 || resp.StatusCode != http.StatusOK || resp.TLS == nil {
+		t.Fatalf("dashboard over the mux: %s %d", resp.Proto, resp.StatusCode)
+	}
+	target := tlsEcho(t)
+	var token struct {
+		Token string `json:"token"`
+	}
+	r.mustAdmin(http.MethodPost, "/api/v1/tokens", map[string]string{"name": "mux"}, http.StatusCreated, &token)
+	stop := r.connectWith(token.Token, client.TunnelSpec{Name: "rdp", Type: "tcp", LocalAddr: target})
+	defer stop()
+	id := r.tunnels()["rdp"].ServiceID
+	var got struct {
+		Hostnames   []string `json:"hostnames"`
+		Passthrough bool     `json:"passthrough"`
+		Reachable   bool     `json:"reachable"`
+	}
+	r.mustAdmin(http.MethodGet, "/api/v1/services/"+id+"/tcp-hostname", nil, http.StatusOK, &got)
+	if len(got.Hostnames) != 1 || !got.Passthrough || !got.Reachable {
+		t.Fatalf("GET %+v", got)
+	}
+	if err := passVisit(httpAddr, got.Hostnames[0], nil); err != nil {
+		t.Fatalf("raw to the service on the https port: %v", err)
+	}
+	r.eventually("the row of the visitor", func() bool {
+		var rows []struct {
+			SNI      string `json:"sni"`
+			SourceIP string `json:"source_ip"`
+		}
+		r.mustAdmin(http.MethodGet, "/api/v1/connection-logs?kind=tcp_proxy&service_id="+id, nil, http.StatusOK, &rows)
+		return len(rows) > 0 && rows[0].SNI == got.Hostnames[0] && rows[0].SourceIP == "127.0.0.1"
+	})
+	// An unknown name: the relay's own certificate (the dev CA's).
+	tc, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", httpAddr,
+		&tls.Config{ServerName: "nobody.example.com", InsecureSkipVerify: true}) //nolint:gosec // the certificate is checked below
+	if err != nil {
+		t.Fatalf("unknown name: %v", err)
+	}
+	leaf := tc.ConnectionState().PeerCertificates[0]
+	_ = tc.Close()
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: r.caPool, DNSName: "localhost"}); err != nil {
+		t.Fatalf("unknown name got another certificate (%s): %v", leaf.Subject, err)
+	}
+	// Shutdown with a connection waiting for its hello.
+	held, err := net.Dial("tcp", httpAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	stop()
+	if took := r.stop(); took > 20*time.Second {
+		t.Fatalf("shutdown took %v", took)
+	}
+	_ = held.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, err := held.Read(make([]byte, 1)); n != 0 || err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("the waiting connection: %d %v", n, err)
+	}
 }
 
 // passProxyV2 is a PROXY protocol v2 header from src to dst (IPv4).

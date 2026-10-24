@@ -128,6 +128,18 @@ type ServerConfig struct {
 	// otherwise be let in as anyone they name.
 	// Env: BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES (comma-separated).
 	TLSPassthroughTrustedProxies []string `koanf:"tls_passthrough_trusted_proxies"`
+	// TLSPassthroughOnHTTPS puts TLS passthrough by SNI on the dashboard's
+	// HTTPS listener (BURROW_HTTP_LISTEN): a ClientHello naming a tcp
+	// service (mode open or ip) goes to it raw, every other connection is
+	// terminated as before. It needs that listener to terminate TLS itself
+	// (BURROW_ACME_DOMAIN, or BURROW_HTTP_TLS_CERT and BURROW_HTTP_TLS_KEY).
+	// It coexists with BURROW_TLS_PASSTHROUGH_LISTEN and reads PROXY
+	// headers from BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES as that listener
+	// does. Default false: turning it on widens how tcp services can be
+	// reached. A value that is not a boolean stops the server; an empty
+	// value keeps the default.
+	// Env: BURROW_TLS_PASSTHROUGH_ON_HTTPS.
+	TLSPassthroughOnHTTPS bool `koanf:"tls_passthrough_on_https"`
 
 	// ----- v0.4.0 additions (Task 24) ---------------------------------------
 
@@ -263,8 +275,8 @@ func envProvider(prefix string) *env.Env {
 func burrowEnvProvider() *env.Env {
 	return env.ProviderWithValue("BURROW_", ".", func(rawKey, rawVal string) (string, interface{}) {
 		key := strings.ReplaceAll(strings.ToLower(strings.TrimPrefix(rawKey, "BURROW_")), "__", ".")
-		if key == "http_h2c" && strings.TrimSpace(rawVal) == "" {
-			// An empty value is "not set": the default (true) stays.
+		if (key == "http_h2c" || key == "tls_passthrough_on_https") && strings.TrimSpace(rawVal) == "" {
+			// An empty value is "not set": the default stays.
 			return "", nil
 		}
 		if key == "trusted_proxies" || key == "tls_passthrough_trusted_proxies" {
@@ -447,6 +459,9 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 		"services_domain": "",
 		// http_h2c defaults to true: plain listeners accept prior-knowledge h2c.
 		"http_h2c": true,
+		// tls_passthrough_on_https defaults to false: the HTTPS listener
+		// terminates every connection.
+		"tls_passthrough_on_https": false,
 		// v0.4.0 (Task 24) defaults. The empty-string defaults disable the
 		// associated feature (geo lookup, pricing override); mcp_listen is
 		// read and ignored.
@@ -552,6 +567,12 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 	}
 	if err := cleanTCPDomain(&c); err != nil {
 		return nil, fmt.Errorf("invalid server config: %w", err)
+	}
+	// The mux on the HTTPS port (H11) sits in front of the TLS the
+	// dashboard's listener terminates itself.
+	if c.TLSPassthroughOnHTTPS && c.ACMEDomain == "" && (c.HTTPTLSCert == "" || c.HTTPTLSKey == "") {
+		return nil, fmt.Errorf("invalid server config: BURROW_TLS_PASSTHROUGH_ON_HTTPS needs the dashboard listener (BURROW_HTTP_LISTEN) to terminate TLS itself: " +
+			"set BURROW_ACME_DOMAIN, or BURROW_HTTP_TLS_CERT and BURROW_HTTP_TLS_KEY. Behind a proxy that terminates TLS, use BURROW_TLS_PASSTHROUGH_LISTEN instead")
 	}
 	// ACME validation (v0.6.0).
 	if c.ACMEDomain != "" {

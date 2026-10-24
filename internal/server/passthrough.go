@@ -19,10 +19,11 @@ package server
 //     passthroughRefusalKey);
 //   - the read is bounded: helloTimeout (5 s) for the PROXY header and the
 //     hello together, at most tcpsniff.MaxClientHello bytes of hello (one
-//     record of 16 KiB), and at most peekMax connections (peekPerPeer from
-//     one untrusted IPv4 address or IPv6 /48) waiting for their hello at
-//     once, peekTrustedMax more from the trusted proxies; a budget over three
-//     quarters full shortens the read to helloTimeoutBusy (2 s).
+//     record of 16 KiB), and at most defaultPeekMax connections
+//     (defaultPeekPerPeer from one untrusted IPv4 address or IPv6 /48)
+//     waiting for their hello at once, defaultPeekTrusted more from the
+//     trusted proxies; a budget over three quarters full shortens the read
+//     to helloTimeoutBusy (2 s).
 //
 // A proxy in front of the listener (Traefik's TCP router with
 // tls.passthrough) would hide every visitor behind its own address, which
@@ -46,6 +47,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ankoehn/burrow/internal/proxyproto"
@@ -154,64 +156,87 @@ func peekKey(a netip.Addr) string {
 	return a.Unmap().String()
 }
 
-// startPeek counts a connection that waits for its hello and returns how
-// long it may take, or reports that there is no room. A trusted proxy counts
-// against peekTrustedMax only; anyone else against peekMax and peekPerPeer.
-// The wait is helloTimeoutBusy once the budget is over three quarters full.
-func (s *Server) startPeek(peer netip.Addr, trusted bool) (time.Duration, bool) {
-	s.peekMu.Lock()
-	defer s.peekMu.Unlock()
-	busy := func(n, max int) time.Duration {
+// peekBudget bounds the connections of one listener that wait for their
+// hello: at most max from untrusted peers, perPeer of them from one source
+// (peekKey), and trustedMax more from the trusted proxies.
+type peekBudget struct {
+	max, perPeer, trustedMax int
+
+	mu             sync.Mutex
+	total, trusted int
+	by             map[string]int
+}
+
+// start counts a connection that waits for its hello and returns how long it
+// may take, or reports that there is no room. A trusted proxy counts against
+// trustedMax only; anyone else against max and perPeer. The wait is
+// busyTimeout (at most timeout) once the budget is over three quarters full.
+func (b *peekBudget) start(peer netip.Addr, trusted bool, timeout, busyTimeout time.Duration) (time.Duration, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	wait := func(n, max int) time.Duration {
 		if 4*n > 3*max {
-			return min(s.helloTimeoutBusy, s.helloTimeout)
+			return min(busyTimeout, timeout)
 		}
-		return s.helloTimeout
+		return timeout
 	}
 	if trusted {
-		if s.peekTrusted >= s.peekTrustedMax {
+		if b.trusted >= b.trustedMax {
 			return 0, false
 		}
-		s.peekTrusted++
-		return busy(s.peekTrusted, s.peekTrustedMax), true
+		b.trusted++
+		return wait(b.trusted, b.trustedMax), true
 	}
-	if s.peekTotal >= s.peekMax {
+	if b.total >= b.max {
 		return 0, false
 	}
 	key := peekKey(peer)
-	if s.peekBy[key] >= s.peekPerPeer {
+	if b.by[key] >= b.perPeer {
 		return 0, false
 	}
-	if s.peekBy == nil {
-		s.peekBy = map[string]int{}
+	if b.by == nil {
+		b.by = map[string]int{}
 	}
-	s.peekTotal++
-	s.peekBy[key]++
-	return busy(s.peekTotal, s.peekMax), true
+	b.total++
+	b.by[key]++
+	return wait(b.total, b.max), true
+}
+
+// end ends a wait of start.
+func (b *peekBudget) end(peer netip.Addr, trusted bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if trusted {
+		b.trusted--
+		return
+	}
+	b.total--
+	key := peekKey(peer)
+	if b.by[key] <= 1 {
+		delete(b.by, key)
+	} else {
+		b.by[key]--
+	}
+}
+
+// waiting is how many connections wait for their hello now.
+func (b *peekBudget) waiting() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.total + b.trusted
+}
+
+// startPeek starts a wait of the passthrough listener (passPeek).
+func (s *Server) startPeek(peer netip.Addr, trusted bool) (time.Duration, bool) {
+	return s.passPeek.start(peer, trusted, s.helloTimeout, s.helloTimeoutBusy)
 }
 
 // endPeek ends a wait of startPeek.
-func (s *Server) endPeek(peer netip.Addr, trusted bool) {
-	s.peekMu.Lock()
-	defer s.peekMu.Unlock()
-	if trusted {
-		s.peekTrusted--
-		return
-	}
-	s.peekTotal--
-	key := peekKey(peer)
-	if s.peekBy[key] <= 1 {
-		delete(s.peekBy, key)
-	} else {
-		s.peekBy[key]--
-	}
-}
+func (s *Server) endPeek(peer netip.Addr, trusted bool) { s.passPeek.end(peer, trusted) }
 
-// peeking is how many connections wait for their hello now.
-func (s *Server) peeking() int {
-	s.peekMu.Lock()
-	defer s.peekMu.Unlock()
-	return s.peekTotal + s.peekTrusted
-}
+// peeking is how many connections of the passthrough listener wait for
+// their hello now.
+func (s *Server) peeking() int { return s.passPeek.waiting() }
 
 // handlePassthrough reads what comes before the TLS hello (a PROXY header of
 // a trusted proxy) and the hello, finds the service of its name and hands the
@@ -408,14 +433,20 @@ func (s *Server) reachableByName(tn *Tunnel) bool {
 // byte and counts it; the first refusal of a reason and address in a minute
 // is logged at debug, the minute's totals at info (refusalSampler).
 func (s *Server) refusePassthrough(conn net.Conn, ip netip.Addr, reason string) {
+	s.refuseSNI(conn, ip, passthroughRefusalKey, reason)
+}
+
+// refuseSNI is refusePassthrough under the refusal key of a listener
+// (passthroughRefusalKey, muxRefusalKey).
+func (s *Server) refuseSNI(conn net.Conn, ip netip.Addr, key, reason string) {
 	// Counted before the close, so that whoever sees the close sees the count.
 	defer conn.Close()
 	addr := ""
 	if ip.IsValid() {
 		addr = ip.String()
 	}
-	if s.passRefusals.sample(passthroughRefusalKey, reason, addr, time.Now()) {
-		s.log.Debug("tls passthrough connection refused", "reason", reason, "source_ip", addr)
+	if s.passRefusals.sample(key, reason, addr, time.Now()) {
+		s.log.Debug("tls passthrough connection refused", "listener", key, "reason", reason, "source_ip", addr)
 	}
 }
 

@@ -345,11 +345,18 @@ type Options struct {
 	// one must start with a PROXY protocol v2 header naming the visitor, and
 	// anyone else who sends one is closed. Empty: no header is believed.
 	TrustedProxies []netip.Prefix
-	// TLSPassthrough says the relay runs the TLS passthrough listener
-	// (BURROW_TLS_PASSTHROUGH_LISTEN). ServePassthrough sets it too. A tcp
-	// service set to host name only gets no public port while a name
-	// reaches it there.
+	// TLSPassthrough says the relay reaches tcp services by name: it runs
+	// the TLS passthrough listener (BURROW_TLS_PASSTHROUGH_LISTEN) or the
+	// mux on the HTTPS port (BURROW_TLS_PASSTHROUGH_ON_HTTPS).
+	// ServePassthrough and SplitPassthrough set it too. A tcp service set to
+	// host name only gets no public port while a name reaches it there.
 	TLSPassthrough bool
+	// CustomDomainCovers reports whether a custom domain of an http service
+	// is name, a parent of it, or a wildcard over it. The mux on the HTTPS
+	// port (SplitPassthrough) terminates such a name itself, even when a tcp
+	// service has it too: the http side owns it. An error terminates as
+	// well. nil: no custom domain covers any name.
+	CustomDomainCovers func(ctx context.Context, name string) (bool, error)
 	// TCPGuards keeps the bans and the daily usage of tcp services so that
 	// they survive a restart (tcp_guard.go). nil: they live in memory only.
 	TCPGuards TCPGuardStore
@@ -401,15 +408,15 @@ type Server struct {
 	// listener must not use up the budget of keys of the services' rows.
 	passRefusals *refusalSampler
 	authFails    *authFailures
-	// The bounds of the TLS passthrough listener's hello read (see
-	// passthrough.go), and the connections that wait for their hello now
-	// (under peekMu), in all and per address.
+	// The bounds of the hello read (see passthrough.go): its wait, and the
+	// connections that may wait for their hello at once on the TLS
+	// passthrough listener (passPeek) and on the HTTPS port's mux (muxPeek,
+	// passthrough_mux.go).
 	helloTimeout, helloTimeoutBusy time.Duration
-	peekMax, peekPerPeer           int
-	peekTrustedMax                 int
-	peekMu                         sync.Mutex
-	peekTotal, peekTrusted         int
-	peekBy                         map[string]int
+	passPeek, muxPeek              peekBudget
+	// shadowWarned holds the tcp passthrough names the HTTPS port's mux
+	// terminated as the relay's own and warned about (once each).
+	shadowWarned sync.Map
 	// guards are the bans, bandwidth and daily volume of the tcp services
 	// (tcp_guard.go), under guardMu; guardFlushing: the flushGuards
 	// goroutine runs. usageFlush is how often it writes, and clock the time
@@ -478,7 +485,8 @@ func New(o Options) (*Server, error) {
 		usageFlush: defaultUsageFlush, clock: time.Now,
 
 		helloTimeout: defaultHelloTimeout, helloTimeoutBusy: defaultHelloTimeoutBusy,
-		peekMax: defaultPeekMax, peekPerPeer: defaultPeekPerPeer, peekTrustedMax: defaultPeekTrusted,
+		passPeek: peekBudget{max: defaultPeekMax, perPeer: defaultPeekPerPeer, trustedMax: defaultPeekTrusted},
+		muxPeek:  peekBudget{max: defaultMuxPeekMax, perPeer: defaultMuxPeekPerPeer, trustedMax: defaultMuxPeekTrusted},
 	}
 	if o.clock != nil {
 		s.clock = o.clock
