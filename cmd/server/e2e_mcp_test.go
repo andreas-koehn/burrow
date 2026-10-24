@@ -605,3 +605,46 @@ func TestE2EMCP_GenericCallsGoThroughTheGate(t *testing.T) {
 		})
 	}
 }
+
+// TestE2EMCP_ABanToolNeverShortensABan: serviceTcpBanCreate is an MCP tool
+// because a ban narrows access. It must not lift one by shortening it (the
+// unban needs a recent confirmation and is no tool): a shorter ban is an
+// error result naming the DELETE, and the ban stays; a longer one extends.
+func TestE2EMCP_ABanToolNeverShortensABan(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip e2e in -short")
+	}
+	ctx := context.Background()
+	e := newMCPE2E(t)
+	base := e.serve(t, "")
+	svc := db.Service{ID: "svc-mcp-ban", UserID: e.admin.ID, Name: "rdp", Type: "tcp", AccessMode: "open"}
+	if err := e.wrapped.CreateService(ctx, svc); err != nil {
+		t.Fatal(err)
+	}
+	cs := mcpConnect(t, base+mcpserv.EndpointPath, e.mint(t, "e2e-ban", presetPermissions(t, authz.PresetFull)), "2026-07-28")
+	ban := func(wantError bool, min int) string {
+		t.Helper()
+		return mcpCall(t, cs, wantError, "burrow_call_operation", map[string]any{"operation_id": "serviceTcpBanCreate",
+			"arguments": map[string]any{"serviceID": svc.ID, "body": map[string]any{"source": "203.0.113.7", "ban_min": min}}})
+	}
+	until := func() time.Time {
+		t.Helper()
+		bans, err := e.wrapped.ListTCPBans(ctx, svc.ID, time.Now())
+		if err != nil || len(bans) != 1 {
+			t.Fatalf("bans %+v %v", bans, err)
+		}
+		return bans[0].Until
+	}
+	ban(false, 600)
+	long := until()
+	if got := ban(true, 1); !strings.Contains(got, "DELETE") || !strings.Contains(got, "longer") {
+		t.Fatalf("the refusal of a shorter ban does not name the unban: %s", got)
+	}
+	if !until().Equal(long) {
+		t.Fatalf("the ban was shortened: %v, was %v", until(), long)
+	}
+	ban(false, 1200)
+	if !until().After(long) {
+		t.Fatal("a longer ban did not extend")
+	}
+}

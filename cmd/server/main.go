@@ -672,6 +672,9 @@ func newRootCmd() *cobra.Command {
 				// protocol header, and nobody else may.
 				TCPDomain:      cfg.TCPDomain,
 				TrustedProxies: trustedPrefixes(cfg.TLSPassthroughTrustedProxies),
+				// A tcp service set to host name only opens no port while a
+				// name reaches it on the listener.
+				TLSPassthrough: cfg.TLSPassthroughListen != "",
 				// tcp complete (E6, E7): bans and daily usage of tcp services
 				// survive a restart.
 				TCPGuards: tcpGuardStore{db: db.Wrap(database)},

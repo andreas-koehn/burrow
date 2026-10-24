@@ -29,39 +29,40 @@ const (
 	ActionSessionDelete       = "session.delete"
 	ActionSessionRevokeOthers = "session.revoke_others"
 
-	ActionServiceCreate               = "service.create"
-	ActionServiceDelete               = "service.delete"
-	ActionServiceAccessModeUpdate     = "service.access_mode.update"
-	ActionServiceSlugChange           = "service.slug_changed"
-	ActionServiceGatewayOnlyUpdate    = "service.gateway_only.update"
-	ActionServiceTCPPortReclaimed     = "service.tcp_port.reclaimed" // a tcp registration took an offline service's automatic port
-	ActionServiceTCPAccessUpdate      = "service.tcp_access.update"  // the access mode of a tcp service: open, ip, private
-	ActionServiceIPGrantAdd           = "service.ip_grant.add"       // a just-in-time grant of a tcp service in mode ip
-	ActionServiceIPGrantRevoke        = "service.ip_grant.revoke"
-	ActionServiceMaxConnectionsUpdate = "service.max_connections.update" // the cap on connected visitors of a tcp service
-	ActionServiceTCPSettingsUpdate    = "service.tcp_settings.update"    // the PROXY protocol or idle timeout of a tcp service
-	ActionServiceTCPHostnameUpdate    = "service.tcp_hostname.update"    // the TLS passthrough host name of a tcp service
-	ActionServiceConnectionClose      = "service.connection.close"       // a live connection of a tcp service was closed from the dashboard
-	ActionTCPForwardOpen              = "tcp.forward.open"               // a forward stream to a tcp service was opened (one per user and service a minute)
-	ActionServiceTCPLimitsUpdate      = "service.tcp_limits.update"      // the bandwidth, daily volume or automatic bans of a tcp service
-	ActionTCPBanAdd                   = "tcp.ban.add"                    // a source was banned from a tcp service (by the relay or by hand)
-	ActionTCPBanRemove                = "tcp.ban.remove"                 // a ban of a tcp service was lifted by hand
-	ActionServiceAccessPolicyUpdate   = "service.access_policy.update"
-	ActionServiceAPIKeyCreate         = "service.api_key.create"
-	ActionServiceAPIKeyRevoke         = "service.api_key.revoke"
-	ActionServiceAIConfigUpdate       = "service.ai_config.update"
-	ActionAIProviderCreate            = "ai_provider.create"
-	ActionAIProviderUpdate            = "ai_provider.update"
-	ActionAIProviderDelete            = "ai_provider.delete"
-	ActionAIProviderModelsSync        = "ai_provider.models_sync"
-	ActionAIProviderModelAdd          = "ai_provider.model_add"
-	ActionAIProviderModelRemove       = "ai_provider.model_remove"
-	ActionAIModelCreate               = "ai_model.create"
-	ActionAIModelUpdate               = "ai_model.update"
-	ActionAIModelDelete               = "ai_model.delete"
-	ActionAIGatewayKeyCreate          = "ai_gateway_key.create"
-	ActionAIGatewayKeyRevoke          = "ai_gateway_key.revoke"
-	ActionAIGatewayKeyUpdate          = "ai_gateway_key.update"
+	ActionServiceCreate                = "service.create"
+	ActionServiceDelete                = "service.delete"
+	ActionServiceAccessModeUpdate      = "service.access_mode.update"
+	ActionServiceSlugChange            = "service.slug_changed"
+	ActionServiceGatewayOnlyUpdate     = "service.gateway_only.update"
+	ActionServiceTCPPortReclaimed      = "service.tcp_port.reclaimed" // a tcp registration took an offline service's automatic port
+	ActionServiceTCPAccessUpdate       = "service.tcp_access.update"  // the access mode of a tcp service: open, ip, private
+	ActionServiceIPGrantAdd            = "service.ip_grant.add"       // a just-in-time grant of a tcp service in mode ip
+	ActionServiceIPGrantRevoke         = "service.ip_grant.revoke"
+	ActionServiceMaxConnectionsUpdate  = "service.max_connections.update"   // the cap on connected visitors of a tcp service
+	ActionServiceTCPSettingsUpdate     = "service.tcp_settings.update"      // the PROXY protocol or idle timeout of a tcp service
+	ActionServiceTCPHostnameUpdate     = "service.tcp_hostname.update"      // the TLS passthrough host name of a tcp service
+	ActionServiceTCPHostnameOnlyUpdate = "service.tcp_hostname_only.update" // a tcp service reached by host name only (no public port), or by port again
+	ActionServiceConnectionClose       = "service.connection.close"         // a live connection of a tcp service was closed from the dashboard
+	ActionTCPForwardOpen               = "tcp.forward.open"                 // a forward stream to a tcp service was opened (one per user and service a minute)
+	ActionServiceTCPLimitsUpdate       = "service.tcp_limits.update"        // the bandwidth, daily volume or automatic bans of a tcp service
+	ActionTCPBanAdd                    = "tcp.ban.add"                      // a source was banned from a tcp service (by the relay or by hand)
+	ActionTCPBanRemove                 = "tcp.ban.remove"                   // a ban of a tcp service was lifted by hand
+	ActionServiceAccessPolicyUpdate    = "service.access_policy.update"
+	ActionServiceAPIKeyCreate          = "service.api_key.create"
+	ActionServiceAPIKeyRevoke          = "service.api_key.revoke"
+	ActionServiceAIConfigUpdate        = "service.ai_config.update"
+	ActionAIProviderCreate             = "ai_provider.create"
+	ActionAIProviderUpdate             = "ai_provider.update"
+	ActionAIProviderDelete             = "ai_provider.delete"
+	ActionAIProviderModelsSync         = "ai_provider.models_sync"
+	ActionAIProviderModelAdd           = "ai_provider.model_add"
+	ActionAIProviderModelRemove        = "ai_provider.model_remove"
+	ActionAIModelCreate                = "ai_model.create"
+	ActionAIModelUpdate                = "ai_model.update"
+	ActionAIModelDelete                = "ai_model.delete"
+	ActionAIGatewayKeyCreate           = "ai_gateway_key.create"
+	ActionAIGatewayKeyRevoke           = "ai_gateway_key.revoke"
+	ActionAIGatewayKeyUpdate           = "ai_gateway_key.update"
 
 	ActionCacheClear          = "cache.clear"
 	ActionCacheSettingsUpdate = "cache.settings.update"
@@ -208,7 +209,7 @@ var AllActions = []string{
 	ActionServiceCreate, ActionServiceDelete,
 	ActionServiceAccessModeUpdate, ActionServiceSlugChange, ActionServiceGatewayOnlyUpdate, ActionServiceAccessPolicyUpdate,
 	ActionServiceTCPPortReclaimed, ActionServiceTCPAccessUpdate, ActionServiceIPGrantAdd, ActionServiceIPGrantRevoke,
-	ActionServiceMaxConnectionsUpdate, ActionServiceTCPSettingsUpdate, ActionServiceTCPHostnameUpdate, ActionServiceConnectionClose, ActionTCPForwardOpen,
+	ActionServiceMaxConnectionsUpdate, ActionServiceTCPSettingsUpdate, ActionServiceTCPHostnameUpdate, ActionServiceTCPHostnameOnlyUpdate, ActionServiceConnectionClose, ActionTCPForwardOpen,
 	ActionServiceTCPLimitsUpdate, ActionTCPBanAdd, ActionTCPBanRemove,
 	ActionServiceAPIKeyCreate, ActionServiceAPIKeyRevoke,
 	ActionServiceAIConfigUpdate,

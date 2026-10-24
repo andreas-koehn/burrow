@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -126,6 +127,26 @@ func TestTCPGuardStore(t *testing.T) {
 	}
 	if in, out, err := st.TCPUsage(ctx, r.ServiceID, "2026-10-24"); err != nil || in != 30 || out != 3<<33 {
 		t.Fatalf("usage %d %d %v", in, out, err)
+	}
+	// An automatic ban shorter than a stored one is no error: the longer
+	// one holds.
+	if err := st.SaveTCPBan(ctx, r.ServiceID, server.TCPBan{Source: "203.0.113.7", Until: now.Add(time.Minute), Reason: "auto: y", CreatedAt: now}); err != nil {
+		t.Fatalf("shorter ban: %v", err)
+	}
+	if bans, _ := st.ActiveTCPBans(ctx, r.ServiceID, now); len(bans) != 1 || bans[0].Reason != "auto: x" {
+		t.Fatalf("bans after a shorter one: %+v", bans)
+	}
+	// Old usage goes; the store can prune.
+	var _ server.TCPUsagePruner = st
+	if err := st.PruneTCPUsage(ctx, "2026-10-25"); err != nil {
+		t.Fatal(err)
+	}
+	if in, _, _ := st.TCPUsage(ctx, r.ServiceID, "2026-10-24"); in != 0 {
+		t.Fatalf("usage after prune: %d", in)
+	}
+	// The usage of a deleted service is ErrTCPServiceGone.
+	if err := st.AddTCPUsage(ctx, "svc-deleted", "2026-10-24", 1, 1); !errors.Is(err, server.ErrTCPServiceGone) {
+		t.Fatalf("usage of a deleted service: %v", err)
 	}
 }
 

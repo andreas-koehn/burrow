@@ -216,6 +216,17 @@ func TestNotes_TCPServices(t *testing.T) {
 	if got := tcpNote(web, "relay.example.com", true); got != "This service is open to anyone at relay.example.com:9001." {
 		t.Errorf("open web: %s", got)
 	}
+	// Reached by host name only: no public port, and the note says how.
+	named := web
+	named.RemotePort = 0
+	if got := tcpNote(named, "relay.example.com", true); got != "This service is open to anyone by its host name on the relay's TLS port; it has no public port." {
+		t.Errorf("by host name only: %s", got)
+	}
+	namedIP := named
+	namedIP.AccessMode, namedIP.Wished = "ip", "ip"
+	if got := tcpNote(namedIP, "relay.example.com", true); got != "This service is reachable by its host name on the relay's TLS port from the addresses allowed in the dashboard; it has no public port." {
+		t.Errorf("ip by host name only: %s", got)
+	}
 	// Asked for open, kept private in the dashboard.
 	stricter := private
 	stricter.Wished = "open"

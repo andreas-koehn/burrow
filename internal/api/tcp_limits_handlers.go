@@ -213,6 +213,9 @@ func mapBanErr(w http.ResponseWriter, err error, notFound string) {
 	switch {
 	case errors.Is(err, store.ErrInvalidTCPBan):
 		writeErr(w, http.StatusBadRequest, storeErrText(err, store.ErrInvalidTCPBan))
+	case errors.Is(err, store.ErrTCPBanLonger):
+		writeErr(w, http.StatusConflict, "the source is banned for longer already; a ban can be extended here, not shortened: "+
+			"lift it with DELETE /api/v1/services/{id}/tcp-bans?source=… (the Unban button), then ban it again")
 	case errors.Is(err, store.ErrTooManyTCPBans):
 		writeErr(w, http.StatusConflict, "the service has its maximum of 4096 active bans")
 	case errors.Is(err, store.ErrNoTCPBan):
@@ -287,6 +290,25 @@ func (d Deps) PostServiceTCPBan(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
+	}
+	// A ban the relay holds (an automatic one whose write failed) is
+	// never shortened either; the store checks its own rows.
+	if g, ok := d.Connections.(TCPGuardRelay); ok {
+		if src, ok := store.NormalizeTCPBanSource(in.Source); ok {
+			want := time.Now().Add(time.Duration(in.BanMin) * time.Minute)
+			for _, b := range g.TCPBans(serviceID) {
+				if b.Source == src && b.Until.After(want) {
+					// The caller may configure the service before it
+					// learns of the ban (the list checks that).
+					if _, err := d.Services.ListTCPBans(r.Context(), userID(r.Context()), role, serviceID); err != nil {
+						mapBanErr(w, err, "service not found")
+						return
+					}
+					mapBanErr(w, store.ErrTCPBanLonger, "")
+					return
+				}
+			}
+		}
 	}
 	b, err := d.Services.AddTCPBan(r.Context(), userID(r.Context()), role, serviceID, in.Source, in.BanMin, in.Note)
 	if err != nil {

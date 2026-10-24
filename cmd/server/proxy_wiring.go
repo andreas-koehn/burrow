@@ -339,6 +339,7 @@ func (a serviceResolverAdapter) ResolveTCP(ctx context.Context, userID, name str
 				ProxyProtocol:  svc.ProxyProtocol,
 				IdleTimeout:    time.Duration(svc.IdleTimeoutS) * time.Second,
 				TCPHostname:    svc.TCPHostname,
+				HostnameOnly:   svc.TCPHostnameOnly,
 				Limits:         tcpLimitsOf(svc),
 			}, nil
 		}
@@ -349,7 +350,7 @@ func (a serviceResolverAdapter) ResolveTCP(ctx context.Context, userID, name str
 		id := uuid.NewString()
 		err = a.db.CreateService(ctx, db.Service{ID: id, UserID: userID, Name: name, Type: "tcp", Subdomain: slug, AccessMode: mode})
 		if err == nil {
-			return server.Resolved{ServiceID: id, Slug: slug, AccessMode: mode, Created: true, TCPPortLimit: limit,
+			return server.Resolved{ServiceID: id, Slug: slug, AccessMode: mode, Created: true, Inserted: true, TCPPortLimit: limit,
 				Limits: tcpLimitsOf(db.Service{})}, nil
 		}
 		if !errors.Is(err, db.ErrDuplicateService) {
@@ -787,7 +788,7 @@ func (a tcpAccessAdapter) TCPAccess(ctx context.Context, serviceID string) (serv
 	acc := server.TCPAccess{
 		Mode: svc.AccessMode, MaxConnections: svc.MaxConnections,
 		ProxyProtocol: svc.ProxyProtocol, IdleTimeout: time.Duration(svc.IdleTimeoutS) * time.Second,
-		Hostname: svc.TCPHostname, Limits: tcpLimitsOf(svc),
+		Hostname: svc.TCPHostname, HostnameOnly: svc.TCPHostnameOnly, Limits: tcpLimitsOf(svc),
 	}
 	if acc.Mode == server.TCPAccessPrivate {
 		return acc, nil

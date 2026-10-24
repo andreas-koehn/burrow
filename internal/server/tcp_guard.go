@@ -9,12 +9,16 @@ package server
 //     the port listener and on the TLS passthrough listener alike, before
 //     the home client is told. A source is an IPv4 address or an IPv6 /64
 //     (sourceKey). Forward streams are never banned: they are signed in.
+//     A source an allow entry of mode ip or a live grant lets in is trusted
+//     and not counted. A ban is never shortened (only lifted).
 //   - bandwidth: one token bucket per direction, shared by every connection
 //     of the service, visitors and forwards. It sits in the pipe, under the
 //     byte counters, so what they count is what passed.
 //   - daily volume: the bytes in and out of a UTC day. Over the limit new
-//     connections are refused (reason quota) and the open ones are closed
-//     (reason quota); at 80 % the observer is told once a day.
+//     visitors are refused (reason quota) and the open ones are closed
+//     (reason quota); forwards are counted and never refused or closed by
+//     it (they are authorized). At 80 % the observer is told once a day.
+//     Usage rows older than 90 days are pruned once a day.
 //
 // The state of a service lives in one tcpGuard per service, kept by the
 // Server while a tunnel serves it (and until what it counted is written).
@@ -43,7 +47,8 @@ const (
 	// the reason of a live visitor closed when its source was banned.
 	TCPRefusedBanned = "banned"
 	// TCPRefusedQuota: the service has carried its daily volume. It is also
-	// the reason of an open connection closed when the volume was reached.
+	// the reason of an open visitor closed when the volume was reached
+	// (forwards are counted, never closed or refused by it).
 	TCPRefusedQuota = "quota"
 )
 
@@ -141,6 +146,21 @@ type TCPGuardStore interface {
 	// before now.
 	PruneTCPBans(ctx context.Context, serviceID string, now time.Time) error
 }
+
+// ErrTCPServiceGone is what AddTCPUsage answers (wrapped) when the service is
+// no longer in the store: the bytes are dropped, not tried again.
+var ErrTCPServiceGone = errors.New("server: the tcp service is gone")
+
+// TCPUsagePruner is a TCPGuardStore that can delete old usage rows. The
+// relay calls it once per UTC day while it holds tcp services.
+type TCPUsagePruner interface {
+	// PruneTCPUsage deletes the usage of every service for the days before
+	// before (YYYY-MM-DD).
+	PruneTCPUsage(ctx context.Context, before string) error
+}
+
+// tcpUsageKeep is how long tcp_daily_usage rows are kept.
+const tcpUsageKeepDays = 90
 
 // utcDay is the UTC day of t as tcp_daily_usage keeps it.
 func utcDay(t time.Time) string { return t.UTC().Format(time.DateOnly) }
@@ -246,6 +266,11 @@ func (s *guardStream) Close() error {
 func (s *guardStream) wait(d time.Duration) error {
 	if d <= 0 {
 		return nil
+	}
+	if s.c != nil {
+		// Waiting for the bucket is not idle time (sweepIdle).
+		s.c.throttled.Add(1)
+		defer s.c.throttled.Add(-1)
 	}
 	t := time.NewTimer(d)
 	defer t.Stop()
@@ -443,7 +468,13 @@ func (g *tcpGuard) addBan(b TCPBan, now time.Time) bool {
 }
 
 func (g *tcpGuard) addBanLocked(b TCPBan, now time.Time) bool {
-	if _, ok := g.bans[b.Source]; !ok && len(g.bans) >= MaxTCPBans {
+	cur, ok := g.bans[b.Source]
+	if ok && now.Before(cur.Until) && cur.Until.After(b.Until) {
+		// A ban is never shortened: the one that ends later holds.
+		delete(g.shorts, b.Source)
+		return true
+	}
+	if !ok && len(g.bans) >= MaxTCPBans {
 		g.expireLocked(now)
 		if len(g.bans) >= MaxTCPBans {
 			return false
@@ -599,7 +630,9 @@ func (s *Server) guard(serviceID string) *tcpGuard {
 
 // countGuard counts bytes of a connection c against its service's day. The
 // call that reaches 80 % tells the observer; one at or over the volume closes
-// c, and the first closes every connection of the service.
+// c, and the first closes every visitor of the service. A forward is counted
+// and never closed: it is authorized (the owner, or a role the policy
+// names), and anonymous visitors must not lock it out.
 func (s *Server) countGuard(g *tcpGuard, c *liveConn, in, out uint64) {
 	if in > 0 {
 		g.pendIn.Add(in)
@@ -621,13 +654,13 @@ func (s *Server) countGuard(g *tcpGuard, c *liveConn, in, out uint64) {
 	if g.over.CompareAndSwap(false, true) {
 		s.quotaReached(g)
 	}
-	if c != nil {
+	if c != nil && c.kind != ConnKindForward {
 		c.closeWith(TCPRefusedQuota)
 	}
 }
 
-// quotaReached closes every live connection of the service: its day carried
-// its volume.
+// quotaReached closes every live visitor of the service: its day carried
+// its volume. Forwards stay (see countGuard).
 func (s *Server) quotaReached(g *tcpGuard) {
 	s.log.Info("tcp service reached its daily volume", "service_id", g.serviceID, "bytes", g.used(), "limit", g.limit.Load())
 	tn, ok := s.LookupTunnelByServiceID(g.serviceID)
@@ -635,7 +668,9 @@ func (s *Server) quotaReached(g *tcpGuard) {
 		return
 	}
 	for _, c := range tn.liveConns() {
-		c.closeWith(TCPRefusedQuota)
+		if c.kind != ConnKindForward {
+			c.closeWith(TCPRefusedQuota)
+		}
 	}
 }
 
@@ -819,6 +854,7 @@ func (s *Server) flushGuards() {
 			s.flushGuard(ctx, g)
 			cancel()
 		}
+		s.pruneUsage(s.now())
 		s.guardMu.Lock()
 		for id, g := range s.guards {
 			if !s.servingTCP(id) && g.live.Load() == 0 && g.idle() {
@@ -832,6 +868,26 @@ func (s *Server) flushGuards() {
 		}
 		s.guardMu.Unlock()
 	}
+}
+
+// pruneUsage deletes the stored usage older than tcpUsageKeepDays, once per
+// UTC day of now, when the store can.
+func (s *Server) pruneUsage(now time.Time) {
+	p, ok := s.opts.TCPGuards.(TCPUsagePruner)
+	if !ok {
+		return
+	}
+	day := utcDay(now)
+	if s.usagePrunedDay == day {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), guardLoadTimeout)
+	defer cancel()
+	if err := p.PruneTCPUsage(ctx, utcDay(now.UTC().AddDate(0, 0, -tcpUsageKeepDays))); err != nil {
+		s.log.Warn("prune tcp usage failed", "err", err)
+		return
+	}
+	s.usagePrunedDay = day
 }
 
 // idle reports whether everything the guard counted is written.
@@ -909,6 +965,9 @@ func (s *Server) addUsage(ctx context.Context, st TCPGuardStore, serviceID strin
 	err := st.AddTCPUsage(ctx, serviceID, c.day, c.in, c.out)
 	switch {
 	case err == nil:
+		return true
+	case errors.Is(err, ErrTCPServiceGone):
+		s.log.Debug("tcp service gone; its usage is dropped", "service_id", serviceID, "day", c.day, "bytes", c.in+c.out)
 		return true
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		s.log.Warn("write tcp usage timed out; it may not have been written and is not tried again",

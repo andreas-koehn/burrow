@@ -1200,7 +1200,7 @@ components:
     TcpHostname:
       type: object
       description: The TLS passthrough host names of a tcp service.
-      required: [tcp_hostname, hostnames, passthrough, reachable]
+      required: [tcp_hostname, hostnames, passthrough, reachable, hostname_only]
       properties:
         tcp_hostname:
           type: string
@@ -1221,15 +1221,29 @@ components:
             A TLS client that names one of hostnames reaches the service now:
             the listener runs, the service has a name, and it is in mode open
             or ip (a private service is never reached by name).
+        hostname_only:
+          type: boolean
+          description: >
+            The service is reached by host name only: the relay opens no
+            public port for it while one of hostnames reaches it through
+            the listener. When none does (the listener or the name is gone)
+            the relay opens the port again. false: by port, and by host name
+            when it has one.
     TcpHostnameInput:
       type: object
-      description: The host name to set.
+      description: The host name to set, whether the service is reached by host name only, or both; at least one.
       additionalProperties: false
-      required: [tcp_hostname]
       properties:
         tcp_hostname:
           type: string
           description: A host name such as rdp.example.com; "" clears it.
+        hostname_only:
+          type: boolean
+          description: >
+            true opens no public port for the service (reached by host name
+            only); allowed only while the relay has the TLS passthrough
+            listener and the service a host name on it. false opens the
+            port again.
     TcpAutoBan:
       type: object
       description: >
@@ -1286,15 +1300,17 @@ components:
           description: >
             The bytes in and out the service may carry in a UTC day; 0 is
             none, otherwise 1048576 (1 MiB) to 1125899906842624 (1 PiB). Over
-            it new connections are refused and the open ones closed
-            (connection-log reason quota) until the next UTC day; at 80 % the
-            webhook tcp.quota.warning is sent once a day.
+            it new visitors are refused and the open ones closed
+            (connection-log reason quota) until the next UTC day. Forwards
+            (authorized: the owner or a role the policy names) count towards
+            it but are never refused or closed by it. At 80 % the webhook
+            tcp.quota.warning is sent once a day.
         autoban: { $ref: '#/components/schemas/TcpAutoBan' }
         usage_today:
           $ref: '#/components/schemas/TcpUsage'
         quota_reached:
           type: boolean
-          description: The relay refuses the service's new connections now because the day carried daily_bytes.
+          description: The relay refuses the service's new visitors now because the day carried daily_bytes (forwards are still let in).
     TcpLimitsInput:
       type: object
       description: The limits to change; at least one. A field left out is kept.
@@ -4340,10 +4356,11 @@ paths:
       operationId: serviceTcpHostnameUpdate
       x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       x-burrow-mcp: false
-      summary: Set the TLS passthrough host name of a tcp service
+      summary: Set the TLS passthrough host name of a tcp service, or reach it by host name only
       description: |
         Sets `tcp_hostname` (a host name such as `rdp.example.com`), or
-        clears it with `""`. It is stored lower case without a trailing dot
+        clears it with `""`, and/or `hostname_only`. At least one of the two
+        is required. It is stored lower case without a trailing dot
         and is unique among services; a name of the relay's own domains
         (the tcp domain, the dashboard's domain, the services host and the
         names under each) or of a custom domain of a service (or under one)
@@ -4354,6 +4371,16 @@ paths:
         widens who can reach the service, so the route asks for a recent
         confirmation. Audited as `service.tcp_hostname.update` with the name
         before and after.
+
+        `hostname_only: true` makes the service reachable by its host names
+        only: the relay closes its public port (the client registers again)
+        and opens none while a name reaches it. It is refused with 400 when
+        the relay has no passthrough listener or the service no name there
+        (`<slug>.<BURROW_TCP_DOMAIN>` or `tcp_hostname`), and the only name
+        of such a service is not cleared (400). A pinned port is kept for
+        when the port is on again; an automatic one goes back to the pool.
+        `false` opens the port again. Audited as
+        `service.tcp_hostname_only.update` with the setting before and after.
 
         Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
@@ -4455,8 +4482,11 @@ paths:
       x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
       summary: Ban a source from a tcp service
       description: |
-        Bans `source` for `ban_min` minutes; a ban of the same source is
-        replaced. The relay closes the source's live visitors at once and
+        Bans `source` for `ban_min` minutes. An active ban of the same
+        source is extended or renewed, never shortened: a ban that would end
+        sooner than the active one is refused with 409, and lifting a ban is
+        the DELETE (which needs a recent confirmation and is not an MCP
+        tool). An expired ban is replaced. The relay closes the source's live visitors at once and
         closes its new ones at accept with no byte. Forwards are never
         banned. A ban narrows who may connect, so it needs no recent
         confirmation. At most 4096 bans are active per service. Audited as
@@ -4477,7 +4507,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { description: The service is not a tcp service, or has 4096 active bans. }
+        '409': { description: 'The service is not a tcp service, has 4096 active bans, or the source is banned for longer already (lift it with the DELETE first).' }
     delete:
       tags: [services]
       operationId: serviceTcpBanDelete

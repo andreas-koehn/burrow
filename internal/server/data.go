@@ -382,10 +382,11 @@ func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn, source string) {
 	}
 	tun.dropConn(c.id)
 	reason := c.endReason(tun.sess)
-	if reason == "" && ended == bridge.SideA {
+	if reason == "" && ended == bridge.SideA && !tun.policy.Load().trusts(visitorAddr(visitor), s.now()) {
 		// The visitor ended it: a short one counts towards a ban. One the
 		// home side ended never does (its backend may be down, and every
-		// visitor that tries again would be banned).
+		// visitor that tries again would be banned), and neither does one
+		// of a source an allow entry or a live grant lets in (a monitor).
 		s.shortVisit(tun, source, time.Since(started))
 	}
 	s.tcpTraffic(tun, visitor, c, started, c.in.Load(), c.out.Load(), observe.OutcomeClean, reason)

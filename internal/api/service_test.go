@@ -180,6 +180,14 @@ func (f *fakeServiceStore) SetServiceTCPHostname(_ context.Context, _, _, _, h s
 	f.tcpHostname.Hostname, _ = store.NormalizeTCPHostname(h)
 	return before, f.tcpHostname, nil
 }
+func (f *fakeServiceStore) SetServiceTCPHostnameOnly(_ context.Context, _, _, _ string, only bool) (store.TCPHostname, store.TCPHostname, error) {
+	if f.tcpHostnameErr != nil {
+		return store.TCPHostname{}, store.TCPHostname{}, f.tcpHostnameErr
+	}
+	before := f.tcpHostname
+	f.tcpHostname.HostnameOnly = only
+	return before, f.tcpHostname, nil
+}
 func (f *fakeServiceStore) ServiceTCPLimits(_ context.Context, _, _, _ string) (store.TCPLimits, store.TCPUsage, error) {
 	return f.tcpLimits, f.tcpUsage, f.tcpLimitsErr
 }

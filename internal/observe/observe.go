@@ -79,7 +79,8 @@ type Session struct {
 	TunnelName string
 	ServiceID  string // the durable service of the tunnel; "" for a tcp tunnel without one
 	AccessMode string // of the service, when the registration reported it
-	// ServiceCreated: this registration created the service (TunnelOpened).
+	// ServiceCreated: this registration created the service (TunnelOpened,
+	// or TunnelRefused when it was refused after it created it).
 	ServiceCreated bool
 	// RefusalCode is the proto.Code… value the client was answered with
 	// (TunnelRefused).

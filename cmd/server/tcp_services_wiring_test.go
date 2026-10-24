@@ -481,15 +481,16 @@ func TestResolveTCP_FindsAServiceCreatedBeforeAnyClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	if r.ServiceID != "pre-1" || r.Slug != "pre1slug" || r.AccessMode != "ip" || r.TCPPort != 9042 || !r.TCPPortPinned ||
-		r.ProxyProtocol != "v2" || r.IdleTimeout != 10*time.Minute || r.Created {
+		r.ProxyProtocol != "v2" || r.IdleTimeout != 10*time.Minute || r.Created || r.Inserted {
 		t.Fatalf("resolved %+v", r)
 	}
 	// A row a registration made (in the mode it asked for) and nobody served
-	// yet keeps its announcement for the next try.
+	// yet is told to the client as created; it is not inserted again, so it
+	// is not announced again (the refused registration that made it did).
 	if err := x.CreateService(ctx, db.Service{ID: "pre-2", UserID: uid, Name: "rdp-box", Type: "tcp", Subdomain: "pre2slug", AccessMode: "private"}); err != nil {
 		t.Fatal(err)
 	}
-	if r, err := a.ResolveTCP(ctx, uid, "rdp-box", server.ResolveOptions{AccessDefault: server.TCPAccessPrivate}); err != nil || !r.Created || r.AccessMode != "private" {
+	if r, err := a.ResolveTCP(ctx, uid, "rdp-box", server.ResolveOptions{AccessDefault: server.TCPAccessPrivate}); err != nil || !r.Created || r.Inserted || r.AccessMode != "private" {
 		t.Fatalf("resolved %+v %v", r, err)
 	}
 	held, err := a.TCPPortReservations(ctx)
@@ -554,5 +555,32 @@ func TestServe_ATCPServiceCreatedInTheDashboardIsServed(t *testing.T) {
 	buf := make([]byte, 4)
 	if _, err := io.ReadFull(conn, buf); err != nil || string(buf) != "ping" {
 		t.Fatalf("echo %q %v", buf, err)
+	}
+}
+
+// The whole relay: a private tcp service created through POST /services is
+// announced once (service.created by the API), not again when its first
+// client serves it.
+func TestServe_ATCPServiceCreatedInTheDashboardIsAnnouncedOnce(t *testing.T) {
+	r := bootObsRelay(t)
+	r.mustAdmin(http.MethodPost, "/api/v1/services", map[string]any{"type": "tcp", "name": "dash-priv", "access_mode": "private"}, http.StatusCreated, nil)
+	r.eventually("the API's service.created", func() bool { return r.hook.count("service.created") == 1 })
+	var token struct {
+		Token string `json:"token"`
+	}
+	r.mustAdmin(http.MethodPost, "/api/v1/tokens", map[string]string{"name": "dash-priv"}, http.StatusCreated, &token)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := client.New(client.Options{
+		Server: r.control, Token: token.Token, RootCAs: r.caPool, ServerName: "localhost",
+		Tunnels: []client.TunnelSpec{{Name: "dash-priv", Type: "tcp", LocalAddr: "127.0.0.1:1", AccessDefault: "private"}},
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	go func() { _ = c.Run(ctx) }()
+	r.eventually("the relay lists the tunnel", func() bool { _, ok := r.tunnels()["dash-priv"]; return ok })
+	r.eventually("tunnel.connected", func() bool { return r.hook.seen("tunnel.connected") })
+	time.Sleep(500 * time.Millisecond) // a second service.created would come with tunnel.connected
+	if n := r.hook.count("service.created"); n != 1 {
+		t.Fatalf("service.created delivered %d times, want 1", n)
 	}
 }

@@ -101,6 +101,7 @@ func (s *Server) ListenPassthrough(ctx context.Context, addr string) error {
 // connection is judged on a goroutine of its own, so the accept loop never
 // waits for a hello.
 func (s *Server) ServePassthrough(ctx context.Context, ln net.Listener) error {
+	s.passthroughOn.Store(true)
 	stop := context.AfterFunc(ctx, func() { _ = ln.Close() })
 	defer stop()
 	var delay time.Duration
@@ -388,6 +389,13 @@ func (s *Server) passthroughTunnel(name string) *Tunnel {
 	return nil
 }
 
+// reachableByName reports whether a TLS client reaches tn by a host name on
+// the passthrough listener: the listener runs and the tunnel has a name
+// there (<slug>.<TCPDomain>, or its own). The mode is the caller's to check.
+func (s *Server) reachableByName(tn *Tunnel) bool {
+	return s.passthroughOn.Load() && ((s.opts.TCPDomain != "" && tn.slug != "") || tn.hostname() != "")
+}
+
 // refusePassthrough closes a connection of the passthrough listener without a
 // byte and counts it; the first refusal of a reason and address in a minute
 // is logged at debug, the minute's totals at info (refusalSampler).
@@ -398,7 +406,7 @@ func (s *Server) refusePassthrough(conn net.Conn, ip netip.Addr, reason string) 
 	if ip.IsValid() {
 		addr = ip.String()
 	}
-	if s.refusals.sample(passthroughRefusalKey, reason, addr, time.Now()) {
+	if s.passRefusals.sample(passthroughRefusalKey, reason, addr, time.Now()) {
 		s.log.Debug("tls passthrough connection refused", "reason", reason, "source_ip", addr)
 	}
 }

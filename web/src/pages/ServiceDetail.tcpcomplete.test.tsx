@@ -163,6 +163,58 @@ describe("tcp service page: host name", () => {
   });
 });
 
+describe("tcp service page: host name only", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("turns the public port off while a name reaches the service, and on again", async () => {
+    addTcp();
+    const spy = vi.spyOn(globalThis, "fetch");
+    mount();
+    const card = await region("Host name");
+    const sw = await within(card).findByRole("switch", { name: "Host name only" });
+    expect(sw).toHaveAttribute("aria-checked", "false");
+    await userEvent.click(sw);
+    await waitFor(() => expect(sent(spy, "/tcp-hostname", "PUT")).toEqual([{ hostname_only: true }]));
+    expect(db.tcpHostnameOnly.svc_rdp01).toBe(true);
+    await waitFor(() => expect(within(card).getByRole("switch", { name: "Host name only" })).toHaveAttribute("aria-checked", "true"));
+    expect(card).toHaveTextContent(/no public port/i);
+    await userEvent.click(within(card).getByRole("switch", { name: "Host name only" }));
+    await waitFor(() => expect(sent(spy, "/tcp-hostname", "PUT")).toEqual([{ hostname_only: true }, { hostname_only: false }]));
+    expect(db.tcpHostnameOnly.svc_rdp01).toBe(false);
+  });
+
+  it("cannot turn the port off while no name reaches the service", async () => {
+    addTcp({ slug: "" });
+    mount();
+    const card = await region("Host name");
+    const sw = await within(card).findByRole("switch", { name: "Host name only" });
+    expect(sw).toBeDisabled();
+    expect(card).toHaveTextContent(/needs a host name/i);
+  });
+
+  it("shows the relay's refusal", async () => {
+    addTcp();
+    server.use(http.put("/api/v1/services/svc_rdp01/tcp-hostname", () =>
+      HttpResponse.json({ error: "hostname_only needs the relay's TLS passthrough listener" }, { status: 400 })));
+    mount();
+    const card = await region("Host name");
+    await userEvent.click(await within(card).findByRole("switch", { name: "Host name only" }));
+    expect(await within(card).findByText(/needs the relay's TLS passthrough listener/)).toBeInTheDocument();
+  });
+
+  it("lets a service that has no way in by name back onto its port", async () => {
+    addTcp();
+    db.tlsPassthrough = false;
+    db.tcpHostnameOnly.svc_rdp01 = true;
+    mount();
+    const card = await region("Host name");
+    const sw = await within(card).findByRole("switch", { name: "Host name only" });
+    expect(sw).toBeEnabled();
+    await userEvent.click(sw);
+    await waitFor(() => expect(db.tcpHostnameOnly.svc_rdp01).toBe(false));
+  });
+});
+
 describe("tcp service page: countries", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -269,6 +321,7 @@ describe("tcp service page: limits", () => {
     mount();
     const card = await region("Limits");
     expect(await within(card).findByText(/refused until the next UTC day/i)).toBeInTheDocument();
+    expect(card).toHaveTextContent(/forwards still connect/i);
   });
 
   it("shows no bar without a daily volume, and shows the ban defaults while off", async () => {

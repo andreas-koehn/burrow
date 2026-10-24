@@ -47,6 +47,8 @@ type tcpResolver struct {
 	// hosts is the TLS passthrough host name of each service id that has
 	// one (tcp complete, E1).
 	hosts map[string]string
+	// hostOnly are the service ids reached by host name only.
+	hostOnly map[string]bool
 	// limits are the bandwidth, volume and ban settings of each service id
 	// that has some (tcp complete, E6/E7).
 	limits map[string]TCPLimits
@@ -55,7 +57,7 @@ type tcpResolver struct {
 func newTCPResolver() *tcpResolver {
 	return &tcpResolver{ids: map[string]string{}, holds: map[int]TCPPortHold{}, seen: map[string]time.Time{}, httpName: map[string]bool{},
 		modes: map[string]string{}, maxConns: map[string]int{}, proxy: map[string]string{}, idle: map[string]time.Duration{},
-		hosts: map[string]string{}, limits: map[string]TCPLimits{}}
+		hosts: map[string]string{}, hostOnly: map[string]bool{}, limits: map[string]TCPLimits{}}
 }
 
 func (r *tcpResolver) Resolve(context.Context, string, string, string) (string, string, error) {
@@ -76,6 +78,7 @@ func (r *tcpResolver) ResolveTCP(_ context.Context, userID, name string, o Resol
 		return Resolved{}, &RefusalError{Code: proto.CodeNameInUse, Message: "the name " + name + " is used by an http service"}
 	}
 	id, ok := r.ids[name]
+	inserted := !ok
 	if !ok {
 		id = "svc-" + name
 		r.ids[name] = id
@@ -92,8 +95,8 @@ func (r *tcpResolver) ResolveTCP(_ context.Context, userID, name string, o Resol
 	if m, ok := r.modes[id]; ok {
 		mode = m
 	}
-	res := Resolved{ServiceID: id, Slug: "s-" + name, AccessMode: mode, Created: !served, TCPPortLimit: r.limit, MaxConnections: r.maxConns[id],
-		ProxyProtocol: r.proxy[id], IdleTimeout: r.idle[id], TCPHostname: r.hosts[id], Limits: r.limits[id]}
+	res := Resolved{ServiceID: id, Slug: "s-" + name, AccessMode: mode, Created: !served, Inserted: inserted, TCPPortLimit: r.limit, MaxConnections: r.maxConns[id],
+		ProxyProtocol: r.proxy[id], IdleTimeout: r.idle[id], TCPHostname: r.hosts[id], HostnameOnly: r.hostOnly[id], Limits: r.limits[id]}
 	for p, h := range r.holds {
 		if h.ServiceID == id {
 			res.TCPPort, res.TCPPortPinned = p, h.Pinned
@@ -521,16 +524,18 @@ func TestRegisterTCP_CreatedUntilServed(t *testing.T) {
 	if rr := c.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"}); !rr.OK {
 		t.Fatalf("again: %+v", rr)
 	}
-	var created []bool
+	// The first registration created the service and was refused: its
+	// refusal announces it. The openings after it found the row and do not.
+	var created []string
 	r.obs.mu.Lock()
 	for _, e := range r.obs.sessions {
-		if e.Kind == observe.TunnelOpened {
-			created = append(created, e.ServiceCreated)
+		if e.Kind == observe.TunnelOpened || e.Kind == observe.TunnelRefused {
+			created = append(created, fmt.Sprintf("%s %v %s", e.Kind, e.ServiceCreated, e.ServiceID))
 		}
 	}
 	r.obs.mu.Unlock()
-	if !reflect.DeepEqual(created, []bool{true, false}) {
-		t.Fatalf("ServiceCreated of the openings: %v", created)
+	if want := []string{observe.TunnelRefused + " true svc-rdp", observe.TunnelOpened + " false svc-rdp", observe.TunnelOpened + " false svc-rdp"}; !reflect.DeepEqual(created, want) {
+		t.Fatalf("ServiceCreated of the registrations: %v, want %v", created, want)
 	}
 }
 

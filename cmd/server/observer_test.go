@@ -773,3 +773,19 @@ func TestObserver_TCPRefusalsAreAccessDenied(t *testing.T) {
 	}
 	wantLines(t, expo(t, rec), `burrow_connections_total{service="svc-rdp",kind="tcp_proxy",status="rejected"} 21`)
 }
+
+// A registration refused after it created its service announces the
+// service; a refusal that created nothing does not.
+func TestObserver_ARefusedFirstRegistrationAnnouncesItsService(t *testing.T) {
+	o, _, em, _ := newTestObserver(t)
+	o.ObserveSession(observe.Session{Kind: observe.TunnelRefused, UserID: "u1", TunnelType: "tcp", TunnelName: "rdp", RefusalCode: "port_unavailable"})
+	if n := len(em.named("service.created")); n != 0 {
+		t.Fatalf("a refusal that created nothing announced: %d", n)
+	}
+	o.ObserveSession(observe.Session{Kind: observe.TunnelRefused, UserID: "u1", TunnelType: "tcp", TunnelName: "rdp", ServiceID: "svc-rdp",
+		AccessMode: "open", RefusalCode: "port_unavailable", ServiceCreated: true})
+	got := em.named("service.created")
+	if len(got) != 1 || got[0]["service_id"] != "svc-rdp" || got[0]["name"] != "rdp" || got[0]["type"] != "tcp" || got[0]["access_mode"] != "open" {
+		t.Fatalf("service.created %v", got)
+	}
+}

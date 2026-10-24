@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,18 @@ type fakeGuardStore struct {
 	// their context ran out.
 	lostAnswers int
 	prunes      []string
+	// gone are services deleted from the store: their usage is
+	// ErrTCPServiceGone.
+	gone map[string]bool
+	// usagePrunes are the cut-off days PruneTCPUsage was called with.
+	usagePrunes []string
+}
+
+func (f *fakeGuardStore) PruneTCPUsage(_ context.Context, before string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.usagePrunes = append(f.usagePrunes, before)
+	return nil
 }
 
 func newFakeGuardStore() *fakeGuardStore {
@@ -85,9 +98,12 @@ func (f *fakeGuardStore) AddTCPUsage(_ context.Context, id, day string, in, out 
 	if f.err != nil {
 		return f.err
 	}
+	f.adds++
+	if f.gone[id] {
+		return fmt.Errorf("add tcp daily usage: %w", ErrTCPServiceGone)
+	}
 	u := f.usage[id+"|"+day]
 	f.usage[id+"|"+day] = [2]uint64{u[0] + in, u[1] + out}
-	f.adds++
 	if f.lostAnswers > 0 {
 		f.lostAnswers--
 		return fmt.Errorf("add tcp daily usage: %w", context.DeadlineExceeded)
@@ -556,9 +572,9 @@ func writeEcho(t *testing.T, conn net.Conn, n int) {
 	readN(t, conn, n)
 }
 
-// The daily volume: 80 % is told once, the connection that carries the
-// volume is closed with reason quota, new visitors and forwards are refused
-// with reason quota, the usage is written and read again after a restart,
+// The daily volume: 80 % is told once, the visitor that carries the volume
+// is closed with reason quota, new visitors are refused with reason quota,
+// forwards are counted but neither closed nor refused, the usage is written and read again after a restart,
 // and a new UTC day lets in again.
 func TestTCPQuota_RefusesClosesWarnsOnceAndSurvivesARestart(t *testing.T) {
 	st, clk := newFakeGuardStore(), &testClock{}
@@ -568,7 +584,15 @@ func TestTCPQuota_RefusesClosesWarnsOnceAndSurvivesARestart(t *testing.T) {
 
 	v := greeted(t, "127.0.0.1", 19657) // 3
 	other := greeted(t, "127.0.0.2", 19657)
-	writeEcho(t, v, 700) // 1403: 70 %
+	// An authorized forward is counted but never closed or refused by the
+	// volume: anonymous visitors must not lock the owner out.
+	f := r.forwarder("secret")
+	live, resp, err := f.open(t, "web")
+	if err != nil || !resp.OK {
+		t.Fatalf("forward: %+v %v", resp, err)
+	}
+	readN(t, live, 3)    // 6
+	writeEcho(t, v, 697) // 1400: 70 %
 	settle()
 	if n := len(r.sessionEvents(observe.TCPQuotaWarning)); n != 0 {
 		t.Fatalf("warned at 70 %%: %d", n)
@@ -606,13 +630,24 @@ func TestTCPQuota_RefusesClosesWarnsOnceAndSurvivesARestart(t *testing.T) {
 	if rows := r.refusedRows(TCPRefusedQuota); len(rows) != 1 {
 		t.Fatalf("refused rows %+v", rows)
 	}
-	f := r.forwarder("secret")
-	if _, resp, err := f.open(t, "web"); err != nil || resp.OK || resp.Code != proto.CodeRateLimited {
+	// The forward open before is still carried, and counted.
+	before := r.srv.guard("svc-web").used()
+	writeEcho(t, live, 50)
+	if got := r.srv.guard("svc-web").used(); got < before+100 {
+		t.Fatalf("the forward's bytes were not counted: %d, before %d", got, before)
+	}
+	// A new forward is let in and its bytes count too.
+	st2, resp, err := f.open(t, "web")
+	if err != nil || !resp.OK {
 		t.Fatalf("forward over the volume: %+v %v", resp, err)
 	}
-	r.rowFor(t, observe.TrafficTCPForward, func(e ConnLogEntry) bool {
-		return e.Status == observe.OutcomeRejected && e.Reason == TCPRefusedQuota
-	})
+	readN(t, st2, 3)
+	writeEcho(t, st2, 50)
+	for _, e := range r.rows(observe.TrafficTCPForward) {
+		if e.Reason == TCPRefusedQuota {
+			t.Fatalf("a forward was refused or closed by the volume: %+v", e)
+		}
+	}
 	if n := len(r.sessionEvents(observe.TCPQuotaWarning)); n != 1 {
 		t.Fatalf("%d warnings", n)
 	}
@@ -838,5 +873,121 @@ func TestTCPBan_TheFlushPrunesExpiredBans(t *testing.T) {
 	s.flushGuard(context.Background(), g)
 	if _, ok := st.ban("svc", "192.0.2.1"); ok || len(st.prunes) != 1 {
 		t.Fatalf("expired ban kept; prunes %v", st.prunes)
+	}
+}
+
+// A ban by hand never shortens a ban the relay holds; a longer one extends
+// it.
+func TestTCPBan_AManualBanNeverShortensAHeldBan(t *testing.T) {
+	s := newGuardServer(newFakeGuardStore())
+	g, err := s.guardFor("svc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	long := TCPBan{Source: "192.0.2.1", Until: now.Add(2 * time.Hour), Reason: "auto", CreatedAt: now}
+	g.addBan(long, now)
+	s.BanTCPSource("svc", "192.0.2.1", now.Add(time.Minute), "manual")
+	if bans := s.TCPBans("svc"); len(bans) != 1 || !bans[0].Until.Equal(long.Until) || bans[0].Reason != "auto" {
+		t.Fatalf("a shorter ban replaced the held one: %+v", bans)
+	}
+	s.BanTCPSource("svc", "192.0.2.1", now.Add(3*time.Hour), "manual")
+	if bans := s.TCPBans("svc"); len(bans) != 1 || !bans[0].Until.Equal(now.Add(3*time.Hour)) || bans[0].Reason != "manual" {
+		t.Fatalf("a longer ban did not extend: %+v", bans)
+	}
+	// An expired ban is replaced by any.
+	g.addBan(TCPBan{Source: "192.0.2.2", Until: now.Add(-time.Minute)}, now.Add(-time.Hour))
+	s.BanTCPSource("svc", "192.0.2.2", now.Add(time.Minute), "manual")
+	if !g.banned("192.0.2.2", now) {
+		t.Fatal("a ban after an expired one was not made")
+	}
+}
+
+// The usage of a service deleted from the store is dropped, not tried
+// again for ever, and the guard can be let go.
+func TestTCPQuota_TheUsageOfADeletedServiceIsDropped(t *testing.T) {
+	st := newFakeGuardStore()
+	st.gone = map[string]bool{"svc": true}
+	s := newGuardServer(st)
+	g, err := s.guardFor("svc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.pendIn.Add(100)
+	s.flushGuard(context.Background(), g)
+	s.flushGuard(context.Background(), g)
+	if st.adds != 1 || !g.idle() {
+		t.Fatalf("%d writes, idle %v; want one write and nothing left", st.adds, g.idle())
+	}
+}
+
+// Usage rows older than 90 days are pruned once per UTC day.
+func TestTCPQuota_OldUsageIsPrunedOncePerDay(t *testing.T) {
+	st := newFakeGuardStore()
+	s := newGuardServer(st)
+	day := time.Date(2026, 10, 24, 10, 0, 0, 0, time.UTC)
+	s.pruneUsage(day)
+	s.pruneUsage(day.Add(time.Hour))
+	s.pruneUsage(day.Add(24 * time.Hour))
+	if want := []string{"2026-07-26", "2026-07-27"}; !slices.Equal(st.usagePrunes, want) {
+		t.Fatalf("prunes %v, want %v", st.usagePrunes, want)
+	}
+}
+
+// A source an allow entry of mode ip or a live grant lets in (a monitor, an
+// uptime probe) is trusted: its short visits are not counted and it is never
+// banned automatically. A source let in by country only is counted.
+func TestTCPBan_AllowedSourcesAreNeverAutoBanned(t *testing.T) {
+	r := newForwardRelay(t, 19661, func(o *Options) { o.TCPGuards = newFakeGuardStore() })
+	l := autoBan(2, time.Hour)
+	r.res.mu.Lock()
+	r.res.limits["svc-web"] = l
+	r.res.mu.Unlock()
+	r.access.set("svc-web", TCPAccess{Mode: TCPAccessIP, AllowCIDRs: []string{"127.0.0.11"},
+		Grants: []TCPGrant{{CIDR: "127.0.0.12/32", ExpiresAt: time.Now().Add(time.Hour)}}, Limits: l})
+	if rr := r.home.register(t, proto.TunnelRegister{Name: "web", Type: "tcp", LocalAddr: "x", Access: "ip"}); !rr.OK || rr.AccessMode != "ip" {
+		t.Fatalf("register: %+v", rr)
+	}
+	r.shortVisits(t, "127.0.0.11", 19661, 3)
+	r.shortVisits(t, "127.0.0.12", 19661, 3)
+	settle()
+	if n := len(r.sessionEvents(observe.TCPBanned)); n != 0 {
+		t.Fatalf("an allowed source was banned: %d events", n)
+	}
+	greeted(t, "127.0.0.11", 19661)
+	greeted(t, "127.0.0.12", 19661)
+	tn, ok := r.srv.LookupTunnelByServiceID("svc-web")
+	if !ok || tn.guard == nil {
+		t.Fatal("no guard")
+	}
+	tn.guard.mu.Lock()
+	n := len(tn.guard.shorts)
+	tn.guard.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("short visits of allowed sources were counted: %d sources", n)
+	}
+}
+
+// A connection that waits for its share of the bandwidth is not idle: one
+// write held back longer than the idle timeout by the bucket is carried
+// whole, never closed as idle_timeout.
+func TestTCPRate_AThrottledConnectionIsNotIdle(t *testing.T) {
+	r := newForwardRelay(t, 19662, nil)
+	l := TCPLimits{RateLimitKbps: 64} // 8000 bytes a second each way
+	r.res.mu.Lock()
+	r.res.limits["svc-web"] = l
+	r.res.idle["svc-web"] = 150 * time.Millisecond
+	r.res.mu.Unlock()
+	r.access.set("svc-web", TCPAccess{Mode: TCPAccessOpen, Limits: l, IdleTimeout: 150 * time.Millisecond})
+	r.srv.idleTick = 20 * time.Millisecond
+	if rr := r.home.register(t, proto.TunnelRegister{Name: "web", Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	v := greeted(t, "127.0.0.1", 19662)
+	const n = 16 << 10 // two seconds at the rate; each chunk of 2 KiB waits longer than the timeout
+	go func() { _, _ = v.Write(make([]byte, n)) }()
+	_ = v.SetReadDeadline(time.Now().Add(20 * time.Second))
+	if _, err := io.ReadFull(v, make([]byte, n)); err != nil {
+		t.Fatalf("the throttled connection was cut: %v; rows %+v", err, r.closedFrom("127.0.0.1"))
 	}
 }

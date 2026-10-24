@@ -307,7 +307,7 @@ func TestPassthrough_RefusesWithoutAByte(t *testing.T) {
 		t.Fatalf("the home client was told of %d connections", n)
 	}
 	for _, reason := range []string{PassthroughRefusedUnknownName, PassthroughRefusedNoName, PassthroughRefusedNotTLS} {
-		if n := r.srv.refusals.count(passthroughRefusalKey, reason); n == 0 {
+		if n := r.srv.passRefusals.count(passthroughRefusalKey, reason); n == 0 {
 			t.Errorf("no %s refusal counted", reason)
 		}
 	}
@@ -424,7 +424,7 @@ func TestPassthrough_ProxyHeaderFromTrustedProxiesOnly(t *testing.T) {
 		}
 		_ = conn.Close()
 	}
-	if n := r.srv.refusals.count(passthroughRefusalKey, PassthroughRefusedProxyMissing); n != 2 {
+	if n := r.srv.passRefusals.count(passthroughRefusalKey, PassthroughRefusedProxyMissing); n != 2 {
 		t.Fatalf("%d proxy_missing refusals", n)
 	}
 	settle()
@@ -468,7 +468,7 @@ func untrustedPeer(t *testing.T, port int, trust []netip.Prefix) {
 	if err := closedWithoutAByte(conn, 3*time.Second); err != nil {
 		t.Fatalf("untrusted header: %v", err)
 	}
-	if n := u.srv.refusals.count(passthroughRefusalKey, PassthroughRefusedProxyUntrusted); n != 1 {
+	if n := u.srv.passRefusals.count(passthroughRefusalKey, PassthroughRefusedProxyUntrusted); n != 1 {
 		t.Fatalf("%d untrusted refusals", n)
 	}
 	// Without a header the same peer is served.
@@ -515,7 +515,7 @@ func TestPassthrough_TheHelloReadIsBounded(t *testing.T) {
 	timed("nothing", nil, timeout-100*time.Millisecond, timeout+time.Second)
 	timed("half a hello", hello[:len(hello)/2], timeout-100*time.Millisecond, timeout+time.Second)
 	timed("a record of 16 KiB and one byte", []byte{0x16, 0x03, 0x01, 0x40, 0x01, 0x01}, 0, timeout/2)
-	if n := r.srv.refusals.count(passthroughRefusalKey, PassthroughRefusedTimeout); n == 0 {
+	if n := r.srv.passRefusals.count(passthroughRefusalKey, PassthroughRefusedTimeout); n == 0 {
 		t.Fatal("no timeout counted")
 	}
 
@@ -531,7 +531,7 @@ func TestPassthrough_TheHelloReadIsBounded(t *testing.T) {
 	}
 	time.Sleep(100 * time.Millisecond)
 	timed("a third from one peer", nil, 0, timeout/2)
-	if n := r.srv.refusals.count(passthroughRefusalKey, PassthroughRefusedBusy); n == 0 {
+	if n := r.srv.passRefusals.count(passthroughRefusalKey, PassthroughRefusedBusy); n == 0 {
 		t.Fatal("no busy refusal counted")
 	}
 	for _, c := range held {
@@ -579,7 +579,7 @@ func TestPassthrough_PeekBudgets(t *testing.T) {
 		if err := closesWithin(r.addr, 500*time.Millisecond); err != nil {
 			t.Fatalf("over the total: %v", err)
 		}
-		if n := r.srv.refusals.count(passthroughRefusalKey, PassthroughRefusedBusy); n != 1 {
+		if n := r.srv.passRefusals.count(passthroughRefusalKey, PassthroughRefusedBusy); n != 1 {
 			t.Fatalf("%d busy", n)
 		}
 	})
@@ -649,5 +649,81 @@ func TestPassthrough_AHelloInTwoWrites(t *testing.T) {
 	got := make([]byte, len(hello))
 	if _, err := io.ReadFull(conn, got); err != nil || string(got) != string(hello) {
 		t.Fatalf("echo: %v", err)
+	}
+}
+
+// By host name only (E1: by port, by host name, or both): the relay opens
+// no public port while a name reaches the service on the passthrough
+// listener; turning it off closes the session, so that the client registers
+// again and gets its port.
+func TestPassthrough_HostnameOnlyHasNoPort(t *testing.T) {
+	r := newPassRelay(t, 19578, 19578, nil, nil)
+	r.res.mu.Lock()
+	r.res.hostOnly["svc-app"] = true
+	r.res.mu.Unlock()
+	r.access.set("svc-app", TCPAccess{Mode: TCPAccessOpen, HostnameOnly: true})
+	rr := r.c.register(t, proto.TunnelRegister{Name: "app", Type: "tcp", LocalAddr: "x", Access: "open"})
+	if !rr.OK || rr.RemotePort != 0 || rr.AccessMode != "open" {
+		t.Fatalf("register: %+v", rr)
+	}
+	if conn, err := net.DialTimeout("tcp", "127.0.0.1:19578", time.Second); err == nil {
+		_ = conn.Close()
+		t.Fatal("a service reached by host name only has a public port")
+	}
+	if _, err := rawVisit(r.addr, clientHello(t, "s-app."+testTCPDomain), 5*time.Second); err != nil {
+		t.Fatalf("by its name: %v", err)
+	}
+	// A refresh that changes nothing keeps it.
+	if err := r.srv.RefreshTCPService(context.Background(), "svc-app"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.srv.LookupTunnelByServiceID("svc-app"); !ok {
+		t.Fatal("a refresh without a change closed the tunnel")
+	}
+	// The port on again: the session ends, the client registers again.
+	r.access.set("svc-app", TCPAccess{Mode: TCPAccessOpen})
+	if err := r.srv.RefreshTCPService(context.Background(), "svc-app"); err != nil {
+		t.Fatal(err)
+	}
+	r.waitFor("the tunnel closed", func() bool { _, ok := r.srv.LookupTunnelByServiceID("svc-app"); return !ok })
+}
+
+// Without a name that reaches it (no passthrough listener here) a service
+// set to host name only keeps its port: it is never left with no way in.
+// Set to host name only while it has its port, it is closed and registers
+// again.
+func TestPassthrough_HostnameOnlyWithoutANameKeepsThePort(t *testing.T) {
+	r := newAccessRelay(t, 19579, 19579, nil)
+	r.res.mu.Lock()
+	r.res.hostOnly["svc-app"] = true
+	r.res.mu.Unlock()
+	r.access.set("svc-app", TCPAccess{Mode: TCPAccessOpen, HostnameOnly: true})
+	if rr := r.c.register(t, proto.TunnelRegister{Name: "app", Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK || rr.RemotePort != 19579 {
+		t.Fatalf("register: %+v", rr)
+	}
+
+	p := newPassRelay(t, 19580, 19580, nil, nil)
+	if rr := p.c.register(t, proto.TunnelRegister{Name: "app", Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK || rr.RemotePort != 19580 {
+		t.Fatalf("register: %+v", rr)
+	}
+	p.access.set("svc-app", TCPAccess{Mode: TCPAccessOpen, HostnameOnly: true})
+	if err := p.srv.RefreshTCPService(context.Background(), "svc-app"); err != nil {
+		t.Fatal(err)
+	}
+	p.waitFor("the tunnel closed", func() bool { _, ok := p.srv.LookupTunnelByServiceID("svc-app"); return !ok })
+}
+
+// Refusals of the passthrough listener (before a service is known) have a
+// sampler of their own: a scan of the listener cannot use up the minute's
+// budget of keys that writes the refused visitors of services down.
+func TestPassthrough_RefusalsDoNotCrowdOutServiceRefusals(t *testing.T) {
+	r := newAccessRelay(t, 19581, 19581, nil)
+	for i := range refusalKeysPerMinute + 10 {
+		a, b := net.Pipe()
+		_ = b.Close()
+		r.srv.refusePassthrough(a, netip.AddrFrom4([4]byte{10, 0, byte(i >> 8), byte(i)}), PassthroughRefusedUnknownName)
+	}
+	if !r.srv.refusals.sample("svc-x", observe.RejectedIPGeo, "198.51.100.1", time.Now()) {
+		t.Fatal("a passthrough scan crowded out the refusal of a service")
 	}
 }

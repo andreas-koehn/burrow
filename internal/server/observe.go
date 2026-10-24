@@ -70,6 +70,16 @@ func (s *Server) refused(reg *Registry, cs *ClientSession, tr proto.TunnelRegist
 	reg.observer().ObserveSession(ev)
 }
 
+// refusedCreated is refused for a registration that created the service res
+// before it was refused: the event also announces the service, since no
+// later registration will (they find the row).
+func (s *Server) refusedCreated(reg *Registry, cs *ClientSession, tr proto.TunnelRegister, code string, res Resolved) {
+	ev := sessionEvent(observe.TunnelRefused, cs)
+	ev.TunnelName, ev.TunnelType, ev.RefusalCode = tr.Name, tunnelType(tr.Type), code
+	ev.ServiceID, ev.AccessMode, ev.ServiceCreated = res.ServiceID, res.AccessMode, true
+	reg.observer().ObserveSession(ev)
+}
+
 // portReclaimed logs and tells the observer that a tcp registration of cs
 // took port from the offline service from (serviceID "" for a tunnel without
 // a service).

@@ -8,7 +8,8 @@ package server
 // A visitor is judged by the address its connection comes from
 // (RemoteAddr), never by anything it sends. The one exception is the TLS
 // passthrough listener (passthrough.go): there a PROXY protocol v2 header of
-// a trusted proxy (BURROW_TRUSTED_PROXIES) names the visitor. When
+// a trusted proxy (BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES, never
+// BURROW_TRUSTED_PROXIES) names the visitor. When
 // the relay runs in Docker with the userland proxy (published IPv6 ports to
 // an IPv4 container, some hairpin cases) that address is the bridge gateway
 // (172.17.0.1 or similar), not the visitor's: an allow entry for the gateway
@@ -112,8 +113,10 @@ type TCPAccess struct {
 	ProxyProtocol          string
 	IdleTimeout            time.Duration
 	// Hostname is the service's own TLS passthrough host name
-	// (Resolved.TCPHostname), "" for none.
-	Hostname string
+	// (Resolved.TCPHostname), "" for none. HostnameOnly is
+	// Resolved.HostnameOnly.
+	Hostname     string
+	HostnameOnly bool
 	// Limits are the service's bandwidth, daily volume and automatic bans
 	// (Resolved.Limits).
 	Limits TCPLimits
@@ -270,6 +273,33 @@ func (p *tcpPolicy) allows(ip netip.Addr, now time.Time, geo GeoCountry, cache *
 		}
 	}
 	return cc != "" && hasCode(p.allowCC, cc)
+}
+
+// trusts reports whether ip is let in by name in mode ip: a permanent allow
+// entry, or a grant that has not expired at now, and no block entry. Such a
+// source (a monitor, an uptime probe, the owner) is never banned
+// automatically; one let in by its country only is not trusted.
+func (p *tcpPolicy) trusts(ip netip.Addr, now time.Time) bool {
+	if p == nil || !p.ipMode || !ip.IsValid() {
+		return false
+	}
+	ip = ip.Unmap().WithZone("")
+	for _, b := range p.block {
+		if b.Contains(ip) {
+			return false
+		}
+	}
+	for _, a := range p.allow {
+		if a.Contains(ip) {
+			return true
+		}
+	}
+	for _, g := range p.grants {
+		if now.Before(g.expires) && g.prefix.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // visitorAddr is the address a connection comes from, IPv4 unmapped; the

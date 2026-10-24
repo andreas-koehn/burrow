@@ -103,6 +103,23 @@ func checkTCPBansAndUsage(t *testing.T, x *DB, userID string) {
 	if len(bans) != 2 || bans[1].Reason != "manual: again" || !bans[1].Until.Equal(now.Add(2*time.Hour)) {
 		t.Fatalf("after replace: %+v", bans)
 	}
+	// An active ban is never shortened: the write is refused and the row
+	// stays. The same end again is a renewal and allowed.
+	if err := x.PutTCPBan(ctx, TCPBan{ServiceID: id, Source: "203.0.113.7", Until: now.Add(time.Minute), Reason: "manual: short", CreatedAt: now}); !errors.Is(err, ErrTCPBanLonger) {
+		t.Fatalf("shorter ban: %v", err)
+	}
+	bans, _ = x.ListTCPBans(ctx, id, now)
+	if len(bans) != 2 || bans[1].Reason != "manual: again" || !bans[1].Until.Equal(now.Add(2*time.Hour)) {
+		t.Fatalf("a shorter ban changed the row: %+v", bans)
+	}
+	if err := x.PutTCPBan(ctx, TCPBan{ServiceID: id, Source: "203.0.113.7", Until: now.Add(2 * time.Hour), Reason: "manual: again", CreatedAt: now}); err != nil {
+		t.Fatalf("same end: %v", err)
+	}
+	// An expired ban (198.51.100.1 ended a minute ago) may be replaced by
+	// any ban, an earlier end too.
+	if err := x.PutTCPBan(ctx, TCPBan{ServiceID: id, Source: "198.51.100.1", Until: now.Add(-2 * time.Minute), Reason: "old", CreatedAt: now}); err != nil {
+		t.Fatalf("an expired ban refused another: %v", err)
+	}
 	got, err := x.DeleteTCPBan(ctx, id, "203.0.113.7")
 	if err != nil || got.Reason != "manual: again" {
 		t.Fatalf("delete: %+v %v", got, err)
@@ -142,5 +159,36 @@ func checkTCPBansAndUsage(t *testing.T, x *DB, userID string) {
 	}
 	if in, _, _ := x.TCPDailyUsage(ctx, id, day); in != 0 {
 		t.Fatalf("usage after delete: %d", in)
+	}
+	// Usage of a service that is gone is ErrNotFound, not a constraint
+	// error the relay would retry for ever.
+	if err := x.AddTCPDailyUsage(ctx, id, day, 1, 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("usage of a deleted service: %v", err)
+	}
+}
+
+// Days older than the cut-off go; the cut-off day and later stay.
+func TestPruneTCPDailyUsage(t *testing.T) { checkPruneTCPDailyUsage(t, testDB(t), "u-tcpprune") }
+
+func checkPruneTCPDailyUsage(t *testing.T, x *DB, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	freshServiceUser(t, x, userID)
+	id := "svc-prune-" + userID
+	if err := x.CreateService(ctx, Service{ID: id, UserID: userID, Name: "rdp", Type: "tcp", AccessMode: "open"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{"2026-07-25", "2026-07-26", "2026-10-24"} {
+		if err := x.AddTCPDailyUsage(ctx, id, d, 1, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := x.PruneTCPDailyUsage(ctx, "2026-07-26"); err != nil || n != 1 {
+		t.Fatalf("prune %d %v", n, err)
+	}
+	for d, want := range map[string]int64{"2026-07-25": 0, "2026-07-26": 1, "2026-10-24": 1} {
+		if in, _, _ := x.TCPDailyUsage(ctx, id, d); in != want {
+			t.Fatalf("%s: %d, want %d", d, in, want)
+		}
 	}
 }

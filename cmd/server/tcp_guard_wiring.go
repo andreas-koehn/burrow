@@ -6,6 +6,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/ankoehn/burrow/internal/api"
@@ -38,13 +40,17 @@ type tcpGuardDB interface {
 	TCPDailyUsage(ctx context.Context, serviceID, day string) (in, out int64, err error)
 	AddTCPDailyUsage(ctx context.Context, serviceID, day string, in, out int64) error
 	PruneTCPBans(ctx context.Context, serviceID string, now time.Time) (int64, error)
+	PruneTCPDailyUsage(ctx context.Context, before string) (int64, error)
 }
 
 // tcpGuardStore keeps the relay's bans and daily usage of tcp services in the
 // database (server.TCPGuardStore).
 type tcpGuardStore struct{ db tcpGuardDB }
 
-var _ server.TCPGuardStore = tcpGuardStore{}
+var (
+	_ server.TCPGuardStore  = tcpGuardStore{}
+	_ server.TCPUsagePruner = tcpGuardStore{}
+)
 
 func (a tcpGuardStore) ActiveTCPBans(ctx context.Context, serviceID string, now time.Time) ([]server.TCPBan, error) {
 	rows, err := a.db.ListTCPBans(ctx, serviceID, now)
@@ -58,8 +64,14 @@ func (a tcpGuardStore) ActiveTCPBans(ctx context.Context, serviceID string, now 
 	return out, nil
 }
 
+// SaveTCPBan writes b; a stored ban of the source that ends later holds,
+// and that is no error.
 func (a tcpGuardStore) SaveTCPBan(ctx context.Context, serviceID string, b server.TCPBan) error {
-	return a.db.PutTCPBan(ctx, db.TCPBan{ServiceID: serviceID, Source: b.Source, Until: b.Until, Reason: b.Reason, CreatedAt: b.CreatedAt})
+	err := a.db.PutTCPBan(ctx, db.TCPBan{ServiceID: serviceID, Source: b.Source, Until: b.Until, Reason: b.Reason, CreatedAt: b.CreatedAt})
+	if errors.Is(err, db.ErrTCPBanLonger) {
+		return nil
+	}
+	return err
 }
 
 func (a tcpGuardStore) TCPUsage(ctx context.Context, serviceID, day string) (uint64, uint64, error) {
@@ -67,8 +79,19 @@ func (a tcpGuardStore) TCPUsage(ctx context.Context, serviceID, day string) (uin
 	return uint64(max(in, 0)), uint64(max(out, 0)), err
 }
 
+// AddTCPUsage adds to the service's day; a service that is gone is
+// server.ErrTCPServiceGone.
 func (a tcpGuardStore) AddTCPUsage(ctx context.Context, serviceID, day string, in, out uint64) error {
-	return a.db.AddTCPDailyUsage(ctx, serviceID, day, int64(in), int64(out))
+	err := a.db.AddTCPDailyUsage(ctx, serviceID, day, int64(in), int64(out))
+	if errors.Is(err, db.ErrNotFound) {
+		return fmt.Errorf("%w: %s", server.ErrTCPServiceGone, serviceID)
+	}
+	return err
+}
+
+func (a tcpGuardStore) PruneTCPUsage(ctx context.Context, before string) error {
+	_, err := a.db.PruneTCPDailyUsage(ctx, before)
+	return err
 }
 
 func (a tcpGuardStore) PruneTCPBans(ctx context.Context, serviceID string, now time.Time) error {

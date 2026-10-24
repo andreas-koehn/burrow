@@ -100,11 +100,12 @@ type obsHook struct {
 	srv *httptest.Server
 	mu  sync.Mutex
 	got map[string][]string // event → sorted payload field names of its last delivery
+	n   map[string]int      // event → deliveries
 }
 
 func newObsHook(t *testing.T) *obsHook {
 	t.Helper()
-	h := &obsHook{got: map[string][]string{}}
+	h := &obsHook{got: map[string][]string{}, n: map[string]int{}}
 	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Data map[string]json.RawMessage `json:"data"`
@@ -117,6 +118,7 @@ func newObsHook(t *testing.T) *obsHook {
 		sort.Strings(fields)
 		h.mu.Lock()
 		h.got[r.Header.Get("Burrow-Event")] = fields
+		h.n[r.Header.Get("Burrow-Event")]++
 		h.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -129,6 +131,13 @@ func (h *obsHook) seen(event string) bool {
 	defer h.mu.Unlock()
 	_, ok := h.got[event]
 	return ok
+}
+
+// count is how many deliveries of event came.
+func (h *obsHook) count(event string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.n[event]
 }
 
 func (h *obsHook) fields(event string) []string {

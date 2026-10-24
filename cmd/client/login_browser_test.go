@@ -710,7 +710,19 @@ func TestLoginBrowser_Scope(t *testing.T) {
 		if code := h.execWithin("login", relay.URL, "--cacert", relay.caFile(t), "--scope", "forward"); code != 0 {
 			t.Fatalf("exit %d: %s", code, h.stderr.String())
 		}
-		if !strings.Contains(h.stdout.String(), "limited to publishing") {
+		if !strings.Contains(h.stdout.String(), "limited to publishing") ||
+			!strings.Contains(h.stdout.String(), "Note: you asked for --scope forward; the approver chose publish.") {
+			t.Fatalf("stdout = %q", h.stdout.String())
+		}
+	})
+	t.Run("a scope the approver widened is told", func(t *testing.T) {
+		relay := newSignInRelay(t, http.StatusOK)
+		relay.scope = "all"
+		h := browserHarness(t)
+		if code := h.execWithin("login", relay.URL, "--cacert", relay.caFile(t), "--scope", "forward"); code != 0 {
+			t.Fatalf("exit %d: %s", code, h.stderr.String())
+		}
+		if !strings.Contains(h.stdout.String(), "Note: you asked for --scope forward; the approver chose all: this token registers tunnels and opens forwards.") {
 			t.Fatalf("stdout = %q", h.stdout.String())
 		}
 	})

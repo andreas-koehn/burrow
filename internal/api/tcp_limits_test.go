@@ -200,6 +200,8 @@ func TestTCPBans_ListBanUnban(t *testing.T) {
 		{"ban an unknown field", http.MethodPost, "/tcp-bans", `{"source": "203.0.113.1", "ban_min": 5, "forever": true}`, nil, http.StatusBadRequest, "unknown"},
 		{"ban a range", http.MethodPost, "/tcp-bans", `{"source": "203.0.113.0/24", "ban_min": 5}`,
 			fmt.Errorf("%w: source must be an IP address, or an IPv6 /64; a ban is for one source", store.ErrInvalidTCPBan), http.StatusBadRequest, "one source"},
+		{"ban shorter than the active one", http.MethodPost, "/tcp-bans", `{"source": "203.0.113.1", "ban_min": 5}`, store.ErrTCPBanLonger, http.StatusConflict,
+			"DELETE /api/v1/services/{id}/tcp-bans?source="},
 		{"too many bans", http.MethodPost, "/tcp-bans", `{"source": "203.0.113.1", "ban_min": 5}`, store.ErrTooManyTCPBans, http.StatusConflict, "4096"},
 		{"ban on http", http.MethodPost, "/tcp-bans", `{"source": "203.0.113.1", "ban_min": 5}`, store.ErrServiceNotTCP, http.StatusConflict, "tcp services only"},
 		{"ban another user's", http.MethodPost, "/tcp-bans", `{"source": "203.0.113.1", "ban_min": 5}`, store.ErrForbidden, http.StatusForbidden, ""},
@@ -276,5 +278,32 @@ func TestTCPBans_HeldBansAreListedAndLifted(t *testing.T) {
 	r = a.c.delete(t, "/api/v1/services/rdp/tcp-bans?source=198.51.100.1")
 	if body := readBody(t, r); r.StatusCode != http.StatusNotFound || !strings.Contains(body, "no ban of that source") {
 		t.Fatalf("second unban: %d %s", r.StatusCode, body)
+	}
+}
+
+// A ban by hand never shortens a ban the relay holds (one the store may
+// not have): 409 pointing to the unban, and nothing reaches the store or the
+// relay. A longer one is made.
+func TestTCPBans_AShorterBanThanTheRelaysIsRefused(t *testing.T) {
+	now := time.Now().UTC()
+	relay := &guardRelay{held: map[string][]server.TCPBan{"rdp": {
+		{Source: "203.0.113.7", Until: now.Add(2 * time.Hour), Reason: "auto: 10 connections", CreatedAt: now},
+	}}}
+	a := newTCPAPI(t, func(d *Deps) { d.Connections = relay })
+	r := a.c.post(t, "/api/v1/services/rdp/tcp-bans", map[string]any{"source": "203.0.113.7", "ban_min": 5})
+	body := readBody(t, r)
+	if r.StatusCode != http.StatusConflict || !strings.Contains(body, "DELETE") || !strings.Contains(body, "longer") {
+		t.Fatalf("shorter: %d %s", r.StatusCode, body)
+	}
+	if a.svcs.lastBan != "" || len(relay.bans) != 0 {
+		t.Fatalf("a refused ban went on: store %q relay %v", a.svcs.lastBan, relay.bans)
+	}
+	r = a.c.post(t, "/api/v1/services/rdp/tcp-bans", map[string]any{"source": "203.0.113.7", "ban_min": 180})
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("longer: %d %s", r.StatusCode, readBody(t, r))
+	}
+	r.Body.Close()
+	if len(relay.bans) != 1 {
+		t.Fatalf("relay %v", relay.bans)
 	}
 }

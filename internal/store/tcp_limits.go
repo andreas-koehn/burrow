@@ -52,6 +52,10 @@ var (
 	// ErrNoTCPBan: the service has no ban of that source (the service is
 	// there; db.ErrNotFound is a service that is not).
 	ErrNoTCPBan = errors.New("store: no ban of that source")
+	// ErrTCPBanLonger: the source is banned already, until later than the
+	// ban asked for. A ban by hand extends or renews a ban, never shortens
+	// it: lifting one is RemoveTCPBan, which the API guards (409).
+	ErrTCPBanLonger = errors.New("store: the source is banned for longer already")
 )
 
 // TCPAutoBan are the automatic ban settings of a tcp service: a source whose
@@ -258,8 +262,10 @@ func (s *Store) ListTCPBans(ctx context.Context, callerID, callerRole, serviceID
 
 // AddTCPBan bans source (see NormalizeTCPBanSource) from a tcp service for
 // banMin minutes (MinTCPAutoBanBanMin to MaxTCPAutoBanBanMin), with an
-// optional note of at most 200 bytes; a ban of the same source is replaced.
-// Same permission rule as SetServiceMaxConnections. ErrInvalidTCPBan,
+// optional note of at most 200 bytes; a ban of the same source is replaced
+// when the new one ends at the same time or later, and ErrTCPBanLonger when
+// it would end sooner (in one statement, so no write between can shorten
+// it). Same permission rule as SetServiceMaxConnections. ErrInvalidTCPBan,
 // ErrTooManyTCPBans, ErrServiceNotTCP. Audited as tcp.ban.add.
 func (s *Store) AddTCPBan(ctx context.Context, callerID, callerRole, serviceID, source string, banMin int, note string) (db.TCPBan, error) {
 	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
@@ -300,6 +306,9 @@ func (s *Store) AddTCPBan(ctx context.Context, callerID, callerRole, serviceID, 
 	}
 	b := db.TCPBan{ServiceID: serviceID, Source: src, Until: now.Add(time.Duration(banMin) * time.Minute), Reason: reason, CreatedAt: now}
 	if err := s.q.PutTCPBan(ctx, b); err != nil {
+		if errors.Is(err, db.ErrTCPBanLonger) {
+			return db.TCPBan{}, ErrTCPBanLonger
+		}
 		return db.TCPBan{}, err
 	}
 	s.emitAudit(withAuditDeadline(ctx), audit.ActionTCPBanAdd, func(e *audit.Event) {

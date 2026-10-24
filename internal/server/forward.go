@@ -174,6 +174,10 @@ type liveConn struct {
 	// and since when they have not moved (see sweepIdle).
 	idleBytes uint64
 	idleSince time.Time
+	// throttled is how many of its reads and writes wait for their share of
+	// the service's bandwidth (guardStream.wait): such a connection is not
+	// idle.
+	throttled atomic.Int32
 }
 
 func (c *liveConn) close() { c.closeOnce.Do(c.closeFn) }
@@ -392,11 +396,8 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 		refuse(proto.CodeOffline, fmt.Sprintf("the client that serves %q cannot write the PROXY protocol header the service asks for; it needs an update", target.Name))
 		return
 	}
-	if g := tn.guard; g != nil && !g.admitQuota(s.now()) {
-		s.refuseForward(cs, target.ServiceID, TCPRefusedQuota)
-		refuse(proto.CodeRateLimited, fmt.Sprintf("the service %q has carried its daily volume; it takes connections again at 00:00 UTC", target.Name))
-		return
-	}
+	// The daily volume never refuses a forward: it is authorized, and is
+	// counted towards the volume like any connection (countGuard).
 	if tn.limits != nil {
 		if reason := tn.limits.admitForward(cs.UserID, target.Owner); reason != "" {
 			s.refuseForward(cs, target.ServiceID, reason)

@@ -51,6 +51,9 @@ type ServiceStore interface {
 	// passthrough host name of a tcp service (store.TCPHostname).
 	ServiceTCPHostname(ctx context.Context, callerID, callerRole, serviceID string) (store.TCPHostname, error)
 	SetServiceTCPHostname(ctx context.Context, callerID, callerRole, serviceID, hostname string) (before, after store.TCPHostname, err error)
+	// SetServiceTCPHostnameOnly turns the public port of a tcp service off
+	// (reached by host name only) or on again.
+	SetServiceTCPHostnameOnly(ctx context.Context, callerID, callerRole, serviceID string, only bool) (before, after store.TCPHostname, err error)
 	// ServiceTCPLimits and SetServiceTCPLimits read and change the
 	// bandwidth, daily volume and automatic bans of a tcp service; the read
 	// also gives the usage of today as stored.

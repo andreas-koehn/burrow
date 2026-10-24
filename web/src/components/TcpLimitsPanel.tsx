@@ -92,7 +92,7 @@ export function TcpLimitsPanel({ serviceId }: { serviceId: string }) {
             label="Daily volume (GiB)"
             htmlFor={`${titleId}-gib`}
             w="sm"
-            help="Bytes in and out per UTC day. Over it, new connections are refused and open ones closed. Empty is no limit."
+            help="Bytes in and out per UTC day. Over it, new visitors are refused and open ones closed; forwards count towards it but keep working. Empty is no limit."
           >
             <Input id={`${titleId}-gib`} type="number" min={0} step="any" value={shownGib} disabled={!data}
               onChange={(e) => { setGib(e.target.value); setErr(null); }} />
@@ -117,7 +117,7 @@ export function TcpLimitsPanel({ serviceId }: { serviceId: string }) {
           )}
           {data?.quota_reached && (
             <ErrorNotice variant="warn" role="status">
-              The daily volume is used up: new connections are refused until the next UTC day.
+              The daily volume is used up: new visitors are refused until the next UTC day. Forwards still connect.
             </ErrorNotice>
           )}
 

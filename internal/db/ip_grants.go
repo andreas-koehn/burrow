@@ -211,3 +211,14 @@ func (x *DB) SetServiceTCPHostname(ctx context.Context, id, hostname string) err
 	}
 	return notFoundIfNoRows(res, "set service tcp hostname")
 }
+
+// SetServiceTCPHostnameOnly sets whether a tcp service is reached by its
+// host name only (no public port). The caller checks that it has one.
+// ErrNotFound when there is no such service.
+func (x *DB) SetServiceTCPHostnameOnly(ctx context.Context, id string, only bool) error {
+	res, err := x.sqlDB.ExecContext(ctx, `UPDATE services SET tcp_hostname_only=? WHERE id=?`, boolToInt(only), id)
+	if err != nil {
+		return fmt.Errorf("set service tcp hostname only: %w", err)
+	}
+	return notFoundIfNoRows(res, "set service tcp hostname only")
+}

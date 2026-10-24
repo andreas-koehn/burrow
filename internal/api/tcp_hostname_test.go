@@ -68,7 +68,7 @@ func TestTCPHostname_GetAndPut(t *testing.T) {
 		want int
 		text string
 	}{
-		{"no field", `{}`, nil, http.StatusBadRequest, "tcp_hostname is required"},
+		{"no field", `{}`, nil, http.StatusBadRequest, "tcp_hostname or hostname_only is required"},
 		{"a field it does not know", `{"tcp_hostname": "a.example.com", "x": 1}`, nil, http.StatusBadRequest, "unknown"},
 		{"not json", `nope`, nil, http.StatusBadRequest, ""},
 		{"no host name", `{"tcp_hostname": "not a host"}`, store.ErrInvalidTCPHostname, http.StatusBadRequest, "host name"},
@@ -115,5 +115,73 @@ func TestTCPHostname_WithoutPassthrough(t *testing.T) {
 	}
 	if body := readBody(t, a.c.get(t, "/api/v1/services/rdp/tcp-hostname")); strings.Contains(body, "null") {
 		t.Fatalf("a null in %s", body)
+	}
+}
+
+// Host name only (E1: by port, by host name, or both): the public port may
+// be turned off only while the relay has the passthrough listener and the
+// service a name there; otherwise 400 with the reason. A name that is the
+// only one is not cleared while the port is off. Each write tells the relay.
+func TestTCPHostname_HostnameOnly(t *testing.T) {
+	a := newTCPAPI(t, func(d *Deps) { d.TCPDomain, d.TLSPassthrough = "tcp.example.com", true })
+	a.svcs.tcpHostname = store.TCPHostname{Slug: "t0a1b2c3d4e", AccessMode: "open"}
+	if got := decodeTCPHostname(t, a.c.get(t, "/api/v1/services/rdp/tcp-hostname")); got.HostnameOnly {
+		t.Fatalf("GET %+v", got)
+	}
+	got := decodeTCPHostname(t, a.c.put(t, "/api/v1/services/rdp/tcp-hostname", map[string]any{"hostname_only": true}))
+	if !got.HostnameOnly || !a.svcs.tcpHostname.HostnameOnly || a.svcs.lastTCPHostname != "" {
+		t.Fatalf("PUT on: %+v (store %+v, name written %q)", got, a.svcs.tcpHostname, a.svcs.lastTCPHostname)
+	}
+	if refreshed, _ := a.relay.snapshot(); len(refreshed) != 1 {
+		t.Fatalf("relay told %v", refreshed)
+	}
+	got = decodeTCPHostname(t, a.c.put(t, "/api/v1/services/rdp/tcp-hostname", map[string]any{"hostname_only": false}))
+	if got.HostnameOnly {
+		t.Fatalf("PUT off: %+v", got)
+	}
+
+	// Without a tcp domain the slug has no name: a name of its own is
+	// needed, and it may come in the same request.
+	b := newTCPAPI(t, func(d *Deps) { d.TLSPassthrough = true })
+	b.svcs.tcpHostname = store.TCPHostname{Slug: "t0a1b2c3d4e", AccessMode: "ip"}
+	r := b.c.putRaw(t, "/api/v1/services/rdp/tcp-hostname", `{"hostname_only": true}`)
+	if body := readBody(t, r); r.StatusCode != http.StatusBadRequest || !strings.Contains(body, "host name") {
+		t.Fatalf("no name: %d %s", r.StatusCode, body)
+	}
+	if b.svcs.tcpHostname.HostnameOnly {
+		t.Fatal("a refused write was stored")
+	}
+	got = decodeTCPHostname(t, b.c.put(t, "/api/v1/services/rdp/tcp-hostname", map[string]any{"tcp_hostname": "db.example.com", "hostname_only": true}))
+	if !got.HostnameOnly || got.TCPHostname != "db.example.com" {
+		t.Fatalf("name and only: %+v", got)
+	}
+	// The only name is not cleared while the port is off.
+	r = b.c.putRaw(t, "/api/v1/services/rdp/tcp-hostname", `{"tcp_hostname": ""}`)
+	if body := readBody(t, r); r.StatusCode != http.StatusBadRequest || !strings.Contains(body, "hostname_only") {
+		t.Fatalf("clear the only name: %d %s", r.StatusCode, body)
+	}
+	if b.svcs.tcpHostname.Hostname != "db.example.com" {
+		t.Fatal("the only name was cleared")
+	}
+	// Both at once: the port back on, the name cleared.
+	got = decodeTCPHostname(t, b.c.put(t, "/api/v1/services/rdp/tcp-hostname", map[string]any{"tcp_hostname": "", "hostname_only": false}))
+	if got.HostnameOnly || got.TCPHostname != "" {
+		t.Fatalf("both off: %+v", got)
+	}
+
+	// Without the passthrough listener no name reaches it.
+	c := newTCPAPI(t, func(d *Deps) { d.TCPDomain = "tcp.example.com" })
+	c.svcs.tcpHostname = store.TCPHostname{Hostname: "db.example.com", Slug: "t0a1b2c3d4e", AccessMode: "open"}
+	r = c.c.putRaw(t, "/api/v1/services/rdp/tcp-hostname", `{"hostname_only": true}`)
+	if body := readBody(t, r); r.StatusCode != http.StatusBadRequest || !strings.Contains(body, "BURROW_TLS_PASSTHROUGH_LISTEN") {
+		t.Fatalf("no listener: %d %s", r.StatusCode, body)
+	}
+	// Turning the port back on needs nothing.
+	c.svcs.tcpHostname.HostnameOnly = true
+	if got := decodeTCPHostname(t, c.c.put(t, "/api/v1/services/rdp/tcp-hostname", map[string]any{"hostname_only": false})); got.HostnameOnly {
+		t.Fatalf("back on: %+v", got)
+	}
+	if refreshed, _ := c.relay.snapshot(); len(refreshed) != 1 {
+		t.Fatalf("relay told %v", refreshed)
 	}
 }

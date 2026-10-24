@@ -226,6 +226,12 @@ func (o *observer) ObserveSession(e observe.Session) {
 		if o.perMinute.allow("tunnel.failed\x00" + e.UserID + "\x00" + e.RefusalCode) {
 			o.publish("tunnel.failed", map[string]any{"ServiceID": "", "TunnelID": "", "Error": e.RefusalCode})
 		}
+		// A registration that created its service and was then refused (a
+		// port it could not have) announces the service: the next one
+		// finds the row and does not.
+		if ev := o.events(); e.ServiceCreated && ev != nil && o.budget.allow(e.UserID) {
+			ev.EmitServiceCreated(e.ServiceID, e.TunnelName, e.TunnelType, e.AccessMode)
+		}
 	}
 }
 

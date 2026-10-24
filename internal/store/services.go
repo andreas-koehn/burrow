@@ -371,14 +371,17 @@ func (s *Store) SetServiceTCPSettings(ctx context.Context, callerID, callerRole,
 // with what decides whether it reaches the service: its slug (the other
 // name it has under BURROW_TCP_DOMAIN) and its access mode (a private
 // service has no names on the passthrough listener).
+// HostnameOnly says the relay opens no public port for the service while
+// a host name reaches it.
 type TCPHostname struct {
-	Hostname   string
-	Slug       string
-	AccessMode string
+	Hostname     string
+	Slug         string
+	AccessMode   string
+	HostnameOnly bool
 }
 
 func tcpHostnameOf(svc db.Service) TCPHostname {
-	return TCPHostname{Hostname: svc.TCPHostname, Slug: svc.Subdomain, AccessMode: svc.AccessMode}
+	return TCPHostname{Hostname: svc.TCPHostname, Slug: svc.Subdomain, AccessMode: svc.AccessMode, HostnameOnly: svc.TCPHostnameOnly}
 }
 
 // NormalizeTCPHostname is the form a TLS passthrough host name is stored in:
@@ -470,6 +473,38 @@ func (s *Store) SetServiceTCPHostname(ctx context.Context, callerID, callerRole,
 		e.SubjectID = serviceID
 		e.SubjectLabel = svc.Name
 		e.Payload = audit.MustJSON(map[string]string{"from": before.Hostname, "to": after.Hostname})
+	})
+	return before, after, nil
+}
+
+// SetServiceTCPHostnameOnly sets whether a tcp service is reached by its
+// host name only: the relay then opens no public port for it while a host
+// name reaches it on the TLS passthrough listener. The caller (the API)
+// checks that the relay has the listener and the service a name; the relay
+// opens the port again whenever none reaches it. Same permission rule as
+// SetServiceMaxConnections; ErrServiceNotTCP for any other type. Every write
+// is audited as service.tcp_hostname_only.update {from, to}.
+func (s *Store) SetServiceTCPHostnameOnly(ctx context.Context, callerID, callerRole, serviceID string, only bool) (before, after TCPHostname, err error) {
+	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
+	if err != nil {
+		return TCPHostname{}, TCPHostname{}, err
+	}
+	if svc.Type != "tcp" {
+		return TCPHostname{}, TCPHostname{}, ErrServiceNotTCP
+	}
+	before = tcpHostnameOf(svc)
+	if err := s.q.SetServiceTCPHostnameOnly(ctx, serviceID, only); err != nil {
+		return TCPHostname{}, TCPHostname{}, err
+	}
+	now, err := s.q.GetServiceByID(ctx, serviceID)
+	if err != nil {
+		return TCPHostname{}, TCPHostname{}, err
+	}
+	after = tcpHostnameOf(now)
+	s.emitAudit(withAuditDeadline(ctx), audit.ActionServiceTCPHostnameOnlyUpdate, func(e *audit.Event) {
+		e.SubjectID = serviceID
+		e.SubjectLabel = svc.Name
+		e.Payload = audit.MustJSON(map[string]bool{"from": before.HostnameOnly, "to": after.HostnameOnly})
 	})
 	return before, after, nil
 }

@@ -193,7 +193,8 @@ var sensitivePorts = map[string]string{
 }
 
 // tcpNote says how a tcp service can be reached: through burrow forward when
-// it is private, at the relay's port otherwise, with a warning for a port
+// it is private, at the relay's port otherwise (by its host name when it has
+// no port: host name only), with a warning for a port
 // that should not be public. What the relay says is repeated only in the form
 // it must have.
 func tcpNote(t client.RegisteredTunnel, host string, single bool) string {
@@ -212,14 +213,16 @@ func tcpNote(t client.RegisteredTunnel, host string, single bool) string {
 		}
 		b.WriteString(s + " is private: the relay opened no public port. Reach it from another machine with: " + hint)
 	case "open", "ip":
-		addr := "the relay's port"
-		if t.RemotePort > 0 {
-			addr = net.JoinHostPort(plainText(host), strconv.Itoa(t.RemotePort))
-		}
-		if t.AccessMode == "open" {
-			b.WriteString(s + " is open to anyone at " + addr + ".")
-		} else {
-			b.WriteString(s + " is reachable at " + addr + " from the addresses allowed in the dashboard.")
+		switch {
+		case t.RemotePort <= 0 && t.AccessMode == "open":
+			// Reached by host name only (TLS passthrough): no port of its own.
+			b.WriteString(s + " is open to anyone by its host name on the relay's TLS port; it has no public port.")
+		case t.RemotePort <= 0:
+			b.WriteString(s + " is reachable by its host name on the relay's TLS port from the addresses allowed in the dashboard; it has no public port.")
+		case t.AccessMode == "open":
+			b.WriteString(s + " is open to anyone at " + net.JoinHostPort(plainText(host), strconv.Itoa(t.RemotePort)) + ".")
+		default:
+			b.WriteString(s + " is reachable at " + net.JoinHostPort(plainText(host), strconv.Itoa(t.RemotePort)) + " from the addresses allowed in the dashboard.")
 		}
 	default:
 		return ""

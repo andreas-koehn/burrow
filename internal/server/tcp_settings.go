@@ -158,7 +158,8 @@ func (s *Server) addLiveConn(tn *Tunnel, c *liveConn) {
 
 // sweepIdle is the one idle watch of a tunnel: on every tick it closes, with
 // reason idle_timeout, the live connections whose bytes in and out have not
-// moved for the tunnel's idle timeout, which it reads again each time so
+// moved for the tunnel's idle timeout (time spent waiting for the service's
+// bandwidth limit is not idle), which it reads again each time so
 // that a change applies to open connections. It ends when the tunnel has no
 // live connection left; addLiveConn starts it again.
 func (s *Server) sweepIdle(tn *Tunnel) {
@@ -178,7 +179,9 @@ func (s *Server) sweepIdle(tn *Tunnel) {
 		tn.connMu.Unlock()
 		d := tn.tcpSettings().idle
 		for _, c := range conns {
-			if n := c.in.Load() + c.out.Load(); n != c.idleBytes {
+			if n := c.in.Load() + c.out.Load(); n != c.idleBytes || c.throttled.Load() > 0 {
+				// Bytes moved, or some wait for the bandwidth limit:
+				// not idle.
 				c.idleBytes, c.idleSince = n, now
 				continue
 			}

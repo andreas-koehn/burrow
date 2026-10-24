@@ -3,14 +3,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useCan } from "@/auth/useCan";
 import { P } from "@/auth/permissions";
-import { Button, ErrorNotice, FormField, Input } from "@/components/ds";
+import { Button, ErrorNotice, FormField, Input, Switch } from "@/components/ds";
 import { CopyableCode } from "@/components/CopyableCode";
 import type { TcpAccessMode, TcpHostname } from "@/lib/contract";
 
 /**
  * The host names that reach a tcp service through the relay's TLS passthrough listener: the one
  * the slug gives (shown to everyone who may configure the service) and a custom one, which only a
- * holder of services:configure:any may set.
+ * holder of services:configure:any may set. With a name that reaches it, the service can be reached
+ * by host name only: the relay then opens no public port for it.
  */
 export function TcpHostnamePanel({ serviceId, mode }: { serviceId: string; mode: TcpAccessMode }) {
   const qc = useQueryClient();
@@ -39,6 +40,19 @@ export function TcpHostnamePanel({ serviceId, mode }: { serviceId: string; mode:
     },
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : "Couldn't save the host name."),
   });
+  const [onlyErr, setOnlyErr] = useState<string | null>(null);
+  const only = useMutation({
+    mutationFn: (on: boolean) =>
+      apiFetch<TcpHostname>(`/services/${serviceId}/tcp-hostname`, { method: "PUT", body: JSON.stringify({ hostname_only: on }) }),
+    onSuccess: async () => {
+      setOnlyErr(null);
+      await qc.invalidateQueries({ queryKey: key });
+    },
+    onError: (e: unknown) => setOnlyErr(e instanceof ApiError ? e.message : "Couldn't change how the service is reached."),
+  });
+  // The port may go only while a name reaches the service; it may always come back.
+  const canOnly = !!data && data.passthrough && data.hostnames.length > 0;
+  const showOnly = !!data && ((data.passthrough && mode !== "private") || data.hostname_only);
 
   return (
     <section className="card col gap-3" aria-labelledby={titleId}>
@@ -67,6 +81,28 @@ export function TcpHostnamePanel({ serviceId, mode }: { serviceId: string; mode:
                 ? <p className="muted small">No name is set: the relay has no domain for slug names.</p>
                 : data.hostnames.map((h) => <CopyableCode key={h} text={h} label={`Copy ${h}`} />)}
             </>
+          )}
+          {showOnly && data && (
+            <div className="col gap-1">
+              <label className="row row-center gap-2">
+                <Switch
+                  aria-label="Host name only"
+                  aria-describedby={`${titleId}-only-desc`}
+                  checked={data.hostname_only}
+                  disabled={only.isPending || (!data.hostname_only && !canOnly)}
+                  onChange={(on) => { setOnlyErr(null); only.mutate(on); }}
+                />
+                <span>Reach it by host name only</span>
+              </label>
+              <p id={`${titleId}-only-desc`} className="muted small">
+                {data.hostname_only
+                  ? "The service has no public port: it is reached by its host names only. The client reconnects on its own when this changes."
+                  : canOnly
+                    ? "Turn this on to close the service's public port, so that only a client that names the host reaches it. The client reconnects on its own."
+                    : "Host name only needs a host name that reaches the service: set a custom name, or ask the operator for a domain for slug names."}
+              </p>
+              {onlyErr && <ErrorNotice role="alert">{onlyErr}</ErrorNotice>}
+            </div>
           )}
           {canCustom ? (
             <>

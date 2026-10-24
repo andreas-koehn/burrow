@@ -107,7 +107,11 @@ function tcpSettingsOf(id: string): TcpSettings {
 function tcpHostnameOf(svc: ServiceRow): TcpHostname {
   const custom = db.tcpHostnames[svc.id] ?? "";
   const hostnames = [...(svc.slug ? [`${svc.slug}.tcp.example.com`] : []), ...(custom ? [custom] : [])];
-  return { tcp_hostname: custom, hostnames, passthrough: db.tlsPassthrough, reachable: db.tlsPassthrough && svc.access_mode !== "private" && hostnames.length > 0 };
+  return {
+    tcp_hostname: custom, hostnames, passthrough: db.tlsPassthrough,
+    reachable: db.tlsPassthrough && svc.access_mode !== "private" && hostnames.length > 0,
+    hostname_only: db.tcpHostnameOnly[svc.id] ?? false,
+  };
 }
 function tcpLimitsOf(id: string): TcpLimits {
   const l = db.tcpLimits[id] ?? {
@@ -1514,13 +1518,21 @@ export const handlers = [
     const g = gate(request); if (g) return g;
     { const r = needReauth(); if (r) return r; }
     const svc = tcpService(params.id as string); if (svc instanceof Response) return svc;
-    const b = await body<{ tcp_hostname?: string }>(request);
-    if (b?.tcp_hostname === undefined) return err(400, "tcp_hostname is required");
-    const name = b.tcp_hostname.trim().toLowerCase();
-    if (name !== "" && !holds("services:configure:any")) return err(403, "a custom host name needs services:configure:any; the service is reached by its slug name");
-    if (name !== "" && !/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(name)) return err(400, "tcp_hostname must be a host name such as rdp.example.com");
-    if (Object.entries(db.tcpHostnames).some(([id, h]) => id !== svc.id && h === name && name !== "")) return err(409, "tcp_hostname is used by another service");
-    db.tcpHostnames[svc.id] = name;
+    const b = await body<{ tcp_hostname?: string; hostname_only?: boolean }>(request);
+    if (b?.tcp_hostname === undefined && b?.hostname_only === undefined) return err(400, "tcp_hostname or hostname_only is required");
+    const name = b.tcp_hostname === undefined ? (db.tcpHostnames[svc.id] ?? "") : b.tcp_hostname.trim().toLowerCase();
+    if (b.tcp_hostname !== undefined) {
+      if (name !== "" && !holds("services:configure:any")) return err(403, "a custom host name needs services:configure:any; the service is reached by its slug name");
+      if (name !== "" && !/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(name)) return err(400, "tcp_hostname must be a host name such as rdp.example.com");
+      if (Object.entries(db.tcpHostnames).some(([id, h]) => id !== svc.id && h === name && name !== "")) return err(409, "tcp_hostname is used by another service");
+    }
+    const only = b.hostname_only ?? db.tcpHostnameOnly[svc.id] ?? false;
+    if (only) {
+      if (!db.tlsPassthrough) return err(400, "hostname_only needs the relay's TLS passthrough listener (BURROW_TLS_PASSTHROUGH_LISTEN)");
+      if (!svc.slug && name === "") return err(400, "hostname_only needs a host name the service is reached by");
+    }
+    if (b.tcp_hostname !== undefined) db.tcpHostnames[svc.id] = name;
+    if (b.hostname_only !== undefined) db.tcpHostnameOnly[svc.id] = b.hostname_only;
     return json(tcpHostnameOf(svc));
   }),
   http.get("/api/v1/services/:id/tcp-limits", ({ request, params }) => {

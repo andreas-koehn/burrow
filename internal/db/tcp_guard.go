@@ -58,18 +58,33 @@ func scanTCPBan(sc interface{ Scan(...any) error }) (TCPBan, error) {
 	return b, nil
 }
 
+// ErrTCPBanLonger: the source has an active ban that ends later than the
+// one written; a ban is extended or renewed, never shortened (lifting it is
+// DeleteTCPBan).
+var ErrTCPBanLonger = errors.New("db: the source is banned for longer")
+
 // PutTCPBan adds a ban, or replaces the ban of the same source of the
-// service. CreatedAt is now when it is zero.
+// service, in one statement. An active ban (one that ends after CreatedAt)
+// that ends later than b is kept and ErrTCPBanLonger returned, so a ban is
+// never shortened. CreatedAt is now when it is zero.
 func (x *DB) PutTCPBan(ctx context.Context, b TCPBan) error {
 	if b.CreatedAt.IsZero() {
 		b.CreatedAt = time.Now()
 	}
-	_, err := x.sqlDB.ExecContext(ctx,
+	res, err := x.sqlDB.ExecContext(ctx,
 		`INSERT INTO tcp_bans(service_id, source, until, reason, created_at) VALUES(?,?,?,?,?)
-		 ON CONFLICT(service_id, source) DO UPDATE SET until=excluded.until, reason=excluded.reason, created_at=excluded.created_at`,
+		 ON CONFLICT(service_id, source) DO UPDATE SET until=excluded.until, reason=excluded.reason, created_at=excluded.created_at
+		 WHERE tcp_bans.until <= excluded.until OR tcp_bans.until <= excluded.created_at`,
 		b.ServiceID, b.Source, b.Until.UTC(), b.Reason, b.CreatedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("put tcp ban: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("put tcp ban: %w", err)
+	}
+	if n == 0 {
+		return ErrTCPBanLonger
 	}
 	return nil
 }
@@ -154,15 +169,28 @@ func (x *DB) TCPDailyUsage(ctx context.Context, serviceID, day string) (in, out 
 }
 
 // AddTCPDailyUsage adds in and out to the service's day, in one statement.
+// ErrNotFound when there is no such service (it was deleted): the bytes have
+// nowhere to go and are not to be tried again.
 func (x *DB) AddTCPDailyUsage(ctx context.Context, serviceID, day string, in, out int64) error {
-	_, err := x.sqlDB.ExecContext(ctx,
-		`INSERT INTO tcp_daily_usage(service_id, day, bytes_in, bytes_out) VALUES(?,?,?,?)
+	res, err := x.sqlDB.ExecContext(ctx,
+		`INSERT INTO tcp_daily_usage(service_id, day, bytes_in, bytes_out)
+		 SELECT id, CAST(? AS TEXT), CAST(? AS BIGINT), CAST(? AS BIGINT) FROM services WHERE id=?
 		 ON CONFLICT(service_id, day) DO UPDATE SET
 		   bytes_in  = tcp_daily_usage.bytes_in + excluded.bytes_in,
 		   bytes_out = tcp_daily_usage.bytes_out + excluded.bytes_out`,
-		serviceID, day, in, out)
+		day, in, out, serviceID)
 	if err != nil {
 		return fmt.Errorf("add tcp daily usage: %w", err)
 	}
-	return nil
+	return notFoundIfNoRows(res, "add tcp daily usage")
+}
+
+// PruneTCPDailyUsage deletes the usage rows of every service for the days
+// before before (YYYY-MM-DD), and returns how many.
+func (x *DB) PruneTCPDailyUsage(ctx context.Context, before string) (int64, error) {
+	res, err := x.sqlDB.ExecContext(ctx, `DELETE FROM tcp_daily_usage WHERE day < ?`, before)
+	if err != nil {
+		return 0, fmt.Errorf("prune tcp daily usage: %w", err)
+	}
+	return res.RowsAffected()
 }

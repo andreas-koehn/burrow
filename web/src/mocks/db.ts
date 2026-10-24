@@ -112,6 +112,8 @@ export interface MockDb {
   /** The tcp settings, hostname, limits and bans of tcp services, by service id; a service without an entry has the defaults. */
   tcpSettings: Record<string, TcpSettings>;
   tcpHostnames: Record<string, string>;
+  /** Services reached by host name only (no public port), by service id. */
+  tcpHostnameOnly: Record<string, boolean>;
   tcpLimits: Record<string, TcpLimits>;
   tcpBans: Record<string, TcpBan[]>;
   /** Whether the relay has a GeoIP database; without one it refuses to save a new country. */
@@ -276,6 +278,7 @@ function seed(): MockDb {
     tcpIpGeo: {},
     tcpSettings: {},
     tcpHostnames: {},
+    tcpHostnameOnly: {},
     tcpLimits: {},
     tcpBans: {},
     geoDatabase: true,

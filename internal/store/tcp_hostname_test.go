@@ -114,3 +114,50 @@ func TestServiceTCPHostname(t *testing.T) {
 		t.Fatal("service.tcp_hostname.update is not an audit action")
 	}
 }
+
+// Host name only: the owner may turn the public port of a tcp service off
+// and on again; the read says so, and every change is audited with the
+// setting before and after. Not for http, not for another user's service.
+func TestServiceTCPHostnameOnly(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	owner := mustCreateUser(t, st, "owner@x", "user")
+	other := mustCreateUser(t, st, "other@x", "user")
+	sink := &auditSink{}
+	st.SetAuditLogger(sink)
+	web := mustGetOrCreateService(t, st, owner.ID, "web", "http")
+	rdp := mustGetOrCreateService(t, st, owner.ID, "rdp", "tcp")
+
+	if got, err := st.ServiceTCPHostname(ctx, owner.ID, "user", rdp.ID); err != nil || got.HostnameOnly {
+		t.Fatalf("new service: %+v %v", got, err)
+	}
+	before, after, err := st.SetServiceTCPHostnameOnly(ctx, owner.ID, "user", rdp.ID, true)
+	if err != nil || before.HostnameOnly || !after.HostnameOnly {
+		t.Fatalf("set: %+v %+v %v", before, after, err)
+	}
+	if got, _ := st.ServiceTCPHostname(ctx, owner.ID, "user", rdp.ID); !got.HostnameOnly {
+		t.Fatalf("read back: %+v", got)
+	}
+	if _, after, err := st.SetServiceTCPHostnameOnly(ctx, owner.ID, "user", rdp.ID, false); err != nil || after.HostnameOnly {
+		t.Fatalf("back: %+v %v", after, err)
+	}
+	if _, _, err := st.SetServiceTCPHostnameOnly(ctx, owner.ID, "user", web.ID, true); !errors.Is(err, ErrServiceNotTCP) {
+		t.Fatalf("http: %v", err)
+	}
+	if _, _, err := st.SetServiceTCPHostnameOnly(ctx, other.ID, "user", rdp.ID, true); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("another user: %v", err)
+	}
+	var writes []string
+	for _, e := range sink.ev {
+		if e.Action == audit.ActionServiceTCPHostnameOnlyUpdate {
+			writes = append(writes, e.SubjectID+" "+string(e.Payload))
+		}
+	}
+	want := []string{rdp.ID + ` {"from":false,"to":true}`, rdp.ID + ` {"from":true,"to":false}`}
+	if strings.Join(writes, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("audit:\n%s\nwant\n%s", strings.Join(writes, "\n"), strings.Join(want, "\n"))
+	}
+	if !slices.Contains(audit.AllActions, audit.ActionServiceTCPHostnameOnlyUpdate) || audit.ActionServiceTCPHostnameOnlyUpdate != "service.tcp_hostname_only.update" {
+		t.Fatal("service.tcp_hostname_only.update is not an audit action")
+	}
+}

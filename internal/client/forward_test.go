@@ -926,3 +926,15 @@ func TestForward_AListenAddressInUseSaysSo(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+// A refusal for the token's scope says it once: the relay's text names the
+// scope and the way out; without a text the client says it.
+func TestForward_TheScopeRefusalSaysItOnce(t *testing.T) {
+	relay := "this token is limited to publishing (scope publish) and may not open forwards; use a token with scope all or forward"
+	if got := scopeDeniedText(relay); got != relay || strings.Count(got, "may not open forwards") != 1 {
+		t.Fatalf("with the relay's text: %q", got)
+	}
+	if got := scopeDeniedText(""); got != "this token may not open forwards; use a token with scope all or forward" {
+		t.Fatalf("without a text: %q", got)
+	}
+}

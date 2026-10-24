@@ -483,6 +483,8 @@ export interface TcpHostname {
   passthrough: boolean;
   /** A name reaches the service now: passthrough, a mode open or ip, and a name. */
   reachable: boolean;
+  /** The relay opens no public port while a name reaches the service (reached by host name only). */
+  hostname_only: boolean;
 }
 
 export interface TcpAutoBan {

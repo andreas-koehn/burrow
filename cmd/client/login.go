@@ -351,6 +351,13 @@ func browserLogin(ctx context.Context, d deps, g globalFlags, out, errOut io.Wri
 			"The token was created but could not be stored; revoke it in the dashboard (Clients, tab Tokens) and run burrow login again."}
 	}
 	switch {
+	case tok.Scope != "" && p.scope != "" && tok.Scope != p.scope:
+		// The approver picks the scope; one other than asked for is said.
+		if tok.Scope == "all" {
+			fmt.Fprintf(out, "Note: you asked for --scope %s; the approver chose all: this token registers tunnels and opens forwards.\n", p.scope)
+		} else {
+			fmt.Fprintf(out, "Note: you asked for --scope %s; the approver chose %s.\nThis token is limited to %s.\n", p.scope, plainText(tok.Scope), scopeWords(tok.Scope))
+		}
 	case tok.Scope != "" && tok.Scope != "all":
 		fmt.Fprintf(out, "This token is limited to %s.\n", scopeWords(tok.Scope))
 	case tok.Scope == "" && p.scope != "":

@@ -519,6 +519,10 @@ func (*fullDepsStub) SetServiceTCPHostname(context.Context, string, string, stri
 	stubPanic("SetServiceTCPHostname")
 	return store.TCPHostname{}, store.TCPHostname{}, nil
 }
+func (*fullDepsStub) SetServiceTCPHostnameOnly(context.Context, string, string, string, bool) (store.TCPHostname, store.TCPHostname, error) {
+	stubPanic("SetServiceTCPHostnameOnly")
+	return store.TCPHostname{}, store.TCPHostname{}, nil
+}
 func (*fullDepsStub) ServiceTCPLimits(context.Context, string, string, string) (store.TCPLimits, store.TCPUsage, error) {
 	stubPanic("ServiceTCPLimits")
 	return store.TCPLimits{}, store.TCPUsage{}, nil

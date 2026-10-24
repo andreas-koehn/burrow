@@ -349,8 +349,15 @@ func (s *Server) endTCPTunnel(tn *Tunnel) {
 // opened. Mode private opens no port at all; mode ip opens one whose
 // visitors pass the service's ip policy before the home client is told.
 func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRegister) {
+	// inserted is the service this registration created, once it has: a
+	// refusal after that still announces the service (once).
+	var inserted *Resolved
 	refuseWith := func(code, msg string) {
 		_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: msg, Code: code})
+		if inserted != nil {
+			s.refusedCreated(reg, cs, tr, code, *inserted)
+			return
+		}
 		s.refused(reg, cs, tr, code)
 	}
 	// The mode a new service would get: the wish, else the client's default.
@@ -384,6 +391,9 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 		return
 	}
 	serviceID := svc.res.ServiceID
+	if svc.res.Inserted && serviceID != "" {
+		inserted = &svc.res
+	}
 	mode := TCPAccessOpen
 	if serviceID != "" {
 		if svc.res.AccessMode != "" {
@@ -436,7 +446,7 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 	}
 	tn := &Tunnel{
 		ID: uuid.NewString(), Name: tr.Name, Type: tr.Type, LocalAddr: tr.LocalAddr, sess: cs,
-		ServiceID: serviceID, accessMode: mode, created: svc.res.Created,
+		ServiceID: serviceID, accessMode: mode, created: svc.res.Inserted,
 	}
 	tn.setTCPSettings(svc.res.ProxyProtocol, svc.res.IdleTimeout)
 	if serviceID != "" {
@@ -467,13 +477,18 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 		// goes only with the service or a new request of its own (P01), so
 		// that switching back to open or ip gets the same port. It opens
 		// nothing while the service is private.
-		if svc.tcp != nil && svc.res.TCPPort != 0 && !svc.res.TCPPortPinned {
-			ctx, cancel := context.WithTimeout(context.Background(), sessionRecordTimeout)
-			if err := svc.tcp.SetServiceTCPPort(ctx, serviceID, 0, false, ""); err != nil {
-				s.log.Warn("release tcp port of a private service failed", "service_id", serviceID, "err", err)
-			}
-			cancel()
+		s.releaseAutoPort(svc, serviceID, "private")
+	} else if svc.res.HostnameOnly && s.reachableByName(tn) {
+		// By host name only: the passthrough listener reaches it, with the
+		// same policy and limits; no listener and no port. The port is kept
+		// as for a private service (a pinned hold stays for when the port is
+		// on again). A service no name reaches gets its port below: it is
+		// never left with no way in.
+		tn.limits = newTCPLimits(maxConns)
+		if policy != nil {
+			tn.policy.Store(policy)
 		}
+		s.releaseAutoPort(svc, serviceID, "host name only")
 	} else if !s.openTCPPort(reg, cs, tr, svc, tn, maxConns, policy, refuseWith) {
 		return
 	}
@@ -518,6 +533,20 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 		ctx, cancel := context.WithTimeout(context.Background(), tcpResolveTimeout)
 		_ = s.reconcileTCP(ctx, tn)
 		cancel()
+	}
+}
+
+// releaseAutoPort gives an automatic hold of the service on a public port
+// back to the pool (a tunnel that opens no port: private, or by host name
+// only); a pinned hold is kept.
+func (s *Server) releaseAutoPort(svc tcpService, serviceID, why string) {
+	if svc.tcp == nil || svc.res.TCPPort == 0 || svc.res.TCPPortPinned {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sessionRecordTimeout)
+	defer cancel()
+	if err := svc.tcp.SetServiceTCPPort(ctx, serviceID, 0, false, ""); err != nil {
+		s.log.Warn("release tcp port of a service without one failed", "service_id", serviceID, "why", why, "err", err)
 	}
 }
 
@@ -663,6 +692,12 @@ func (s *Server) reconcileTCP(ctx context.Context, tn *Tunnel) error {
 		tn.guard.apply(acc.Limits, s.now())
 	}
 	if mode == TCPAccessIP || mode == TCPAccessOpen {
+		// A public port turned off or on (host name only, or a name that
+		// reached it gone) is a new registration, as a new mode is.
+		if portless := acc.HostnameOnly && s.reachableByName(tn); portless != (tn.Listener == nil) {
+			closeIt("its public port was turned "+map[bool]string{true: "off", false: "on"}[portless], nil)
+			return nil
+		}
 		acc.Mode = mode
 		p, err := compileTCPPolicy(acc)
 		if err != nil {

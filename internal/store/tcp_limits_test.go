@@ -189,6 +189,21 @@ func TestTCPBans(t *testing.T) {
 	if _, err := st.AddTCPBan(ctx, owner.ID, "user", rdp.ID, "203.0.113.7", 60, ""); err != nil {
 		t.Fatal(err)
 	}
+	// An active ban is never shortened by hand (that would lift it without
+	// the unban's confirmation); a longer one extends it.
+	nAudit := len(sink.actions())
+	if _, err := st.AddTCPBan(ctx, owner.ID, "user", rdp.ID, "203.0.113.7", 5, ""); !errors.Is(err, ErrTCPBanLonger) {
+		t.Fatalf("shorter ban: %v", err)
+	}
+	if len(sink.actions()) != nAudit {
+		t.Fatal("a refused ban was audited")
+	}
+	if b, err := st.AddTCPBan(ctx, owner.ID, "user", rdp.ID, "203.0.113.7", 90, ""); err != nil || time.Until(b.Until) < 89*time.Minute {
+		t.Fatalf("longer ban: %+v %v", b, err)
+	}
+	if _, err := st.AddTCPBan(ctx, owner.ID, "user", rdp.ID, "203.0.113.7", 60, ""); !errors.Is(err, ErrTCPBanLonger) {
+		t.Fatalf("back to 60 after 90: %v", err)
+	}
 	// An auto ban of the relay, and an expired one.
 	_ = st.q.PutTCPBan(ctx, db.TCPBan{ServiceID: rdp.ID, Source: "198.51.100.1", Until: time.Now().Add(time.Hour), Reason: "auto: 10 connections"})
 	_ = st.q.PutTCPBan(ctx, db.TCPBan{ServiceID: rdp.ID, Source: "198.51.100.2", Until: time.Now().Add(-time.Hour), Reason: "auto"})
@@ -261,7 +276,7 @@ func TestTCPBans(t *testing.T) {
 	}
 
 	adds, removes := auditPayloads(sink, audit.ActionTCPBanAdd), auditPayloads(sink, audit.ActionTCPBanRemove)
-	if len(adds) != 2 || !strings.Contains(adds[0], `"source":"2001:db8:1:2::/64"`) || !strings.Contains(adds[0], `"reason":"manual: scanner"`) ||
+	if len(adds) != 3 || !strings.Contains(adds[0], `"source":"2001:db8:1:2::/64"`) || !strings.Contains(adds[0], `"reason":"manual: scanner"`) ||
 		!strings.Contains(adds[0], `"ban_min":30`) {
 		t.Fatalf("adds %v", adds)
 	}

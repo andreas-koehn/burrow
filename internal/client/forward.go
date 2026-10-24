@@ -435,7 +435,7 @@ func (f *forwarder) refused(resp proto.ForwardOpenResponse) {
 		return
 	case proto.CodeScopeDenied:
 		// The token never opens a forward; the answer will not change.
-		p = "this token may not open forwards: " + displayText(resp.Error, 300)
+		p = scopeDeniedText(resp.Error)
 		f.stop(p, &ForwardRefusedError{Target: t, Code: resp.Code, Message: p})
 		return
 	case proto.CodeOffline:
@@ -455,4 +455,13 @@ func (f *forwarder) refused(resp proto.ForwardOpenResponse) {
 	}
 	f.c.log.Warn("forward refused", "target", t, "code", resp.Code, "err", resp.Error)
 	f.setProblem(p)
+}
+
+// scopeDeniedText is what a forward refused for the token's scope says: the
+// relay's text, which names the scope and the way out, else the client's.
+func scopeDeniedText(msg string) string {
+	if m := displayText(msg, 300); strings.TrimSpace(m) != "" {
+		return m
+	}
+	return "this token may not open forwards; use a token with scope all or forward"
 }

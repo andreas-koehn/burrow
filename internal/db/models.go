@@ -139,6 +139,10 @@ type Service struct {
 	RateLimitKbps int
 	DailyBytes    int64
 	TCPAutoBan    string
+	// TCPHostnameOnly: the relay opens no public port for the tcp service
+	// while a host name reaches it on the TLS passthrough listener
+	// (migration 0044).
+	TCPHostnameOnly bool
 }
 
 // ServiceAPIKey is a row of the service_api_keys table.

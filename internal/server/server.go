@@ -62,8 +62,15 @@ type ResolveOptions struct{ Slug, Access, AccessDefault string }
 // Resolved is the service an http tunnel was bound to.
 type Resolved struct {
 	ServiceID, Slug, AccessMode string
-	// Created says that this call created the service.
+	// Created says that this call created the service. For a tcp service
+	// it is what the client is told: a found row nobody served yet, in the
+	// mode this registration would have given it, is Created too.
 	Created bool
+	// Inserted (tcp): this call inserted the row, so the registration
+	// created the service and the relay announces it (service.created),
+	// once, whether the registration then succeeds or is refused. A row
+	// made through the API was announced there.
+	Inserted bool
 	// GatewayOnly says that the service has no direct address: it answers
 	// through the AI gateway only, so no URL is reported for it.
 	GatewayOnly bool
@@ -89,6 +96,10 @@ type Resolved struct {
 	// TCPHostname is the tcp service's own TLS passthrough host name
 	// (services.tcp_hostname), "" for none.
 	TCPHostname string
+	// HostnameOnly: the relay opens no public port for the tcp service
+	// while a host name reaches it on the TLS passthrough listener
+	// (services.tcp_hostname_only).
+	HostnameOnly bool
 	// Limits are the tcp service's bandwidth, daily volume and automatic
 	// bans (tcp complete, E6 and E7).
 	Limits TCPLimits
@@ -334,6 +345,11 @@ type Options struct {
 	// one must start with a PROXY protocol v2 header naming the visitor, and
 	// anyone else who sends one is closed. Empty: no header is believed.
 	TrustedProxies []netip.Prefix
+	// TLSPassthrough says the relay runs the TLS passthrough listener
+	// (BURROW_TLS_PASSTHROUGH_LISTEN). ServePassthrough sets it too. A tcp
+	// service set to host name only gets no public port while a name
+	// reaches it there.
+	TLSPassthrough bool
 	// TCPGuards keeps the bans and the daily usage of tcp services so that
 	// they survive a restart (tcp_guard.go). nil: they live in memory only.
 	TCPGuards TCPGuardStore
@@ -379,8 +395,12 @@ type Server struct {
 	forwardEpoch atomic.Uint64
 	// refusals samples the refused visitors of tcp tunnels; authFails counts
 	// the failed auth_requests on the control port.
-	refusals  *refusalSampler
-	authFails *authFailures
+	refusals *refusalSampler
+	// passRefusals samples the refusals of the TLS passthrough listener
+	// before a service is known, apart from refusals: a scan of the
+	// listener must not use up the budget of keys of the services' rows.
+	passRefusals *refusalSampler
+	authFails    *authFailures
 	// The bounds of the TLS passthrough listener's hello read (see
 	// passthrough.go), and the connections that wait for their hello now
 	// (under peekMu), in all and per address.
@@ -397,8 +417,14 @@ type Server struct {
 	guardMu       sync.Mutex
 	guards        map[string]*tcpGuard
 	guardFlushing bool
-	usageFlush    time.Duration
-	clock         func() time.Time
+	// passthroughOn: the TLS passthrough listener runs (or will:
+	// Options.TLSPassthrough).
+	passthroughOn atomic.Bool
+	// usagePrunedDay is the UTC day pruneUsage last pruned old usage
+	// (only the flushGuards goroutine touches it).
+	usagePrunedDay string
+	usageFlush     time.Duration
+	clock          func() time.Time
 }
 
 // New validates options and loads the TLS keypair.
@@ -443,10 +469,11 @@ func New(o Options) (*Server, error) {
 	}
 	s := &Server{
 		opts: o, log: o.Logger, reg: NewRegistry(),
-		tlsC:      tlsCfg,
-		refusals:  &refusalSampler{log: o.Logger},
-		authFails: newAuthFailures(),
-		idleTick:  defaultIdleTick,
+		tlsC:         tlsCfg,
+		refusals:     &refusalSampler{log: o.Logger},
+		passRefusals: &refusalSampler{log: o.Logger},
+		authFails:    newAuthFailures(),
+		idleTick:     defaultIdleTick,
 
 		usageFlush: defaultUsageFlush, clock: time.Now,
 
@@ -460,6 +487,7 @@ func New(o Options) (*Server, error) {
 		s.usageFlush = o.usageFlush
 	}
 	s.ports = newPortAllocator(o.PortMin, o.PortMax)
+	s.passthroughOn.Store(o.TLSPassthrough)
 	return s, nil
 }
 

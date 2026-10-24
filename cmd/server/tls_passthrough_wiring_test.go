@@ -50,7 +50,17 @@ func TestTCPHostname_ResolverAndLoaderReadIt(t *testing.T) {
 		t.Fatalf("resolved %+v %v", again, err)
 	}
 	acc, err := tcpAccessAdapter{db: x}.TCPAccess(ctx, r.ServiceID)
-	if err != nil || acc.Hostname != "rdp.example.com" {
+	if err != nil || acc.Hostname != "rdp.example.com" || acc.HostnameOnly {
+		t.Fatalf("access %+v %v", acc, err)
+	}
+	// By host name only: both read it.
+	if err := x.SetServiceTCPHostnameOnly(ctx, r.ServiceID, true); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := res.ResolveTCP(ctx, uid, "rdp", server.ResolveOptions{}); err != nil || !again.HostnameOnly {
+		t.Fatalf("resolved %+v %v", again, err)
+	}
+	if acc, err := (tcpAccessAdapter{db: x}).TCPAccess(ctx, r.ServiceID); err != nil || !acc.HostnameOnly {
 		t.Fatalf("access %+v %v", acc, err)
 	}
 }
@@ -211,6 +221,30 @@ func TestServe_TLSPassthrough(t *testing.T) {
 	r.eventually("the audit row", func() bool {
 		_, body := r.admin(http.MethodGet, "/api/v1/audit/events?action=service.tcp_hostname.update", nil)
 		return strings.Count(string(body), "service.tcp_hostname.update") >= 2
+	})
+
+	// By host name only: the client registers again and has no public port;
+	// the names still reach the service. The port on again brings it back.
+	port := tns["rdp"].RemotePort
+	if port == 0 {
+		t.Fatal("rdp has no port to begin with")
+	}
+	var only struct {
+		HostnameOnly bool `json:"hostname_only"`
+	}
+	r.mustAdmin(http.MethodPut, "/api/v1/services/"+id+"/tcp-hostname", map[string]bool{"hostname_only": true}, http.StatusOK, &only)
+	if !only.HostnameOnly {
+		t.Fatalf("PUT hostname_only: %+v", only)
+	}
+	r.eventually("rdp served without a port", func() bool { tn, ok := r.tunnels()["rdp"]; return ok && tn.RemotePort == 0 })
+	if err := passVisit(passAddr, "rdp.example.com", header); err != nil {
+		t.Fatalf("by host name only: %v", err)
+	}
+	r.mustAdmin(http.MethodPut, "/api/v1/services/"+id+"/tcp-hostname", map[string]bool{"hostname_only": false}, http.StatusOK, &only)
+	r.eventually("rdp served with a port again", func() bool { tn, ok := r.tunnels()["rdp"]; return ok && tn.RemotePort != 0 })
+	r.eventually("the hostname-only audit rows", func() bool {
+		_, body := r.admin(http.MethodGet, "/api/v1/audit/events?action=service.tcp_hostname_only.update", nil)
+		return strings.Count(string(body), "service.tcp_hostname_only.update") >= 2
 	})
 }
 
