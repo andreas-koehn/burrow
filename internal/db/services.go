@@ -53,13 +53,24 @@ func (x *DB) CreateService(ctx context.Context, s Service) error {
 	if header == "" {
 		header = "Authorization"
 	}
+	// A tcp service may be created with its fixed port and first settings
+	// (POST /services); every other row takes the column defaults.
+	var port sql.NullInt64
+	if s.TCPPort != 0 {
+		port = sql.NullInt64{Int64: int64(s.TCPPort), Valid: true}
+	}
 	_, err := x.sqlDB.ExecContext(ctx,
-		`INSERT INTO services(id, user_id, name, type, subdomain, access_mode, api_key_header, created_at)
-		 VALUES(?,?,?,?,?,?,?,?)`,
+		`INSERT INTO services(id, user_id, name, type, subdomain, access_mode, api_key_header, created_at,
+		                      tcp_port, tcp_port_pinned, proxy_protocol, idle_timeout_s)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		s.ID, s.UserID, s.Name, s.Type, sub, s.AccessMode, header, s.CreatedAt,
+		port, boolToInt(s.TCPPortPinned && s.TCPPort != 0), s.ProxyProtocol, s.IdleTimeoutS,
 	)
 	if err != nil {
 		if isDuplicateServiceErr(err) {
+			if strings.Contains(err.Error(), "tcp_port") {
+				return ErrTCPPortReserved
+			}
 			return ErrDuplicateService
 		}
 		return fmt.Errorf("create service: %w", err)

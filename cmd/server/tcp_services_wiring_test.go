@@ -461,3 +461,28 @@ func TestObserver_TCPPortReclaimedIsAudited(t *testing.T) {
 		t.Fatal("service.tcp_port.reclaimed is not a listed action")
 	}
 }
+
+// A tcp service created through POST /services (mode ip, a pinned port, the
+// first settings) is the row the client's registration finds: same name, the
+// stored mode, the port it holds and the settings.
+func TestResolveTCP_FindsAServiceCreatedBeforeAnyClient(t *testing.T) {
+	x, uid := optionsDB(t)
+	ctx := context.Background()
+	if err := x.CreateService(ctx, db.Service{ID: "pre-1", UserID: uid, Name: "ssh-box", Type: "tcp", Subdomain: "pre1slug", AccessMode: "ip",
+		TCPPort: 9042, TCPPortPinned: true, ProxyProtocol: "v2", IdleTimeoutS: 600}); err != nil {
+		t.Fatal(err)
+	}
+	a := serviceResolverAdapter{db: x}
+	r, err := a.ResolveTCP(ctx, uid, "ssh-box", server.ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ServiceID != "pre-1" || r.Slug != "pre1slug" || r.AccessMode != "ip" || r.TCPPort != 9042 || !r.TCPPortPinned ||
+		r.ProxyProtocol != "v2" || r.IdleTimeout != 10*time.Minute || !r.Created {
+		t.Fatalf("resolved %+v", r)
+	}
+	held, err := a.TCPPortReservations(ctx)
+	if h := held[9042]; err != nil || h.ServiceID != "pre-1" || !h.Pinned {
+		t.Fatalf("the port is held from the start: %v %v", held, err)
+	}
+}

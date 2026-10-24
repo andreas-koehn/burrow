@@ -224,3 +224,41 @@ func checkMigration0041(t *testing.T, x *DB, userID, file string) {
 		t.Fatalf("token_name: %v", err)
 	}
 }
+
+// A tcp service created with its fixed port and first settings (POST
+// /services) keeps them; a second service on the port, or the same name, is
+// told which of the two it was.
+func TestCreateServiceWithTCPFields(t *testing.T) {
+	x := testDB(t)
+	ctx := context.Background()
+	freshServiceUser(t, x, "u-create-tcp")
+	a := Service{ID: "create-a", UserID: "u-create-tcp", Name: "rdp", Type: "tcp", AccessMode: "ip", Subdomain: "slug-create-a",
+		TCPPort: 9561, TCPPortPinned: true, ProxyProtocol: "v2", IdleTimeoutS: 600}
+	if err := x.CreateService(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	got, err := x.GetServiceByID(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TCPPort != 9561 || !got.TCPPortPinned || got.ProxyProtocol != "v2" || got.IdleTimeoutS != 600 {
+		t.Fatalf("row %+v", got)
+	}
+	b := Service{ID: "create-b", UserID: "u-create-tcp", Name: "ssh", Type: "tcp", AccessMode: "open", Subdomain: "slug-create-b", TCPPort: 9561, TCPPortPinned: true}
+	if err := x.CreateService(ctx, b); !errors.Is(err, ErrTCPPortReserved) {
+		t.Fatalf("port taken: %v", err)
+	}
+	c := Service{ID: "create-c", UserID: "u-create-tcp", Name: "rdp", Type: "tcp", AccessMode: "open", Subdomain: "slug-create-c"}
+	if err := x.CreateService(ctx, c); !errors.Is(err, ErrDuplicateService) {
+		t.Fatalf("name taken: %v", err)
+	}
+	// Without a port the row has none, and two such rows do not collide.
+	for _, id := range []string{"create-d", "create-e"} {
+		if err := x.CreateService(ctx, Service{ID: id, UserID: "u-create-tcp", Name: id, Type: "tcp", AccessMode: "private", Subdomain: "slug-" + id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := x.GetServiceByID(ctx, "create-d"); got.TCPPort != 0 || got.TCPPortPinned {
+		t.Fatalf("no port: %+v", got)
+	}
+}

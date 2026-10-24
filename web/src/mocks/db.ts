@@ -8,7 +8,7 @@ import type {
   AutomationToken, BackupRow, CacheStatsV5, SemanticCacheSettings,
   UpstreamCredentialBinding, CustomDomain, AiModel, AiGatewayKey, AiRequestAttempt,
   RetentionSettings, DatabaseStatus,
-  ConnectionLog, ConnectionLogRollup,
+  ConnectionLog, ConnectionLogRollup, TcpSettings, TcpLimits, TcpBan,
   ToolSource, ToolSourceTool, ToolDefinition,
   OAuthRequest, OAuthGrant, OAuthClient,
 } from "@/lib/contract";
@@ -109,6 +109,15 @@ export interface MockDb {
   /** Just-in-time grants and the permanent ip-geo lists of tcp services, by service id. */
   ipGrants: Record<string, IpGrant[]>;
   tcpIpGeo: Record<string, IpGeoConfig>;
+  /** The tcp settings, hostname, limits and bans of tcp services, by service id; a service without an entry has the defaults. */
+  tcpSettings: Record<string, TcpSettings>;
+  tcpHostnames: Record<string, string>;
+  tcpLimits: Record<string, TcpLimits>;
+  tcpBans: Record<string, TcpBan[]>;
+  /** Whether the relay has a GeoIP database; without one it refuses to save a new country. */
+  geoDatabase: boolean;
+  /** Whether the relay has a TLS passthrough listener, and the domain of its slug names. */
+  tlsPassthrough: boolean;
   /** Live connections of tcp services, by service id. */
   serviceConnections: Record<string, ServiceConnection[]>;
   /** The address the relay sees for the dashboard's caller; a grant without a cidr is for it. */
@@ -265,6 +274,12 @@ function seed(): MockDb {
     },
     ipGrants: {},
     tcpIpGeo: {},
+    tcpSettings: {},
+    tcpHostnames: {},
+    tcpLimits: {},
+    tcpBans: {},
+    geoDatabase: true,
+    tlsPassthrough: true,
     serviceConnections: {},
     callerIp: "203.0.113.7",
     aiMeta: {

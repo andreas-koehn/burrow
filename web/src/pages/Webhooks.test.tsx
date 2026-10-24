@@ -188,3 +188,13 @@ describe("Webhooks (§4.26)", () => {
     });
   });
 });
+
+describe("Webhooks events of tcp services", () => {
+  it("offers tcp.banned and tcp.quota.warning", async () => {
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: /new webhook/i }));
+    await screen.findByRole("heading", { name: /new webhook/i });
+    expect(screen.getByRole("checkbox", { name: "tcp.banned" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "tcp.quota.warning" })).toBeInTheDocument();
+  });
+});

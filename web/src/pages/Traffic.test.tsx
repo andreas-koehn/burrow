@@ -38,7 +38,29 @@ describe("Traffic page", () => {
     mount();
     const t = await table();
     expect(within(t).getAllByRole("columnheader").map((h) => h.textContent))
-      .toEqual(["Time", "Service", "Client IP", "Protocol", "Status", "Duration", "Bytes"]);
+      .toEqual(["Time", "Service", "Client IP", "Protocol", "Detected", "SNI", "Status", "Reason", "Duration", "Bytes"]);
+  });
+
+  it("shows what a tcp connection looked like, its server name and why it was refused", async () => {
+    const base = db.connectionLogs[0];
+    db.connectionLogs.splice(0, db.connectionLogs.length,
+      { ...base, id: "t1", kind: "tcp_proxy", status: "closed_clean", reason: "", protocol: "tls", sni: "rdp.example.org" },
+      { ...base, id: "t2", kind: "tcp_proxy", status: "rejected", reason: "banned", protocol: "", sni: "" },
+      { ...base, id: "t3", kind: "tcp_proxy", status: "rejected", reason: "quota", protocol: "", sni: "" },
+      { ...base, id: "t4", kind: "tcp_proxy", status: "closed_clean", reason: "idle_timeout", protocol: "ssh", sni: "" },
+      { ...base, id: "t5", kind: "tcp_forward", status: "rejected", reason: "proxy_unsupported", protocol: "", sni: "" },
+    );
+    mount();
+    const t = await table();
+    await waitFor(() => expect(bodyRows(t)).toHaveLength(5));
+    const cell = (row: number, col: number) => bodyRows(t)[row].querySelectorAll("td")[col]?.textContent;
+    // Detected, SNI and Reason are columns 4, 5 and 7.
+    expect([cell(0, 4), cell(0, 5), cell(0, 7)]).toEqual(["TLS", "rdp.example.org", "—"]);
+    expect(cell(1, 7)).toBe("banned source");
+    expect(cell(2, 7)).toBe("daily volume reached");
+    expect([cell(3, 4), cell(3, 7)]).toEqual(["SSH", "idle timeout"]);
+    expect(cell(4, 7)).toMatch(/PROXY/);
+    expect(cell(1, 4)).toBe("—");
   });
 
   it("renders the seeded rows in the table", async () => {

@@ -511,8 +511,12 @@ type Deps struct {
 	// TLSPassthrough reports whether that listener runs
 	// (BURROW_TLS_PASSTHROUGH_LISTEN). Both only shape what the tcp-hostname
 	// route says and refuses.
-	TCPDomain      string
-	TLSPassthrough bool
+	TCPDomain string
+	// TCPPortMin and TCPPortMax are the range of public tcp ports
+	// (BURROW_PORT_MIN, BURROW_PORT_MAX): POST /services refuses a fixed port
+	// outside it. 0 for both: no range check.
+	TCPPortMin, TCPPortMax int
+	TLSPassthrough         bool
 	// HostRouting reports whether the host-routed ingress is enabled. mTLS
 	// access mode needs it (a client certificate is checked during the TLS
 	// handshake of a dedicated host).

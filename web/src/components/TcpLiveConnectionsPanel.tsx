@@ -4,6 +4,7 @@ import { apiFetch, ApiError } from "@/lib/api";
 import { Button, Dialog, ErrorNotice } from "@/components/ds";
 import { RelativeTime } from "@/components/RelativeTime";
 import { formatBytes } from "@/lib/format";
+import { protocolLabel } from "@/lib/tcpAccess";
 import type { ServiceConnection } from "@/lib/contract";
 
 const REFRESH_MS = 5_000;
@@ -60,7 +61,7 @@ export function TcpLiveConnectionsPanel({ serviceId }: { serviceId: string }) {
         <div className="table-wrap">
           <table className="table" aria-label="Open connections">
             <thead>
-              <tr><th>Kind</th><th>Who</th><th>Since</th><th>Traffic</th><th className="col-actions"></th></tr>
+              <tr><th>Kind</th><th>Who</th><th>Protocol</th><th>Host name</th><th>Since</th><th>Traffic</th><th className="col-actions"></th></tr>
             </thead>
             <tbody>
               {rows.map((c) => (
@@ -70,6 +71,8 @@ export function TcpLiveConnectionsPanel({ serviceId }: { serviceId: string }) {
                     <span className="mono">{who(c)}</span>
                     {c.kind === "forward" && c.token_name && <span className="muted small"> · {c.token_name}</span>}
                   </td>
+                  <td>{protocolLabel(c.protocol) || "—"}</td>
+                  <td className="mono">{c.sni || "—"}</td>
                   <td><RelativeTime value={c.since} /></td>
                   <td>
                     <span title={`In: ${c.bytes_in} bytes`}>↓ {formatBytes(c.bytes_in)}</span>{"  "}

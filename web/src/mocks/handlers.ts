@@ -2,7 +2,7 @@ import { http, HttpResponse } from "msw";
 import { ALL_PERMISSIONS } from "@/auth/permissions";
 import { modelNameError } from "@/lib/modelNames";
 import { db, NO_MODES, mockToolHash, MOCK_TOOL_PATTERN, type MockDb, type CacheSettingsPayload, type AiProviderRow, type ServiceRow } from "@/mocks/db";
-import type { OAuthApprove, OAuthClient, AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, ClientView, CostGroupBy, CostSummary, Dialect, DialectMode, KnownClient, Service, ServiceAIConfig, ToolSource, ToolSourceCreate, ToolSourceUpdate, ToolSourceTool, ToolSourceToolUpdate, ToolSyncResult, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule } from "@/lib/contract";
+import type { OAuthApprove, OAuthClient, AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, ClientView, CostGroupBy, CostSummary, Dialect, DialectMode, KnownClient, Service, ServiceAIConfig, ToolSource, ToolSourceCreate, ToolSourceUpdate, ToolSourceTool, ToolSourceToolUpdate, ToolSyncResult, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule, TcpSettings, TcpHostname, TcpLimits } from "@/lib/contract";
 
 const json = (body: unknown, status = 200) => HttpResponse.json(body as object, { status });
 const err = (status: number, message: string) => HttpResponse.json({ error: message }, { status });
@@ -86,6 +86,30 @@ function holds(...perms: string[]): boolean {
 function canConfigure(svc: { user_id: string }): boolean {
   if (holds("services:configure:any")) return true;
   return svc.user_id === db.me.id;
+}
+
+// The tcp service a /services/{id}/tcp-* route is about, or the answer that says why not.
+function tcpService(id: string): ServiceRow | Response {
+  const svc = db.services.find((s) => s.id === id);
+  if (!svc || !canConfigure(svc)) return err(404, "service not found");
+  if (svc.type !== "tcp") return err(409, "this setting applies to tcp services only");
+  return svc;
+}
+function tcpSettingsOf(id: string): TcpSettings {
+  return db.tcpSettings[id] ?? { proxy_protocol: "", idle_timeout_s: 0, client_proxy_protocol: "", client_proxy_supported: true };
+}
+function tcpHostnameOf(svc: ServiceRow): TcpHostname {
+  const custom = db.tcpHostnames[svc.id] ?? "";
+  const hostnames = [...(svc.slug ? [`${svc.slug}.tcp.example.com`] : []), ...(custom ? [custom] : [])];
+  return { tcp_hostname: custom, hostnames, passthrough: db.tlsPassthrough, reachable: db.tlsPassthrough && svc.access_mode !== "private" && hostnames.length > 0 };
+}
+function tcpLimitsOf(id: string): TcpLimits {
+  const l = db.tcpLimits[id] ?? {
+    rate_limit_kbps: 0, daily_bytes: 0,
+    autoban: { enabled: false, short_s: 3, count: 10, window_min: 10, ban_min: 60 },
+    usage_today: { day: "2026-10-24", bytes_in: 0, bytes_out: 0, bytes: 0 }, quota_reached: false,
+  };
+  return { ...l, quota_reached: l.daily_bytes > 0 && l.usage_today.bytes >= l.daily_bytes };
 }
 
 // Parse via text()+JSON.parse rather than req.json(): under jsdom/undici the
@@ -848,7 +872,23 @@ export const handlers = [
   }),
   http.post("/api/v1/services", async ({ request }) => {
     const g = gate(request, { admin: true }); if (g) return g;
-    const b = await body<{ service_id?: string; title?: string; access_mode?: string; slug?: string }>(request);
+    const b = await body<{ type?: string; name?: string; service_id?: string; title?: string; access_mode?: string; slug?: string; tcp_port?: number; proxy_protocol?: string; idle_timeout_s?: number }>(request);
+    if (b?.type === "tcp") {
+      const name = b.name ?? "";
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) return err(400, "name must be 1 to 64 characters: letters, digits, dot, underscore, hyphen");
+      const mode = b.access_mode || "private";
+      if (!["open", "ip", "private"].includes(mode)) return err(400, "access_mode of a tcp service must be one of: open, ip, private");
+      if (b.tcp_port !== undefined && (b.tcp_port < 9000 || b.tcp_port > 9100)) return err(400, "tcp_port must be 9000 to 9100");
+      if (b.proxy_protocol && b.proxy_protocol !== "v2") return err(400, 'proxy_protocol must be "" (none) or "v2"');
+      if (b.idle_timeout_s !== undefined && b.idle_timeout_s !== 0 && (b.idle_timeout_s < 60 || b.idle_timeout_s > 86400)) return err(400, "idle_timeout_s must be 0 (never) or 60 to 86400");
+      if (db.services.some((s) => s.type === "tcp" && s.user_id === db.me.id && s.name === name)) return err(409, "a tcp service of that name already exists");
+      if (b.tcp_port !== undefined && db.services.some((s) => s.type === "tcp" && s.remote_port === b.tcp_port)) return err(409, "tcp_port is held by another service");
+      const id = `svc_${Math.random().toString(36).slice(2, 10)}`;
+      const slug = Math.random().toString(36).slice(2, 8);
+      db.services.push({ id, user_id: db.me.id, name, type: "tcp", slug, url: "", access_mode: mode as AccessMode, api_key_header: "Authorization", gateway_only: false, connected: false, remote_port: mode === "private" ? 0 : (b.tcp_port ?? 0), local_addr: "" });
+      if (b.proxy_protocol || b.idle_timeout_s) db.tcpSettings[id] = { ...tcpSettingsOf(id), proxy_protocol: (b.proxy_protocol ?? "") as "" | "v2", idle_timeout_s: b.idle_timeout_s ?? 0 };
+      return json({ id, slug, created_at: new Date().toISOString() }, 201);
+    }
     const id = (b?.service_id ?? "").trim();
     if (!/^[a-z0-9_-]{3,64}$/.test(id)) return err(400, "service_id must match ^[a-z0-9_-]{3,64}$");
     const modeMap: Record<string, string> = { "": "open", public: "open", open: "open", api_key: "api_key", burrow_login: "burrow_login" };
@@ -1341,7 +1381,8 @@ export const handlers = [
     const svc = db.services.find((s) => s.id === params.id);
     if (!svc) return err(404, "service not found");
     if (svc.type === "tcp") {
-      return json(db.tcpIpGeo[svc.id] ?? { enabled: false, allow_cidrs: [], block_cidrs: [], allow_countries: [], block_countries: [] });
+      const cur = db.tcpIpGeo[svc.id] ?? { enabled: false, allow_cidrs: [], block_cidrs: [], allow_countries: [], block_countries: [] };
+      return json({ ...cur, country_rules_enforced: db.geoDatabase || (cur.allow_countries.length === 0 && cur.block_countries.length === 0) });
     }
     const cfg = db.aiConfigs[svc.id];
     return json(
@@ -1358,6 +1399,14 @@ export const handlers = [
     if (svc.type === "tcp") {
       for (const c of [...b.allow_cidrs, ...b.block_cidrs]) {
         if (!/^[0-9.]+(\/\d{1,2})?$|^[0-9a-f:]+(\/\d{1,3})?$/i.test(c)) return err(400, `invalid cidr "${c}"`);
+      }
+      const before = db.tcpIpGeo[svc.id];
+      const adds = (cur: string[] = [], next: string[]) => next.some((c) => !cur.includes(c));
+      if (!db.geoDatabase && (adds(before?.allow_countries, b.allow_countries) || adds(before?.block_countries, b.block_countries))) {
+        return err(400, "country rules need a GeoIP database: no GeoLite2-Country .mmdb is configured; set BURROW_GEOIP_DB to its path and restart, or save the rules without new countries");
+      }
+      for (const c of [...b.allow_countries, ...b.block_countries]) {
+        if (!/^[A-Za-z]{2}$/.test(c)) return err(400, `invalid country entry "${c}": use a two-letter country code`);
       }
       db.tcpIpGeo[svc.id] = b;
       return noContent();
@@ -1427,7 +1476,91 @@ export const handlers = [
     return noContent();
   }),
   http.get("/api/v1/geo/status", ({ request }) =>
-    gate(request) ?? json({ enabled: true, db_path: "/var/burrow/geoip.mmdb", db_age_seconds: 3600 })),
+    gate(request) ?? json(db.geoDatabase
+      ? { enabled: true, configured: true, db_path: "/var/burrow/geoip.mmdb", db_age_seconds: 3600, rules_not_enforced: 0 }
+      : { enabled: false, configured: false, db_path: "", db_age_seconds: null, rules_not_enforced: 0 })),
+
+  // ---- tcp complete: settings, host name, limits and bans of a tcp service ----
+  http.get("/api/v1/services/:id/tcp-settings", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = tcpService(params.id as string); if (svc instanceof Response) return svc;
+    return json(tcpSettingsOf(svc.id));
+  }),
+  http.put("/api/v1/services/:id/tcp-settings", async ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = tcpService(params.id as string); if (svc instanceof Response) return svc;
+    const b = await body<{ proxy_protocol?: string; idle_timeout_s?: number }>(request);
+    if (!b || (b.proxy_protocol === undefined && b.idle_timeout_s === undefined)) return err(400, "proxy_protocol or idle_timeout_s is required");
+    if (b.proxy_protocol !== undefined && b.proxy_protocol !== "" && b.proxy_protocol !== "v2") return err(400, 'proxy_protocol must be "" (none) or "v2"');
+    if (b.idle_timeout_s !== undefined && b.idle_timeout_s !== 0 && (b.idle_timeout_s < 60 || b.idle_timeout_s > 86400)) return err(400, "idle_timeout_s must be 0 (never) or 60 to 86400");
+    const cur = tcpSettingsOf(svc.id);
+    db.tcpSettings[svc.id] = { ...cur, proxy_protocol: (b.proxy_protocol ?? cur.proxy_protocol) as "" | "v2", idle_timeout_s: b.idle_timeout_s ?? cur.idle_timeout_s };
+    return json(db.tcpSettings[svc.id]);
+  }),
+  http.get("/api/v1/services/:id/tcp-hostname", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = tcpService(params.id as string); if (svc instanceof Response) return svc;
+    return json(tcpHostnameOf(svc));
+  }),
+  http.put("/api/v1/services/:id/tcp-hostname", async ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = tcpService(params.id as string); if (svc instanceof Response) return svc;
+    const b = await body<{ tcp_hostname?: string }>(request);
+    if (b?.tcp_hostname === undefined) return err(400, "tcp_hostname is required");
+    const name = b.tcp_hostname.trim().toLowerCase();
+    if (name !== "" && !holds("services:configure:any")) return err(403, "a custom host name needs services:configure:any; the service is reached by its slug name");
+    if (name !== "" && !/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(name)) return err(400, "tcp_hostname must be a host name such as rdp.example.com");
+    if (Object.entries(db.tcpHostnames).some(([id, h]) => id !== svc.id && h === name && name !== "")) return err(409, "tcp_hostname is used by another service");
+    db.tcpHostnames[svc.id] = name;
+    return json(tcpHostnameOf(svc));
+  }),
+  http.get("/api/v1/services/:id/tcp-limits", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = tcpService(params.id as string); if (svc instanceof Response) return svc;
+    return json(tcpLimitsOf(svc.id));
+  }),
+  http.put("/api/v1/services/:id/tcp-limits", async ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = tcpService(params.id as string); if (svc instanceof Response) return svc;
+    const b = await body<{ rate_limit_kbps?: number; daily_bytes?: number; autoban?: Partial<TcpLimits["autoban"]> }>(request);
+    if (!b || (b.rate_limit_kbps === undefined && b.daily_bytes === undefined && b.autoban === undefined)) return err(400, "rate_limit_kbps, daily_bytes or autoban is required");
+    if (b.rate_limit_kbps !== undefined && b.rate_limit_kbps !== 0 && (b.rate_limit_kbps < 64 || b.rate_limit_kbps > 10_000_000)) return err(400, "rate_limit_kbps must be 0 (none) or 64 to 10000000");
+    if (b.daily_bytes !== undefined && b.daily_bytes < 0) return err(400, "daily_bytes must not be negative");
+    if (b.autoban?.count !== undefined && (b.autoban.count < 2 || b.autoban.count > 100)) return err(400, "autoban.count must be 2 to 100 connections");
+    const cur = tcpLimitsOf(svc.id);
+    db.tcpLimits[svc.id] = {
+      ...cur,
+      rate_limit_kbps: b.rate_limit_kbps ?? cur.rate_limit_kbps,
+      daily_bytes: b.daily_bytes ?? cur.daily_bytes,
+      autoban: { ...cur.autoban, ...(b.autoban ?? {}) },
+    };
+    return json(tcpLimitsOf(svc.id));
+  }),
+  http.get("/api/v1/services/:id/tcp-bans", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = tcpService(params.id as string); if (svc instanceof Response) return svc;
+    return json(db.tcpBans[svc.id] ?? []);
+  }),
+  http.post("/api/v1/services/:id/tcp-bans", async ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = tcpService(params.id as string); if (svc instanceof Response) return svc;
+    const b = await body<{ source?: string; ban_min?: number; note?: string }>(request);
+    if (!b?.source || !/^[0-9a-f.:]+(\/\d{1,3})?$/i.test(b.source.trim())) return err(400, "source must be an IP address");
+    if (!Number.isInteger(b.ban_min) || b.ban_min! < 1 || b.ban_min! > 43200) return err(400, "ban_min must be 1 to 43200");
+    const ban = { source: b.source.trim(), until: new Date(Date.now() + b.ban_min! * 60_000).toISOString(), reason: b.note ? `manual: ${b.note}` : "manual", auto: false, created_at: new Date().toISOString() };
+    db.tcpBans[svc.id] = [...(db.tcpBans[svc.id] ?? []).filter((x) => x.source !== ban.source), ban];
+    return json(ban, 201);
+  }),
+  http.delete("/api/v1/services/:id/tcp-bans", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    const svc = tcpService(params.id as string); if (svc instanceof Response) return svc;
+    const source = new URL(request.url).searchParams.get("source");
+    if (!source) return err(400, "source is required");
+    const list = db.tcpBans[svc.id] ?? [];
+    if (!list.some((x) => x.source === source)) return err(404, "no ban of that source");
+    db.tcpBans[svc.id] = list.filter((x) => x.source !== source);
+    return noContent();
+  }),
 
   // ---- v0.4.0 guardrails & redaction (spec §4.22) ----
   http.get("/api/v1/redaction/rules", ({ request }) =>

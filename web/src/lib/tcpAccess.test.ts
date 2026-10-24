@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   ACCESS_LABEL, forwardCommand, isAddrOrCidr, matchTcpService, restrictiveness, localPort, riskyPort, widenCidr, remaining, FORWARD_LOCAL_PORT,
+  protocolLabel, reasonText, countryCode,
 } from "@/lib/tcpAccess";
 
 describe("tcp access helpers", () => {
@@ -82,5 +83,25 @@ describe("tcp access helpers", () => {
       expect(matchTcpService([{ id: "h", name: "rdp", type: "http" as const }], { name: "rdp", type: "tcp" })).toBeUndefined();
       expect(matchTcpService([svc("a", "rdp")], { name: "x", type: "tcp" })).toBeUndefined();
     });
+  });
+});
+
+describe("tcp complete helpers", () => {
+  it("names the protocols and the refusal reasons", () => {
+    expect(protocolLabel("tls")).toBe("TLS");
+    expect(protocolLabel("rdp")).toBe("RDP");
+    expect(protocolLabel("")).toBe("");
+    expect(protocolLabel(undefined)).toBe("");
+    expect(reasonText("banned")).toBe("banned source");
+    expect(reasonText("quota")).toBe("daily volume reached");
+    expect(reasonText("idle_timeout")).toBe("idle timeout");
+    expect(reasonText("proxy_unsupported")).toMatch(/PROXY/);
+    expect(reasonText("no_stream")).toBe("no_stream");
+  });
+
+  it("reads a country code", () => {
+    expect(countryCode(" de ")).toBe("DE");
+    expect(countryCode("DEU")).toBeNull();
+    expect(countryCode("1a")).toBeNull();
   });
 });

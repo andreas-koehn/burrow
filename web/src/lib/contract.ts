@@ -109,7 +109,14 @@ export interface ServiceConnection {
   since: string;
   bytes_in: number;
   bytes_out: number;
+  /** What the first bytes looked like; absent on a relay that predates it, "" until they came. */
+  protocol?: ConnectionProtocol | "";
+  /** The TLS server name of the ClientHello; "" when there was none. */
+  sni?: string;
 }
+
+/** What the relay's first-bytes classifier made of a connection. */
+export type ConnectionProtocol = "tls" | "ssh" | "rdp" | "http" | "unknown";
 
 /** GET /client/discovery: what a client may know before it has a token. Public. */
 export interface ClientDiscovery {
@@ -440,6 +447,81 @@ export interface IpGeoConfig {
   block_cidrs: string[];
   allow_countries: string[];
   block_countries: string[];
+  /** False while the country lists hold a country and no GeoIP database is loaded. Absent on an older relay. */
+  country_rules_enforced?: boolean;
+}
+
+/** GET /geo/status. */
+export interface GeoStatus {
+  enabled: boolean;
+  /** A database path is set (BURROW_GEOIP_DB). Absent on an older relay. */
+  configured?: boolean;
+  db_path: string;
+  db_age_seconds: number | null;
+  error?: string;
+  /** How many services have country rules that nothing enforces. */
+  rules_not_enforced?: number;
+}
+
+/** GET and PUT /services/{id}/tcp-settings. */
+export interface TcpSettings {
+  proxy_protocol: "" | "v2";
+  /** 0 is never; otherwise 60 to 86400 seconds. */
+  idle_timeout_s: number;
+  /** "v2" while the serving client writes the header by its own configuration. */
+  client_proxy_protocol: "" | "v2";
+  /** Whether the serving client can write the header; null while none serves the service. */
+  client_proxy_supported: boolean | null;
+}
+
+/** GET /services/{id}/tcp-hostname. */
+export interface TcpHostname {
+  tcp_hostname: string;
+  /** The names that reach the service on the passthrough listener. */
+  hostnames: string[];
+  /** The relay has a passthrough listener. */
+  passthrough: boolean;
+  /** A name reaches the service now: passthrough, a mode open or ip, and a name. */
+  reachable: boolean;
+}
+
+export interface TcpAutoBan {
+  enabled: boolean;
+  short_s: number;
+  count: number;
+  window_min: number;
+  ban_min: number;
+}
+
+/** GET and PUT /services/{id}/tcp-limits. */
+export interface TcpLimits {
+  /** 0 is no limit. Each direction has its own bucket. */
+  rate_limit_kbps: number;
+  /** In plus out per UTC day; 0 is no limit. */
+  daily_bytes: number;
+  autoban: TcpAutoBan;
+  usage_today: { day: string; bytes_in: number; bytes_out: number; bytes: number };
+  quota_reached: boolean;
+}
+
+/** One active ban of a tcp service (GET /services/{id}/tcp-bans). */
+export interface TcpBan {
+  source: string;
+  until: string;
+  reason: string;
+  /** Set by the relay's automatic ban. */
+  auto: boolean;
+  created_at: string;
+}
+
+/** POST /services with type "tcp". */
+export interface CreateTcpServiceInput {
+  type: "tcp";
+  name: string;
+  access_mode?: TcpAccessMode;
+  tcp_port?: number;
+  proxy_protocol?: "" | "v2";
+  idle_timeout_s?: number;
 }
 export interface MtlsConfig {
   enabled: boolean;
@@ -946,6 +1028,9 @@ export interface ConnectionLog {
   reason: string;
   /** The client token name of the user who forwards (kind tcp_forward); "" otherwise. Absent on an older relay. */
   token_name?: string;
+  /** What the first bytes of a tcp connection looked like, and its TLS server name. Absent on an older relay. */
+  protocol?: ConnectionProtocol | "";
+  sni?: string;
 }
 
 // ConnectionLogRollupTopIP — one (ip, sessions) entry from the per-rollup

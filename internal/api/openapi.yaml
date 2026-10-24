@@ -3758,6 +3758,16 @@ paths:
         Client-side `RegisterService` continues to upsert against the same
         row when the client subsequently connects with the same `service_id`.
 
+        With `type: tcp` it creates a tcp service instead, before any client
+        runs `burrow tcp <port> --name <name>`: `name` is required (the name
+        the client registers; `service_id`, `title` and `slug` are not used),
+        `access_mode` is `open`, `ip` or `private` (default `private`),
+        `tcp_port` pins the public port (inside the relay's port range; no
+        other service may hold it, 409 otherwise) and `proxy_protocol` and
+        `idle_timeout_s` are the first settings. The answer's `id` is the
+        service id and `slug` its generated one. The owner is the caller. The
+        audit payload also names the type, the port and the settings.
+
         Not a tool of the management MCP server (`/mcp/burrow`): it sets the new service's access mode, and an agent steered by untrusted text must not widen access.
       requestBody:
         required: true
@@ -3765,15 +3775,19 @@ paths:
           application/json:
             schema:
               type: object
-              required: [service_id]
               properties:
-                service_id:  { type: string, pattern: '^[a-z0-9_-]{3,64}$' }
+                type:        { type: string, enum: [http, tcp], default: http }
+                service_id:  { type: string, pattern: '^[a-z0-9_-]{3,64}$', description: Required for http. }
                 title:       { type: string, maxLength: 120 }
-                access_mode: { type: string, enum: [public, open, api_key, burrow_login] }
+                access_mode: { type: string, enum: [public, open, api_key, burrow_login, ip, private], description: 'http takes public, open, api_key, burrow_login; tcp takes open, ip, private (default private).' }
                 slug:
                   type: string
                   pattern: '^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$'
                   description: Optional. Generated when the client first connects if omitted.
+                name:           { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$', description: Required for tcp. }
+                tcp_port:       { type: integer, description: 'tcp only: pins the public port.' }
+                proxy_protocol: { type: string, enum: ['', v2], description: 'tcp only.' }
+                idle_timeout_s: { type: integer, description: 'tcp only: 0 (never) or 60 to 86400.' }
       responses:
         '201':
           description: Service row created.

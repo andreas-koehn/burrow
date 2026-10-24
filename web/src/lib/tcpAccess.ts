@@ -1,4 +1,4 @@
-import type { AccessMode } from "@/lib/contract";
+import type { AccessMode, TcpAccessMode } from "@/lib/contract";
 
 export const ACCESS_LABEL: Record<AccessMode, string> = {
   open: "Open",
@@ -127,4 +127,54 @@ export function matchTcpService<S extends ServiceRef>(services: readonly S[], tu
   if (tunnel.type !== "tcp") return undefined;
   const named = services.filter((s) => s.type === "tcp" && s.name === tunnel.name);
   return named.length === 1 ? named[0] : undefined;
+}
+
+/** What the relay's first-bytes classifier calls a connection, as it is shown. */
+export const PROTOCOL_LABEL: Record<string, string> = {
+  tls: "TLS",
+  ssh: "SSH",
+  rdp: "RDP",
+  http: "HTTP",
+  unknown: "Unknown",
+};
+
+/** The text of a protocol label; "" while none was recognised (or the relay predates it). */
+export function protocolLabel(protocol: string | undefined): string {
+  return protocol ? PROTOCOL_LABEL[protocol] ?? protocol : "";
+}
+
+/** The connection-log reasons of a tcp connection that ended or was refused by a rule, in words. */
+export const TCP_REASON: Record<string, string> = {
+  banned: "banned source",
+  quota: "daily volume reached",
+  idle_timeout: "idle timeout",
+  proxy_unsupported: "client cannot send the PROXY header",
+};
+
+/** A reason as the log shows it: a known one in words, any other as the relay wrote it. */
+export function reasonText(reason: string): string {
+  return TCP_REASON[reason] ?? reason;
+}
+
+/** The ISO country code a reader typed, or null when it is not two letters. */
+export function countryCode(text: string): string | null {
+  const c = text.trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(c) ? c : null;
+}
+
+/** The three access modes of a tcp service, as the pages offer them. */
+export const MODES: { value: TcpAccessMode; title: string; help: string }[] = [
+  { value: "open", title: "Open", help: "A public port that anyone on the internet can connect to. Burrow adds no authentication." },
+  { value: "ip", title: "IP allowlist", help: "A public port that only the addresses you list, or allow for a few hours, can connect to. Everyone else is closed out before your machine hears of it." },
+  { value: "private", title: "Private", help: "No public port. Reachable only through burrow forward, by you and the roles you allow." },
+];
+
+/** `burrow tcp` for a service created in the dashboard: it finds the service by its name and serves it in the mode stored. */
+export function tcpClientCommand(name: string, localPort: string): string {
+  return `burrow tcp ${localPort.trim() || "<port>"} --name ${name}`;
+}
+
+/** The same service as an entry of burrow.yaml (`burrow up`). */
+export function tcpClientYaml(name: string, localPort: string): string {
+  return `services:\n  - name: ${name}\n    type: tcp\n    local: 127.0.0.1:${localPort.trim() || "<port>"}`;
 }

@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { RelativeTime } from "@/components/RelativeTime";
+import { protocolLabel, reasonText } from "@/lib/tcpAccess";
 import type { ConnectionLog } from "@/lib/contract";
 
 const STATUS: Record<ConnectionLog["status"], string> = {
@@ -54,7 +55,7 @@ export function TcpConnectionsPanel({ serviceId }: { serviceId: string }) {
         <div className="table-wrap">
           <table className="table" aria-label="Connections of this service">
             <thead>
-              <tr><th>Source</th><th>Started</th><th>Duration</th><th>Traffic</th><th>Result</th></tr>
+              <tr><th>Source</th><th>Protocol</th><th>Host name</th><th>Started</th><th>Duration</th><th>Traffic</th><th>Result</th></tr>
             </thead>
             <tbody>
               {rows.map((r) => (
@@ -65,13 +66,15 @@ export function TcpConnectionsPanel({ serviceId }: { serviceId: string }) {
                       <span className="muted small"> · Forward{r.token_name ? ` · ${r.token_name}` : ""}</span>
                     )}
                   </td>
+                  <td>{protocolLabel(r.protocol) || "—"}</td>
+                  <td className="mono">{r.sni || "—"}</td>
                   <td><RelativeTime value={r.started_at} /></td>
                   <td>{r.status === "rejected" ? "—" : duration(r.duration_ms)}</td>
                   <td>
                     <span title={`In: ${r.bytes_in} bytes`}>↓ {formatBytes(r.bytes_in)}</span>{"  "}
                     <span title={`Out: ${r.bytes_out} bytes`}>↑ {formatBytes(r.bytes_out)}</span>
                   </td>
-                  <td>{STATUS[r.status] ?? r.status}{r.reason ? ` (${r.reason})` : ""}</td>
+                  <td>{STATUS[r.status] ?? r.status}{r.reason ? ` (${reasonText(r.reason)})` : ""}</td>
                 </tr>
               ))}
             </tbody>

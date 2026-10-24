@@ -10,15 +10,14 @@ import { IPGeoPanel } from "@/components/IPGeoPanel";
 import { TcpConnectionsPanel } from "@/components/TcpConnectionsPanel";
 import { TcpLiveConnectionsPanel } from "@/components/TcpLiveConnectionsPanel";
 import { TcpGrantsPanel } from "@/components/TcpGrantsPanel";
+import { TcpSettingsPanel } from "@/components/TcpSettingsPanel";
+import { TcpHostnamePanel } from "@/components/TcpHostnamePanel";
+import { TcpCountriesPanel } from "@/components/TcpCountriesPanel";
+import { TcpLimitsPanel } from "@/components/TcpLimitsPanel";
+import { TcpBansPanel } from "@/components/TcpBansPanel";
 import { useRelayHost } from "@/lib/useRelayHost";
-import { ACCESS_LABEL, FORWARD_LOCAL_PORT, RISKY_PORTS, forwardCommand, restrictiveness, riskyPort, localPort } from "@/lib/tcpAccess";
+import { ACCESS_LABEL, MODES, FORWARD_LOCAL_PORT, RISKY_PORTS, forwardCommand, restrictiveness, riskyPort, localPort } from "@/lib/tcpAccess";
 import type { Service, TcpAccessMode } from "@/lib/contract";
-
-const MODES: { value: TcpAccessMode; title: string; help: string }[] = [
-  { value: "open", title: "Open", help: "A public port that anyone on the internet can connect to. Burrow adds no authentication." },
-  { value: "ip", title: "IP allowlist", help: "A public port that only the addresses you list, or allow for a few hours, can connect to. Everyone else is closed out before your machine hears of it." },
-  { value: "private", title: "Private", help: "No public port. Reachable only through burrow forward, by you and the roles you allow." },
-];
 
 function asTcpMode(m: Service["access_mode"]): TcpAccessMode {
   return m === "ip" || m === "private" ? m : "open";
@@ -113,7 +112,11 @@ export function TcpAccessPanel({ service }: { service: Service }) {
 
       <ConnectCard service={service} mode={saved} />
 
+      {canConfigure && <TcpHostnamePanel serviceId={service.id} mode={saved} />}
+      {canConfigure && <TcpSettingsPanel serviceId={service.id} />}
+
       {saved === "ip" && canAddresses && <IPGeoPanel serviceId={service.id} tcp />}
+      {saved !== "private" && canAddresses && <TcpCountriesPanel serviceId={service.id} />}
       {saved === "ip" && canAddresses && <TcpGrantsPanel serviceId={service.id} />}
       {saved === "ip" && !canAddresses && (
         <p className="muted small">Managing the allowed addresses and grants needs the ipgeo:manage permission.</p>
@@ -124,6 +127,9 @@ export function TcpAccessPanel({ service }: { service: Service }) {
           <AccessPolicyEditor serviceId={service.id} forward />
         </section>
       )}
+
+      {canConfigure && <TcpLimitsPanel serviceId={service.id} />}
+      {canConfigure && <TcpBansPanel serviceId={service.id} />}
 
       {canConfigure && <TcpLiveConnectionsPanel serviceId={service.id} />}
       <TcpConnectionsPanel serviceId={service.id} />

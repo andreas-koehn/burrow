@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "@/mocks/test-utils";
 import { http, HttpResponse } from "msw";
@@ -112,5 +112,88 @@ describe("Services list: tcp services", () => {
     const table = await screen.findByRole("table", { name: "Services" });
     const link = await within(table).findByRole("link", { name: "rdp" });
     expect(link).toHaveAttribute("href", "/services/svc_rdp02");
+  });
+});
+
+describe("New service: a tcp service", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  async function openTcp() {
+    renderApp(<Services />, "/services");
+    await userEvent.click(await screen.findByRole("button", { name: "New service" }));
+    const dialog = await screen.findByRole("dialog", { name: "New service" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create a TCP service instead" }));
+    return screen.findByRole("dialog", { name: "New TCP service" });
+  }
+  const posts = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls
+      .filter(([u, i]) => String(u).endsWith("/api/v1/services") && (i as RequestInit | undefined)?.method === "POST")
+      .map(([, i]) => JSON.parse(String((i as RequestInit).body)));
+
+  it("offers the other kind as a button in each dialog, and the dialog opens on no choice", async () => {
+    renderApp(<Services />, "/services");
+    await userEvent.click(await screen.findByRole("button", { name: "New service" }));
+    const web = await screen.findByRole("dialog", { name: "New service" });
+    expect(within(web).queryByRole("radiogroup")).toBeNull();
+    await userEvent.click(within(web).getByRole("button", { name: "Create a TCP service instead" }));
+    const tcp = await screen.findByRole("dialog", { name: "New TCP service" });
+    await userEvent.click(within(tcp).getByRole("button", { name: "Create a web service instead" }));
+    expect(await screen.findByRole("dialog", { name: "New service" })).toBeInTheDocument();
+  });
+
+  it("creates a private service by default and then shows the command to run", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    const dialog = await openTcp();
+    expect(within(dialog).getByRole("radio", { name: "Private" })).toBeChecked();
+    expect(within(dialog).queryByLabelText("Public port")).toBeNull();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "rdp-office");
+    await userEvent.type(within(dialog).getByLabelText("Port of the local service"), "3389");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(posts(spy)).toEqual([{ type: "tcp", name: "rdp-office", access_mode: "private" }]));
+    expect(await within(dialog).findByText("burrow tcp 3389 --name rdp-office")).toBeInTheDocument();
+    expect(dialog).toHaveTextContent(/type: tcp/);
+    expect(dialog).toHaveTextContent(/local: 127\.0\.0\.1:3389/);
+    expect(db.services.some((s) => s.name === "rdp-office" && s.type === "tcp" && s.access_mode === "private")).toBe(true);
+    expect(within(dialog).getByRole("link", { name: "Open the service" })).toHaveAttribute("href", expect.stringMatching(/^\/services\/svc_/));
+  });
+
+  it("takes a mode and a fixed public port, and warns for open", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    const dialog = await openTcp();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "ssh-box");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "Open" }));
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(/anyone on the internet/i);
+    await userEvent.click(within(dialog).getByRole("radio", { name: "IP allowlist" }));
+    await userEvent.type(within(dialog).getByLabelText("Public port"), "9042");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(posts(spy)).toEqual([{ type: "tcp", name: "ssh-box", access_mode: "ip", tcp_port: 9042 }]));
+    expect(await within(dialog).findByText(/burrow tcp <port> --name ssh-box/)).toBeInTheDocument();
+  });
+
+  it("will not send a name with a space, nor create without a name", async () => {
+    const dialog = await openTcp();
+    const create = within(dialog).getByRole("button", { name: "Create" });
+    expect(create).toBeDisabled();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "my service");
+    expect(create).toBeDisabled();
+  });
+
+  it("shows the relay's refusal at the field", async () => {
+    server.use(http.post("/api/v1/services", () => HttpResponse.json({ error: "tcp_port is held by another service" }, { status: 409 })));
+    const dialog = await openTcp();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "ssh-box");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "IP allowlist" }));
+    await userEvent.type(within(dialog).getByLabelText("Public port"), "9042");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    expect(await within(dialog).findByText(/held by another service/)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Public port")).toHaveValue(9042);
+  });
+
+  it("says a name that exists already", async () => {
+    addTcp({ name: "rdp" });
+    const dialog = await openTcp();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "rdp");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    expect(await within(dialog).findByText(/already exists/)).toBeInTheDocument();
   });
 });

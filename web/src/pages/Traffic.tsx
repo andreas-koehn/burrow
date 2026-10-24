@@ -5,6 +5,7 @@ import { useUrlParams } from "@/lib/use-url-params";
 import { apiFetch, downloadFile } from "@/lib/api";
 import { formatTimestamp } from "@/lib/format";
 import { statusLabel } from "@/lib/status";
+import { protocolLabel, reasonText } from "@/lib/tcpAccess";
 import { parseTimeRange, timeRangeMs, widerRange, type TimeRange } from "@/lib/time-range";
 import { Button, Badge, EmptyState, InfoHint, PageHeader } from "@/components/ds";
 import { LogView, type LogColumn } from "@/components/LogView";
@@ -72,7 +73,9 @@ function LogDetail({ row, service }: { row: ConnectionLog; service: string }) {
     ["Service", service],
     ["Started", row.started_at],
     ["Ended", row.ended_at],
-    ["Reason", row.reason],
+    ["Reason", row.reason ? reasonText(row.reason) : ""],
+    ["Detected protocol", protocolLabel(row.protocol)],
+    ["TLS server name", row.sni ?? ""],
     ["User agent", row.user_agent],
     ["Client session", row.client_session_id],
     // The id of the live connection the service was served through.
@@ -168,7 +171,11 @@ export default function Traffic() {
     { id: "service", header: "Service", cell: (r) => serviceCell(r.service_id) },
     { id: "ip", header: "Client IP", cell: (r) => <span className="mono small">{r.source_ip}</span> },
     { id: "kind", header: "Protocol", cell: (r) => <span data-kind={r.kind}><Badge kind={kindClass(r.kind)}>{KIND_LABELS[r.kind]}</Badge></span> },
+    // What the first bytes of a tcp connection looked like, and the TLS server name it asked for.
+    { id: "detected", header: "Detected", cell: (r) => protocolLabel(r.protocol) || "—" },
+    { id: "sni", header: "SNI", cell: (r) => r.sni ? <span className="mono small">{r.sni}</span> : "—" },
     { id: "status", header: "Status", cell: (r) => <span data-status={r.status}><Badge kind={statusClass(r.status)}>{statusLabel(r.status)}</Badge></span> },
+    { id: "reason", header: "Reason", cell: (r) => r.reason ? reasonText(r.reason) : "—" },
     { id: "duration", header: "Duration", numeric: true, cell: (r) => <span className="mono small">{r.duration_ms}ms</span> },
     { id: "bytes", header: "Bytes", numeric: true, cell: (r) => <span className="mono small">{fmtBytes(r.bytes_in)} in / {fmtBytes(r.bytes_out)} out</span> },
   ];

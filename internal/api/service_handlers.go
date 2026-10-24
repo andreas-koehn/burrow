@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/ankoehn/burrow/internal/audit"
 	"github.com/ankoehn/burrow/internal/auth"
@@ -597,11 +598,22 @@ type setAccessPolicyReq struct {
 // REQUIRED and validated against serviceIDRe; title and access_mode are
 // optional (access_mode defaults to "public"). slug is optional too: when
 // omitted, one is generated the first time the client connects.
+//
+// With type "tcp" the row is a tcp service instead (postTCPService): name is
+// required, service_id, title and slug are not used, access_mode is one of
+// open, ip, private (default private), tcp_port pins the public port and
+// proxy_protocol and idle_timeout_s are its first settings.
 type postServiceReq struct {
 	ServiceID  string `json:"service_id"`
 	Title      string `json:"title,omitempty"`
 	AccessMode string `json:"access_mode,omitempty"`
 	Slug       string `json:"slug,omitempty"`
+	// Type is "http" (the default) or "tcp"; the fields below are tcp's.
+	Type          string `json:"type,omitempty"`
+	Name          string `json:"name,omitempty"`
+	TCPPort       *int   `json:"tcp_port,omitempty"`
+	ProxyProtocol string `json:"proxy_protocol,omitempty"`
+	IdleTimeoutS  *int   `json:"idle_timeout_s,omitempty"`
 }
 
 // serviceIDRe is the validation regex for the pre-provisioning service_id.
@@ -647,6 +659,20 @@ func (d Deps) PostService(w http.ResponseWriter, r *http.Request) {
 	var in postServiceReq
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	switch in.Type {
+	case "", "http":
+		if in.Name != "" || in.TCPPort != nil || in.ProxyProtocol != "" || in.IdleTimeoutS != nil {
+			writeErr(w, http.StatusBadRequest, "name, tcp_port, proxy_protocol and idle_timeout_s belong to type tcp")
+			return
+		}
+	case "tcp":
+		d.postTCPService(w, r, in)
+		return
+	default:
+		writeErr(w, http.StatusBadRequest, `type must be "http" or "tcp"`)
 		return
 	}
 
@@ -733,6 +759,110 @@ func (d Deps) PostService(w http.ResponseWriter, r *http.Request) {
 		"id":         row.ID,
 		"slug":       in.Slug,
 		"created_at": now.Format(time.RFC3339),
+	})
+}
+
+// tcpNameRe is what a tcp service may be called: the name `burrow tcp --name`
+// registers, which a forward and the yaml refer to.
+var tcpNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// postTCPService creates a tcp service before any client connects. It is the
+// row a registration of that name later finds: same owner (the caller), a
+// generated slug, the mode and, when asked for, a pinned port. The relay
+// holds the port for the service from the start, so no other service takes it.
+// Not an MCP tool, like the rest of the route: open and ip widen access.
+func (d Deps) postTCPService(w http.ResponseWriter, r *http.Request, in postServiceReq) {
+	if in.ServiceID != "" || in.Title != "" || in.Slug != "" {
+		writeErr(w, http.StatusBadRequest, "a tcp service takes name, not service_id, title or slug")
+		return
+	}
+	if !tcpNameRe.MatchString(in.Name) {
+		writeErr(w, http.StatusBadRequest, "name must be 1 to 64 characters: letters, digits, dot, underscore, hyphen")
+		return
+	}
+	mode := in.AccessMode
+	if mode == "" {
+		mode = "private"
+	}
+	if mode != "open" && mode != "ip" && mode != "private" {
+		writeErr(w, http.StatusBadRequest, "access_mode of a tcp service must be one of: open, ip, private")
+		return
+	}
+	row := db.Service{
+		ID: uuid.NewString(), UserID: userID(r.Context()), Name: in.Name, Type: "tcp", AccessMode: mode,
+		APIKeyHeader: "Authorization", ProxyProtocol: in.ProxyProtocol,
+	}
+	if in.TCPPort != nil {
+		p := *in.TCPPort
+		if d.TCPPortMax > 0 && (p < d.TCPPortMin || p > d.TCPPortMax) {
+			writeErr(w, http.StatusBadRequest, fmt.Sprintf("tcp_port must be %d to %d", d.TCPPortMin, d.TCPPortMax))
+			return
+		}
+		if p < 1 || p > 65535 {
+			writeErr(w, http.StatusBadRequest, "tcp_port must be a port number")
+			return
+		}
+		row.TCPPort, row.TCPPortPinned = p, true
+	}
+	if in.ProxyProtocol != "" && in.ProxyProtocol != "v2" {
+		writeErr(w, http.StatusBadRequest, `proxy_protocol must be "" (none) or "v2"`)
+		return
+	}
+	if in.IdleTimeoutS != nil {
+		n := *in.IdleTimeoutS
+		if n != 0 && (n < store.MinTCPIdleTimeoutS || n > store.MaxTCPIdleTimeoutS) {
+			writeErr(w, http.StatusBadRequest, "idle_timeout_s must be 0 (never) or 60 to 86400")
+			return
+		}
+		row.IdleTimeoutS = n
+	}
+	if d.Services == nil {
+		writeErr(w, http.StatusInternalServerError, "service store unavailable")
+		return
+	}
+	slug, err := auth.GenerateSlug()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	row.Subdomain = slug
+	row.CreatedAt = time.Now().UTC()
+	if err := d.Services.CreateService(r.Context(), row); err != nil {
+		switch {
+		case errors.Is(err, db.ErrTCPPortReserved):
+			writeErr(w, http.StatusConflict, "tcp_port is held by another service")
+		case errors.Is(err, db.ErrDuplicateService):
+			writeErr(w, http.StatusConflict, "a tcp service of that name already exists")
+		default:
+			writeErr(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	if d.AuditAppender != nil {
+		lc := audit.LogContextFrom(r.Context())
+		payload := map[string]any{"by_admin": true, "type": "tcp", "access_mode": mode}
+		if row.TCPPort != 0 {
+			payload["tcp_port"] = row.TCPPort
+		}
+		if row.ProxyProtocol != "" {
+			payload["proxy_protocol"] = row.ProxyProtocol
+		}
+		if in.IdleTimeoutS != nil {
+			payload["idle_timeout_s"] = row.IdleTimeoutS
+		}
+		_ = d.AuditAppender.Append(r.Context(), audit.Event{
+			ActorID: lc.ActorID, ActorEmail: lc.ActorEmail,
+			Action:    audit.ActionServiceCreate,
+			SubjectID: row.ID, SubjectLabel: row.Name,
+			Result:   "ok",
+			SourceIP: lc.SourceIP, UserAgent: lc.UserAgent, RequestID: lc.RequestID,
+			Payload: audit.MustJSON(payload),
+		})
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":         row.ID,
+		"slug":       slug,
+		"created_at": row.CreatedAt.Format(time.RFC3339),
 	})
 }
 

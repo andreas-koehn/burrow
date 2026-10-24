@@ -2940,6 +2940,33 @@ td.empty-cell { text-align: center; padding: 1rem 0; }
   font-family: var(--font-mono);
 }
 
+/* A chip with a button that removes it (country rules of a tcp service). */
+.chip .chip-remove {
+  margin-left: 2px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+.chip .chip-remove:hover { color: var(--destructive); }
+
+/* Usage bar: today's volume of a tcp service against its daily limit. */
+.usage-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--muted);
+  overflow: hidden;
+}
+.usage-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+}
+.usage-bar[data-level="warn"] > span { background: var(--warning); }
+.usage-bar[data-level="full"] > span { background: var(--destructive); }
+
 /* CertPemEditor — certificate + key PEM paste panel */
 .cert-pem-editor .cert-actions {
   display: flex;

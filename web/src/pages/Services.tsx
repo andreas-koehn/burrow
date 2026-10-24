@@ -18,6 +18,7 @@ import { serviceState, type ServedState } from "@/lib/status";
 import { SERVICE_ID_HINT, deriveServiceId, deriveSlug, serviceIdError } from "@/lib/slug";
 import { serviceUrl } from "@/lib/serviceUrl";
 import { useCan } from "@/auth/useCan";
+import { NewTcpServiceDialog } from "@/components/NewTcpServiceDialog";
 import { useServicesDomain } from "@/lib/useServicesDomain";
 import { P } from "@/auth/permissions";
 
@@ -219,6 +220,8 @@ export default function Services() {
   const [nsSlug, setNsSlug] = useState<string | null>(null);
   const [nsTitle, setNsTitle] = useState<string | null>(null);
   const [nsAccessMode, setNsAccessMode] = useState("open");
+  // A web service (the form below) or a tcp one (NewTcpServiceDialog).
+  const [nsKind, setNsKind] = useState<"web" | "tcp">("web");
   const [nsAdvanced, setNsAdvanced] = useState(false);
   // A field's own rule is shown once the field was left, not while it is typed in.
   const [nsNameLeft, setNsNameLeft] = useState(false);
@@ -297,6 +300,7 @@ export default function Services() {
 
   function closeNew() {
     setNewOpen(false);
+    setNsKind("web");
     setNsName("");
     setNsServiceId(null);
     setNsSlug(null);
@@ -351,6 +355,20 @@ export default function Services() {
       else setNsErr(e.message);
     },
   });
+
+  // Neither dialog opens on a choice between the two kinds (a dialog's default state stays short):
+  // each offers the other kind as a button.
+  const toTcp = (
+    <p className="muted small">
+      Serving Remote Desktop, SSH or a database?{" "}
+      <Button type="button" variant="ghost" size="sm" onClick={() => setNsKind("tcp")}>Create a TCP service instead</Button>
+    </p>
+  );
+  const toWeb = (
+    <p className="muted small">
+      <Button type="button" variant="ghost" size="sm" onClick={() => setNsKind("web")}>Create a web service instead</Button>
+    </p>
+  );
 
   // Online lists tunnels and only decorates them with the saved service: it fails on its own query alone.
   const failure = live ? tunnels.error : error;
@@ -562,8 +580,13 @@ export default function Services() {
       </Dialog>
 
       {/* P2-1 / P5.1 — new-service dialog */}
+      <NewTcpServiceDialog
+        open={newOpen && canCreate && nsKind === "tcp"}
+        onOpenChange={(o) => { if (!o) closeNew(); }}
+        kindSwitch={toWeb}
+      />
       <Dialog
-        open={newOpen && canCreate}
+        open={newOpen && canCreate && nsKind === "web"}
         onOpenChange={(o) => { if (!o) closeNew(); }}
         title="New service"
         description="Reserve a service and its address before a client serves it."
@@ -664,6 +687,7 @@ export default function Services() {
           </FormFieldGroup>
         </Disclosure>
         {nsErr && <ErrorNotice>{nsErr}</ErrorNotice>}
+        {toTcp}
       </Dialog>
       <Toaster />
     </div>

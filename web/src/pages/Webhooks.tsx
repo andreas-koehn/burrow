@@ -33,6 +33,9 @@ const WEBHOOK_EVENTS = [
   "service.deleted",
   "connection.session_summary",
   "custom_domain.cert.expiring",
+  // A tcp service banned a source by itself, or carried 80 % of its daily volume.
+  "tcp.banned",
+  "tcp.quota.warning",
 ];
 
 function copy(text: string) {

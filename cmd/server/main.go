@@ -1137,6 +1137,8 @@ func newRootCmd() *cobra.Command {
 				// What the tcp-hostname route says and refuses.
 				TCPDomain:      cfg.TCPDomain,
 				TLSPassthrough: cfg.TLSPassthroughListen != "",
+				// A fixed port given when a tcp service is created.
+				TCPPortMin: cfg.PortMin, TCPPortMax: cfg.PortMax,
 				// feat/builtin-acme B3: single-origin /svc/{slug} tunnel routing.
 				// proxyHandler is the hoisted host-routing proxy. The router
 				// mounts /svc/{slug} + /svc/{slug}/* on it via ServicePathHandler only
