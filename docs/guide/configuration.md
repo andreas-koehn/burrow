@@ -63,6 +63,9 @@ exercised. Switch back to the production CA (the default) when going live.
 | `BURROW_PUBLIC_BIND` | `0.0.0.0` | Network interface for TCP tunnel data ports. Only `open` and `ip` services open one; `private` services open none. |
 | `BURROW_PORT_MIN` | `9000` | Inclusive lower bound for auto-assigned TCP tunnel ports. |
 | `BURROW_PORT_MAX` | `9100` | Inclusive upper bound for auto-assigned TCP tunnel ports. |
+| `BURROW_TLS_PASSTHROUGH_LISTEN` | `""` | Opt-in listener (for example `:8444`) that routes TLS connections to tcp services by SNI, without terminating TLS. Empty = off. See [Reach it by host name](/guide/remote-desktop-and-tcp#reach-it-by-host-name-tls-passthrough). |
+| `BURROW_TCP_DOMAIN` | `""` | Base domain of the tcp services' host names: an `open` or `ip` service is reachable as `<slug>.<domain>` on the passthrough listener. Needs a wildcard DNS record. A bare host name, not the dashboard's host or a parent of it, and not the services host. |
+| `BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES` | `""` | Comma-separated CIDRs or IPs allowed to send a PROXY protocol v2 header to the passthrough listener (Traefik's address). Empty = no header is believed. From a listed address a header naming the visitor is required; from any other a header is refused. Never taken from `BURROW_TRUSTED_PROXIES`. |
 | `BURROW_TCP_PORTS_PER_USER` | `10` | How many public ports the TCP services of one user may hold (a port stays with its service across reconnects, also while it is offline). `0` = no limit. Administrators, and roles with `services:configure:any`, have no limit. Private services hold no port unless they were pinned with `--remote`. See [Remote desktop and other TCP services](/guide/remote-desktop-and-tcp#ports). |
 
 `BURROW_HTTP_PROXY_LISTEN` is empty by default. Set it (for example to `:8443`)
@@ -111,7 +114,15 @@ client IPs resolve correctly.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `BURROW_HTTP_SECURE_COOKIES` | `false` | Set `true` when TLS is terminated upstream. Without this, session cookies lack the `Secure` flag and browsers may reject them over HTTPS. |
-| `BURROW_TRUSTED_PROXIES` | `""` | Comma-separated CIDRs or IPs whose `X-Forwarded-For` / `X-Real-IP` headers are trusted. Empty = no forwarded headers trusted; all client IPs read directly from the connection. |
+| `BURROW_TRUSTED_PROXIES` | `""` | Comma-separated CIDRs or IPs whose `X-Forwarded-For` / `X-Real-IP` headers are trusted. Empty = no forwarded headers trusted; all client IPs read directly from the connection. It applies to the dashboard, `/svc/` and the host-routed ingress (`BURROW_HTTP_PROXY_LISTEN`). It does not apply to the TLS passthrough listener, which has its own list. |
+
+::: warning The host-routed ingress now uses the forwarded address
+With `BURROW_TRUSTED_PROXIES` set, the host-routed ingress (`:8443`) takes the
+visitor's address from `X-Forwarded-For` / `X-Real-IP` of a trusted peer, as
+`/svc/` always did. IP/geo rules, rate limits, logs and grants on `:8443`
+therefore see the forwarded visitor. If you set the list for the dashboard
+only, check that it fits the ingress too.
+:::
 
 ::: warning Cookie flag
 If the dashboard is served over HTTPS through a reverse proxy and
@@ -356,7 +367,8 @@ via environment:
 | `BURROW_MCP_LISTEN` | `""` | **No longer used.** Accepted and ignored with one warning at start, like `BURROW_MCP_LISTEN_FILE`. The MCP endpoint is `/mcp/burrow` on the main address and needs no setting. See [Manage Burrow from an agent](/guide/mcp#upgrade). |
 | `BURROW_MCP_TOKEN` | `""` | **No longer used.** Accepted and ignored with one warning at start. MCP clients send an [automation token](/guide/mcp#token). |
 | `BURROW_MCP_TOKEN_FILE` | `""` | **No longer used.** Accepted and ignored with the same warning. The file is not read and need not exist; this is the one `_FILE` variable that does not fail the start when its path is unreadable. |
-| `BURROW_GEO_DB_PATH` | `""` | Path to a MaxMind GeoLite2 `.mmdb` file. Required for the `geo` access mode (needs `-tags=geo` build). |
+| `BURROW_GEOIP_DB` | `""` | Path to a MaxMind-compatible GeoLite2-Country `.mmdb` file. Country allow and block lists of http and tcp services need it; without it an allow list denies everyone and a block list blocks no one, and adding a country to a list is refused. The file is checked every minute and loaded again when it changes (replace it by rename). See [Country rules](/guide/remote-desktop-and-tcp#country-rules). |
+| `BURROW_GEO_DB_PATH` | `""` | The older name of `BURROW_GEOIP_DB`. `BURROW_GEOIP_DB` wins when both are set. |
 | `BURROW_PRICING_PATH` | `""` | Path to a YAML file that overrides the embedded AI gateway pricing table. |
 | `BURROW_UPSTREAM_KEY_<SLOT>` | unset | The credential of an upstream API, stored under the slot name `<SLOT>`. A [direct AI provider](/guide/expose-services#direct-providers) names the slot it uses; the relay sends the value upstream and never returns it through the API or the dashboard. Slot names match `^[A-Z0-9_]{1,32}$` and must not end in `_FILE`. Read once at start: restart the relay after a change. Also accepts `BURROW_UPSTREAM_KEY_<SLOT>_FILE` (path of a file holding the value; wins when both are set). See the note on trust below. |
 | `BURROW_AI_ALLOW_PRIVATE_UPSTREAMS` | `false` | Lets direct AI providers use a base URL that resolves to a private, loopback or link-local address (a self-hosted model server on the LAN). Off = the relay refuses to connect to such addresses. Accepted values are Go boolean literals: `1`, `t`, `T`, `TRUE`, `true`, `True` to allow, `0`, `f`, `F`, `FALSE`, `false`, `False` to refuse; empty means `false`. Any other value, such as `yes` or `on`, is an error and the server does not start. |
@@ -493,6 +505,7 @@ services:
 | `services[].name` | Yes | — | Display name; shown in the dashboard. |
 | `services[].local` | Yes | — | Local address to forward traffic to, e.g. `127.0.0.1:3000`. |
 | `services[].type` | No | `tcp` | `http` or `tcp`. HTTP tunnels get a slug and a `/svc/<slug>/` URL; TCP tunnels get a port. |
+| `services[].proxy_protocol` | No | none | TCP only (`burrow up`). `v2`: write a PROXY protocol v2 header with the visitor's address before the first byte to the local target. Other values and http services are refused. `burrow connect --config` ignores it. |
 | `services[].remote` | No | `0` | TCP only. Requested public port. `0` = auto-assigned from `PORT_MIN`–`PORT_MAX`. |
 | `services[].slug` | No | — | `http` only. Path under `/svc/`. Used only when the service is created (`burrow up`). |
 | `services[].access` | No | none | `http`: `open`, `login` or `api-key`, used only when the service is created. `tcp`: `open`, `ip` or `private`. A tcp entry without `access` asks for nothing and keeps the stored mode; a new service created that way is `private` (`open` with `remote:`, and with clients older than v0.13.0). |

@@ -58,6 +58,7 @@ host-routed ingress (`BURROW_HTTP_PROXY_LISTEN`).
   | `443` | Dashboard, API, HTTP tunnels |
   | `7000` | Client control channel |
   | `9001` | Raw TCP tunnels (open only if you use them) |
+  | `8444` | TLS passthrough by host name (only with `BURROW_TLS_PASSTHROUGH_LISTEN`, see [TCP by host name](#tcp-by-host-name)) |
 
 - A domain name you control (e.g. `burrow.insingo.com`).
 
@@ -253,6 +254,32 @@ the first boot.
 :::
 
 ---
+
+## TCP by host name (optional) {#tcp-by-host-name}
+
+To reach tcp services by a host name on a shared TLS port, set
+`BURROW_TLS_PASSTHROUGH_LISTEN=:8444` and publish the port:
+
+```yaml
+    ports:
+      - "8444:8444"
+    environment:
+      BURROW_TLS_PASSTHROUGH_LISTEN: ":8444"
+      BURROW_TCP_DOMAIN: tcp.example.com   # optional; needs *.tcp.example.com in DNS
+```
+
+The relay reads the SNI of the first TLS record and does not terminate TLS.
+Only `open` and `ip` services are reachable this way. Open the port in the
+firewall. Do not set `BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES` unless a proxy
+in front sends a PROXY v2 header.
+
+**Behind Coolify (Traefik).** Traefik owns port 443. Give the Burrow service a
+TCP router with `HostSNI(...)`, `tls.passthrough=true` and a `proxyProtocol`
+version 2 to port 8444 instead of publishing the port, and set
+`BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES` to Traefik's address. The labels
+are in
+[Behind a proxy](/guide/remote-desktop-and-tcp#behind-a-proxy-coolify-and-traefik).
+Names that no TCP router matches still reach Coolify's HTTP routers.
 
 ## 7. Testing without hitting Let's Encrypt rate limits
 

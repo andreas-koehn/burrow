@@ -320,10 +320,16 @@ guardrail and redaction settings and rules, a service's AI config, the
 retention settings, a service's gateway-only switch, creating or changing a
 tool source or approving its tools, registering an OAuth client, creating a
 service (it sets the access mode), a service's or tunnel's access mode, a
-tcp service's settings (its PROXY protocol header and idle timeout), changing a gateway key, minting a client token or a
+tcp service's settings (its PROXY protocol header and idle timeout), its
+custom host name, its limits (bandwidth, daily volume, auto-ban) and lifting a
+ban, changing a gateway key, minting a client token or a
 service API key, creating, changing and deleting users and roles, and
 creating or changing a synthetic model (its `system_text` reaches other
-users' requests). Their reads stay tools. Make these changes in the dashboard
+users' requests). Their reads stay tools: an agent can read a tcp service's
+settings, host name, limits with today's usage, and its bans. **Banning a source
+by hand stays a tool** (`serviceTcpBanCreate`, through the generic tools): it
+only narrows who can connect, for at most 30 days, and never affects a
+forward. Lifting a ban does not. Make these changes in the dashboard
 or with the REST API. The full list is in the
 [API reference](../reference/api.md).
 

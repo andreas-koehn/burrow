@@ -1,7 +1,14 @@
 # Remote desktop and other TCP services
 
 This guide shows how to reach a remote desktop (RDP), SSH, a database or any
-other TCP service on a machine behind your router, through a Burrow relay.
+other TCP service on a machine behind your router, through a Burrow relay. It
+starts with the RDP walkthrough and goes on to everything a TCP service can
+do: [creating it in the dashboard](#create-a-tcp-service),
+[host names by TLS passthrough](#reach-it-by-host-name-tls-passthrough),
+[PROXY protocol](#proxy-protocol-to-the-local-target),
+[country rules](#country-rules), [automatic bans](#automatic-bans),
+[bandwidth and volume limits](#bandwidth-and-daily-volume) and
+[scoped tokens](#scoped-client-tokens).
 The examples use RDP on port 3389. The same steps work for SSH (22), VNC
 (5900) and Postgres (5432).
 
@@ -268,7 +275,7 @@ connection that is already open stays.
 ### Permanent CIDRs
 
 Add networks or single addresses (a bare IP is the same as `/32`). Countries
-do not apply to TCP services. A CIDR on a TCP service may not be wider than a
+are a separate list; see [Country rules](#country-rules). A CIDR on a TCP service may not be wider than a
 `/8` of IPv4 or a `/32` of IPv6; `0.0.0.0/0` is refused. If you want to let
 everyone in, use mode `open` and say so. Block entries may be wider.
 
@@ -342,6 +349,390 @@ port is 3389, 22, 5900 or 5432, the ports for RDP, SSH, VNC and Postgres, and
 
 If you do run an open service, give it a strong password, turn on its own
 account lockout, keep it patched, and watch the connection log.
+
+---
+
+## Create a TCP service
+
+`burrow tcp` creates the service the first time it runs. You can also create
+it first, in the dashboard or with the API, and start the client later. The
+service then has its mode, port and settings before any client connects.
+
+**Dashboard:** **Services → New service → Create a TCP service instead**. Enter
+a name, pick the mode, and for `ip` or `open` optionally a public port. The
+dialog then prints the command to run at home:
+
+```sh
+burrow tcp 3389 --name rdp
+```
+
+and the matching `burrow.yaml` entry. The service's page has a card for every
+setting described below.
+
+**API:** `POST /api/v1/services` with `"type": "tcp"`:
+
+```sh
+curl -X POST https://burrow.insingo.com/api/v1/services \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"tcp","name":"rdp","access_mode":"private"}'
+```
+
+| Field | Notes |
+|-------|-------|
+| `name` | Required. Letters, digits, `.`, `_` and `-`, up to 64, starting with a letter or digit. The client's `--name` must match it. |
+| `access_mode` | `open`, `ip` or `private` (default `private`) |
+| `tcp_port` | Optional public port, pinned to the service. It must be inside `BURROW_PORT_MIN`..`BURROW_PORT_MAX`. A port held by any other service gives 409, even by an offline automatic hold. |
+| `proxy_protocol` | Optional, `v2`. See [PROXY protocol](#proxy-protocol-to-the-local-target). |
+| `idle_timeout_s` | Optional, 0 or 60 to 86400. See [Idle timeout](#idle-timeout). |
+
+Creating a service needs `services:configure:any`, and it is not an MCP tool.
+The owner is the caller. Then run `burrow tcp <port> --name <name>` at home:
+the client finds the service by name and serves it in the stored mode.
+
+---
+
+## Reach it by host name (TLS passthrough)
+
+A service in mode `open` or `ip` can also be reached by a host name on one
+shared TLS port, next to its own public port. The relay reads the server name
+(SNI) from the first TLS record, picks the service with that name, and passes
+the connection on. It terminates no TLS: the target serves its own
+certificate for that name.
+
+Turn it on in the relay's environment:
+
+| Variable | Purpose |
+|----------|---------|
+| `BURROW_TLS_PASSTHROUGH_LISTEN` | The listener, for example `:8444`. Empty (default) = off. |
+| `BURROW_TCP_DOMAIN` | Optional. Every `open` or `ip` tcp service is then reachable as `<slug>.<domain>`. Needs a wildcard DNS record `*.tcp.example.com` pointing at the relay (or at the proxy in front of it). |
+| `BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES` | Addresses allowed to send a PROXY v2 header. Default empty. See [Behind a proxy](#behind-a-proxy-coolify-and-traefik). |
+
+`BURROW_TCP_DOMAIN` must not be the dashboard's host or a parent of it, nor
+the services host.
+
+**Custom host names.** A service can also have a name of its own, for example
+`db.example.com`: `PUT /api/v1/services/{id}/tcp-hostname` with
+`{"tcp_hostname":"db.example.com"}`, or the **Host name** card in the
+dashboard. Setting a name needs `services:configure:any` (an administrator);
+an owner with `services:configure:own` can only clear it. A name is unique and
+must be a host name with at least two labels. The relay refuses names under
+the tcp domain, the dashboard's domain or the services domain, and names a
+custom domain already covers. A change asks for a recent password
+confirmation and is not an MCP tool. `GET` on the same route lists the names
+and says whether the service is `reachable` this way.
+
+**What is refused.** The connection is closed without a byte when:
+
+- the service is `private` (a private service has no name here, ever);
+- the name is unknown, or the hello has no SNI;
+- the first byte is not TLS;
+- the ClientHello does not arrive in 5 seconds, or is larger than 16 KiB.
+
+A hello spread over several TCP segments works. A hello split over several
+TLS **records** cannot be read and is closed (some very large post-quantum
+hellos and unusual clients do this). Refusals before a service is known are
+only in the relay log, as minute summaries under `tls-passthrough`, not in the
+connection log.
+
+An accepted connection goes through the same checks as the public port: the
+mode (`ip` lists and grants), country rules, bans, limits and the idle
+timeout. Its row in the connection log has protocol `tls` and the SNI.
+
+**What works.** Only protocols that begin with a TLS ClientHello that carries
+the name: HTTPS, TLS-wrapped TCP (stunnel, `openssl s_client -servername`),
+and PostgreSQL 17 with `sslnegotiation=direct`. **RDP does not work this
+way:** the client sends an X.224 request first and starts TLS afterwards, so
+there is no name in the first bytes. RDP and plain SSH stay on the port or on
+`burrow forward`.
+
+### Behind a proxy: Coolify and Traefik
+
+Coolify's Traefik owns port 443. A TCP router with `HostSNI` and
+`tls.passthrough=true` sends matching names to Burrow and leaves every other
+name to Coolify's HTTP routers. Add the labels to the Burrow service and
+publish nothing else:
+
+```yaml
+services:
+  burrow:
+    environment:
+      BURROW_TLS_PASSTHROUGH_LISTEN: ":8444"
+      BURROW_TCP_DOMAIN: tcp.example.com
+      # Traefik's address on the Docker network, nothing wider.
+      BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES: 10.0.1.5
+    labels:
+      - traefik.enable=true
+      - traefik.tcp.routers.burrow-sni.entrypoints=https
+      - traefik.tcp.routers.burrow-sni.rule=HostSNI(`db.example.com`)
+      # or every slug name: HostSNIRegexp(`^.+\.tcp\.example\.com$`)
+      - traefik.tcp.routers.burrow-sni.tls.passthrough=true
+      - traefik.tcp.routers.burrow-sni.service=burrow-sni
+      - traefik.tcp.services.burrow-sni.loadbalancer.server.port=8444
+      - traefik.tcp.services.burrow-sni.loadbalancer.proxyProtocol.version=2
+```
+
+`https` is the name of Coolify's TLS entrypoint; use yours if it differs.
+Since Traefik 3.5.2 the PROXY setting moved to a TCP `serversTransport`
+(`proxyProtocol.version: 2`); check the Traefik documentation for your
+version.
+
+- **Trusted proxies and the header.** A connection from an address in
+  `BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES` **must** begin with a PROXY v2
+  header that names the visitor; without one it is closed. A header from any
+  other address is closed too. With the list empty (default), no header is
+  believed and the TCP peer is the visitor. Only version 2 is read. The list
+  is never taken from `BURROW_TRUSTED_PROXIES`; set it to Traefik's address
+  only, not to a whole private range.
+- **Always turn the header on in Traefik.** Without it every connection from
+  Traefik is closed, and if it were let in, every visitor would be Traefik's
+  address: `ip` mode and the per-source limits would apply to all of them
+  together.
+- **DNS.** One record for each custom name, and the wildcard record for the
+  tcp domain, pointing at the server that runs Traefik.
+- The certificate is the target's. Traefik does not decrypt anything.
+
+**Direct port mapping.** Without a proxy in front, publish the listener
+yourself and leave the trusted list empty:
+
+```yaml
+    ports:
+      - "8444:8444"      # or "443:443" with BURROW_TLS_PASSTHROUGH_LISTEN=":443"
+```
+
+Open the port in the firewall (`ufw allow 8444/tcp`). Use 443 only on a host
+where nothing else needs it, which is not the case when ACME listens there.
+
+### Unauthenticated waiting is bounded
+
+The relay holds at most 1024 connections that wait for their hello, and 32 per
+untrusted source (an IPv4 address, or an IPv6 /48). Trusted proxies have their
+own budget of 1024 and no per-source cap. When a budget is more than 75 % full
+the wait shrinks from 5 to 2 seconds. A connection over a cap is closed at
+once.
+
+---
+
+## PROXY protocol to the local target
+
+By default the local target sees every connection come from `127.0.0.1`, the
+home client. A service can ask the home client to put a PROXY protocol **v2**
+header in front of each connection, with the address of the visitor (or, for a
+forward, of the forwarder). Nginx, HAProxy, Traefik and Postgres proxies can
+read it. The target must be set up to expect it: a target that does not read
+the header sees garbage and drops the connection.
+
+Turn it on in one of these places:
+
+- the service's **Connection settings** card in the dashboard;
+- `PUT /api/v1/services/{id}/tcp-settings` with `{"proxy_protocol":"v2"}`
+  (`""` turns it off);
+- `burrow tcp 8443 --proxy-protocol v2`;
+- `proxy_protocol: v2` on a service in `burrow.yaml` (`burrow up`).
+
+The relay's setting applies from the next connection with no restart. The
+header is written when **either** the relay's setting or the client's own is
+`v2`; the dashboard shows when the client also sends it. `burrow connect
+--config` does not send the header and prints a warning.
+
+::: warning Upgrade the client first
+A home client older than this release ignores the setting and writes no
+header. The relay therefore asks for the client's `proxy_protocol_v2`
+capability: while the service asks for v2 and the connected client lacks it,
+every visitor and forward is refused (reason `proxy_unsupported`) and the
+dashboard shows a warning. Update the client, then turn the setting on.
+:::
+
+---
+
+## Protocol and host name in the logs
+
+The connection log and the live connection list show two more columns:
+
+- **protocol:** `tls`, `ssh`, `rdp`, `http` or `unknown`, from the client's
+  first bytes. The classifier only watches the bytes as they pass, so it never
+  delays a connection. A visitor that sends nothing is `unknown`.
+- **sni:** the server name of a TLS ClientHello, for the public port as well
+  as for the passthrough listener.
+
+Both are in the CSV and NDJSON exports (the last two columns are `protocol`
+and `sni`). Refused connections have neither.
+
+---
+
+## Idle timeout
+
+A connection with no bytes in either direction for the idle timeout is closed,
+with reason `idle_timeout`. It is off by default. Set it from 60 seconds to 24
+hours (`idle_timeout_s` 60 to 86400, or minutes in the dashboard) in
+**Connection settings**, or with `PUT /api/v1/services/{id}/tcp-settings`. A
+change applies to open connections too. The relay checks every 5 seconds, so a
+connection closes up to 5 seconds late. A connection that only moves data one
+way is not idle.
+
+---
+
+## Country rules
+
+Country allow and block lists for a tcp service work in mode `ip` and `open`,
+and the same lists work for http services.
+
+1. Download a MaxMind-compatible **GeoLite2-Country** `.mmdb` file (a free
+   MaxMind account gives you one; `geoipupdate` keeps it fresh).
+2. Set `BURROW_GEOIP_DB=/data/GeoLite2-Country.mmdb` (the older name
+   `BURROW_GEO_DB_PATH` still works; `BURROW_GEOIP_DB` wins). There is no build
+   tag any more: every build reads the file.
+3. Add countries on the service's **Countries** card, or in
+   `PUT /api/v1/services/{id}/ip-geo`.
+
+The relay checks the file once a minute and loads it again when it changes.
+Replace it by renaming a new file over it (as `geoipupdate` does); a broken file
+keeps the old database in use and shows its error in `GET /api/v1/geo/status`.
+
+**Rules.**
+
+- **Unknown country follows the list type.** An address with no record, a
+  failed lookup, and any address while no database is loaded count as
+  "unknown": an **allow** list **denies** it and a **block** list **allows**
+  it.
+- **Fail closed without a database.** A country allow list lets nobody in
+  while no database is loaded. A country block list cannot block anything.
+  The relay logs a warning at start when rules exist and nothing enforces them,
+  and `GET /api/v1/geo/status` reports `enabled`, `configured`, `error` and
+  `rules_not_enforced`. Adding a country to a list is refused with 400 while
+  no database is loaded; clearing always works.
+- **Order in `ip` mode:** block CIDRs, block countries, then allow CIDRs,
+  grants and allow countries. In `open` mode only the country lists apply.
+- **Forwards are not checked.** They are authenticated.
+- The relay caches a source's country for 5 minutes, so a reloaded database
+  reaches a known source after that.
+
+::: warning Stored country lists now apply
+Before this version the country lists of tcp services were saved but never
+enforced, and the country rules of http services were not enforced either. They
+now apply to both. A service that already has a list may start refusing
+visitors after the upgrade: check `GET /api/v1/geo/status` and the lists
+first. For http services a failed lookup used to let the visitor in; it is now
+"unknown" and follows the list type.
+:::
+
+---
+
+## Automatic bans
+
+Auto-ban closes a source that keeps opening connections and dropping them
+at once, which is what scanners and brute-force tools do. It is off by
+default; turn it on in the **Limits** card or with `PUT
+/api/v1/services/{id}/tcp-limits`.
+
+| Setting | Default | Range |
+|---------|---------|-------|
+| `autoban.short_s` | 3 | 1 to 300: a connection that ends sooner counts as short |
+| `autoban.count` | 10 | 2 to 100: short connections that trigger a ban |
+| `autoban.window_min` | 10 | 1 to 1440: how long they are counted for |
+| `autoban.ban_min` | 60 | 1 to 43200 minutes (30 days) |
+
+A source is an IPv4 address or an IPv6 /64. A banned source is closed at accept
+with no byte (reason `banned` in the connection log), its open visitors are
+closed, and the ban survives a restart. Only `open` and `ip` visitors can be
+banned: **forwards are never banned**, and a connection counts only when the
+**visitor ended it** within `short_s`. A connection the relay ended (idle,
+quota, dashboard), one that failed to pair, and one that the home client closed
+at once (a dead local target) never count.
+
+Bans are listed on the **Bans** card and at `GET
+/api/v1/services/{id}/tcp-bans`. Add one by hand with `POST` (`source`,
+`ban_min`, optional `note`; at most 4096 active per service) and lift one with
+`DELETE ...?source=`, which asks for a recent password confirmation.
+Turning auto-ban off keeps the existing bans until they expire or are lifted.
+An automatic ban sends the `tcp.banned` webhook (at most 30 per service per
+minute) and every ban is in the audit log as `tcp.ban.add`; lifting is
+`tcp.ban.remove`.
+
+**Caveats.** A ban hits everyone who shares the source address:
+
+- **Shared NAT.** An office, a hotel or a mobile carrier is one address.
+  One misbehaving client bans the rest.
+- **VPS providers** often hand a whole IPv6 /64 to one customer, and several
+  customers may share a /64. The relay bans the /64.
+- **Docker's userland proxy** shows every visitor as the gateway address, so one
+  ban would lock out all visitors. Fix the address first (see
+  [Things that go wrong](#things-that-go-wrong)).
+- **Monitors** that connect, check the port and close (load balancer health
+  checks, uptime probes) look exactly like a scanner. Allow their address
+  with `ip` mode and a grant, keep the count high, or leave auto-ban off.
+
+---
+
+## Bandwidth and daily volume
+
+Both limits are in the **Limits** card and in `PUT
+/api/v1/services/{id}/tcp-limits`. Saving them asks for a recent password
+confirmation, and they are not MCP tools. 0 means off. Changes apply to open
+connections at once.
+
+| Setting | Range | Meaning |
+|---------|-------|---------|
+| `rate_limit_kbps` | 0 or 64 to 10 000 000 | Kilobits per second (k = 1000, so 1 kbps is 125 bytes/s) **per direction**, shared by all connections of the service |
+| `daily_bytes` | 0 or 1 MiB to 2^50 | Bytes in plus out per UTC day |
+
+`rate_limit_kbps` is one bucket for each direction: an echo at the limit moves
+the limit both ways.
+
+**Daily volume.** At 80 % the relay sends the `tcp.quota.warning` webhook once per
+service and day (not again after a restart that day). At the limit every open
+connection is closed (reason `quota`), and new visitors and forwards are
+refused (a forward gets `rate_limited` with the time it opens again) until
+00:00 UTC. A limit raised or removed lets traffic in at once. The count may
+overshoot by one buffer (up to 32 KiB), the stored figure lags up to a minute,
+and a crash can lose up to a minute of counted bytes. The card shows today's
+usage; `GET tcp-limits` returns `usage_today` and `quota_reached`.
+
+::: warning The limits apply to the owner too
+Bandwidth and volume count every connection of the service, forwards included.
+On an `open` service a stranger can use up the day's volume, and then you cannot
+forward until 00:00 UTC. Prefer a volume you can live with, and use `ip` or
+`private` for services you rely on.
+:::
+
+---
+
+## Scoped client tokens
+
+A client token can be limited to one job:
+
+| Scope | May | May not |
+|-------|-----|---------|
+| `all` (default) | register tunnels and open forwards | |
+| `forward` | open forwards | register tunnels (`scope_denied`) |
+| `publish` | register tunnels | open forwards (`scope_denied`) |
+
+Use `forward` for the laptop you travel with, and `publish` for the machine
+at home. A lost laptop then cannot publish anything.
+
+- `burrow login <relay> --scope forward` asks for the scope. The person who
+  approves the sign-in sees it, can pick another on the approval page, and the
+  token gets that. The client prints the scope it got.
+- A token made in the dashboard (**Clients → Tokens**) or with `POST
+  /api/v1/tokens` takes `scope`. `--scope` cannot be used with `--token -`.
+- The relay checks the scope at every registration and every forward, so a
+  reconnect reads it again.
+
+::: warning Upgrade the client
+An older relay ignores the scope and issues an `all` token (the new client says
+so). An older client does not know `scope_denied`: with a `forward` token its
+`burrow tcp` retries instead of stopping. Update both before you rely on
+scopes.
+:::
+
+---
+
+## Not covered
+
+- **UDP.** Only TCP is carried. Services that need UDP (RDP's UDP transport,
+  games, DNS) fall back to TCP or do not work.
+- **Peer-to-peer.** Every byte goes through the relay.
+- Several tunnels for one service, and any inspection of TCP payloads beyond
+  the first-bytes label.
 
 ---
 
@@ -452,6 +843,11 @@ Audit actions for TCP services (Settings → Audit log):
 | `service.max_connections.update` | the connection cap changed |
 | `service.connection.close` | someone disconnected a live connection |
 | `service.tcp_port.reclaimed` | a port was taken from an offline service |
+| `service.tcp_settings.update` | PROXY protocol or idle timeout changed (`from`, `to`) |
+| `service.tcp_hostname.update` | the custom host name changed |
+| `service.tcp_limits.update` | bandwidth, daily volume or auto-ban settings changed |
+| `tcp.ban.add` | a source was banned, automatically or by hand (`by`) |
+| `tcp.ban.remove` | a ban was lifted |
 | `tcp.forward.open` | a user opened a forward. **Sampled:** one row per user and service per minute |
 
 The connection log has every connection:
@@ -462,17 +858,21 @@ The connection log has every connection:
   forwarder's address.
 - Refusals as `rejected` rows with a reason: `ip_geo`, `rate_limited`,
   `source_limit`, `tunnel_full`, `pending_full`, `no_address`, `forbidden` (a
-  forward the user may not make) and `user_limit`. They are **sampled**: one
+  forward the user may not make), `user_limit`, `banned`, `quota` and
+  `proxy_unsupported`. They are **sampled**: one
   row per service, reason and address per minute, so a scan does not fill the
   log. The metric `burrow_connections_total` counts all of them.
 - A connection the relay ended says why in its reason: `closed_by_dashboard`
   (someone pressed Disconnect), `access_revoked` (a forward the user may no
   longer make, after a change of the access policy, the user's role or
-  status) or `session_closed` (the forwarder's or the home client's session
-  ended). A connection that one side closed has no reason.
+  status), `session_closed` (the forwarder's or the home client's session
+  ended), `idle_timeout`, `quota` (the daily volume was reached) or `banned`
+  (its source was banned). A connection that one side closed has no reason.
+- Every row also has the `protocol` and the `sni` when they are known.
 
 The webhook event `access.denied` is sent for TCP refusals too, at most one
-per service and reason per minute. See [Operations](/guide/operations).
+per service and reason per minute. `tcp.banned` and `tcp.quota.warning` are
+the two events of the limits. See [Operations](/guide/operations).
 
 ---
 
@@ -520,7 +920,9 @@ ufw allow 9001/tcp
 
 - Use fixed ports (`--remote 9001`) so that you know which lines to add.
 - On Coolify, add the ports in the Compose file of the service, not in the
-  proxy: Coolify's Traefik carries the dashboard, not raw TCP.
+  proxy: Coolify's Traefik carries the dashboard, not raw TCP. TLS traffic by
+  host name is the exception; see
+  [Behind a proxy](#behind-a-proxy-coolify-and-traefik).
 - Docker's userland proxy hides the visitor's address. See
   [Things that go wrong](#things-that-go-wrong), and check the connection log
   after the first connection.

@@ -241,6 +241,7 @@ it. Approving needs an admin account or `tokens:manage:own` / `tokens:manage:any
 | `--name <name>` | the hostname | Name for the token |
 | `--token -` | | Store a token created in the dashboard (**Clients → Tokens**). Give `-`: the token is asked for (hidden) or read from standard input |
 | `--control <host:port>` | the relay's own answer, else `<relay host>:7000` | Control endpoint |
+| `--scope all\|forward\|publish` | `all` | What the token may do: `forward` opens forwards only, `publish` registers tunnels only. The approver sees the wish and can change it on the approval page; the client prints the scope the token got. A relay that does not know scopes issues an `all` token and the client says so. A usage error with `--token` (a token made in the dashboard has the scope it was made with). Update the client before you use a scope |
 | `--force` | | Replace a stored sign-in without asking |
 
 Without a browser sign-in on the relay, the command stops with exit code 2 and
@@ -263,7 +264,7 @@ Tokens**). It does not revoke the token itself.
 
 ```sh
 burrow http <target> [--name <name>] [--slug <slug>] [--access open|login|api-key]
-burrow tcp  <target> [--name <name>] [--access open|ip|private] [--remote <port>]
+burrow tcp  <target> [--name <name>] [--access open|ip|private] [--remote <port>] [--proxy-protocol v2]
 ```
 
 `<target>` is `3000` (`127.0.0.1:3000`), `localhost:3000`, `192.168.1.20:8080`
@@ -276,6 +277,7 @@ code 2).
 | `--slug <slug>` | `http` | Path under `/svc/`; used only when the service is created |
 | `--access open\|login\|api-key` | `http` | Access mode; used only when the service is created. `login` is the relay's `burrow_login`, `api-key` is `api_key` and creates no key |
 | `--access open\|ip\|private` | `tcp` | Access mode. Without the flag a service that exists is served in its stored mode, and a new one is created `private`: no public port, reached with `burrow forward`. `ip` and `open` open a public port. A dashboard mode stricter than the flag is kept; a looser one makes the relay refuse with "restart with --access `<mode>`". Against a relay too old for tcp modes, `ip` and `private` register nothing |
+| `--proxy-protocol v2` | `tcp` | Write a PROXY protocol v2 header with the visitor's address (a forwarder's address, for a forward) to the local target before any other byte. Any other value is a usage error; on `burrow http` it is refused. The relay's per-service setting turns the header on as well. Update the client before you turn it on for a service: an older client writes no header. See [PROXY protocol](/guide/remote-desktop-and-tcp#proxy-protocol-to-the-local-target) |
 | `--remote <port>` | `tcp` | Fixed public port (default: any free port). Needs `--access open` or `ip`; with `private` it is a usage error |
 
 The command runs in the foreground until interrupted and reconnects by itself.

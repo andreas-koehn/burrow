@@ -121,8 +121,20 @@ suspension. The owner's forwards are never ended this way.
 address for 1 to 168 hours (the dashboard offers 1, 8 and 24); `GET` lists the
 active grants and `DELETE /api/v1/services/{id}/ip-grants/{grantID}` revokes
 one. Permanent CIDRs are the IP/geo allow list of the service; for a TCP
-service no entry may be wider than a `/8` (IPv4) or `/32` (IPv6), and countries
-do not apply.
+service no entry may be wider than a `/8` (IPv4) or `/32` (IPv6).
+
+**Country rules.** The country allow and block lists of a service, http or tcp
+(mode `ip` and `open`), need `BURROW_GEOIP_DB`, a GeoLite2-Country file.
+Without it an allow list denies everyone and a country cannot be added. An
+unknown country follows the list type (allow list: denied, block list:
+allowed). Forwards are not checked. Country lists that were saved earlier for
+tcp services now apply. See
+[Country rules](/guide/remote-desktop-and-tcp#country-rules).
+
+**Bans, limits and host names.** A tcp service can also ban abusive sources
+automatically, limit bandwidth and daily volume, and be reached by host name
+through TLS passthrough; see the
+[TCP guide](/guide/remote-desktop-and-tcp#automatic-bans).
 
 **Password confirmation.** Changing the access mode, the access policy or the
 IP/geo lists, adding a grant and disconnecting a live connection ask a
@@ -147,6 +159,8 @@ the CIDR list and the grants use `ipgeo:manage:own` or `:any`; reading the
 connection log and the audit log uses `audit:read`.
 
 **Audit actions.** `service.tcp_access.update`, `ipgeo.update`,
+`service.tcp_settings.update`, `service.tcp_hostname.update`,
+`service.tcp_limits.update`, `tcp.ban.add`, `tcp.ban.remove`,
 `service.ip_grant.add`, `service.ip_grant.revoke`,
 `service.max_connections.update`, `service.connection.close`,
 `service.tcp_port.reclaimed` and `tcp.forward.open` (one row per user and
