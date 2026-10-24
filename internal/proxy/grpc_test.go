@@ -768,3 +768,234 @@ func (c *connLogRec) count() int {
 	defer c.mu.Unlock()
 	return len(c.es)
 }
+
+// grpcWebFrame is a grpc-web body frame: flag 0x00 for a message, 0x80 for
+// the trailers block.
+func grpcWebFrame(flag byte, payload string) []byte {
+	b := make([]byte, 5+len(payload))
+	b[0] = flag
+	binary.BigEndian.PutUint32(b[1:5], uint32(len(payload)))
+	copy(b[5:], payload)
+	return b
+}
+
+// grpcWebUpstream answers a grpc-web call with body, written in pieces of
+// at most chunk bytes, each flushed, so frames span writes.
+func grpcWebUpstream(contentType string, body []byte, chunk int) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(http.StatusOK)
+		for len(body) > 0 {
+			n := min(chunk, len(body))
+			_, _ = w.Write(body[:n])
+			w.(http.Flusher).Flush()
+			body = body[n:]
+		}
+	})
+}
+
+// grpc-web carries grpc-status in a trailers frame of the body (flag 0x80).
+// The proxy reads it as the frames pass, unbuffered, also when a frame
+// spans writes: success is closed_clean with status 0, an error code
+// promotes the row. grpc-web-text (base64) and a body that is no grpc-web
+// framing leave the row at its HTTP outcome, without grpc_no_status.
+func TestGRPC_WebStatusFromBody(t *testing.T) {
+	msg := grpcWebFrame(0x00, "hello")
+	for _, c := range []struct {
+		name, ct  string
+		body      []byte
+		chunk     int
+		wantRow   string
+		wantCode  int // -1: none
+		wantNoRsn bool
+	}{
+		{"ok", "application/grpc-web+proto", append(append([]byte{}, msg...), grpcWebFrame(0x80, "grpc-status:0\r\ngrpc-message:fine\r\n")...), 1 << 20, proxy.StatusClosedClean, 0, true},
+		{"ok split", "application/grpc-web", append(append([]byte{}, msg...), grpcWebFrame(0x80, "Grpc-Status: 0\r\n")...), 3, proxy.StatusClosedClean, 0, true},
+		{"error", "application/grpc-web+proto", append(append([]byte{}, msg...), grpcWebFrame(0x80, "grpc-message:boom\r\ngrpc-status:13\r\n")...), 7, proxy.StatusClosedError, 13, true},
+		{"no trailers frame", "application/grpc-web+proto", msg, 1 << 20, proxy.StatusClosedError, -1, false},
+		{"text mode", "application/grpc-web-text", []byte("AAAAAAVoZWxsbw=="), 1 << 20, proxy.StatusClosedClean, -1, true},
+		{"not framing", "application/grpc-web+proto", []byte("\x42garbage that is no frame"), 1 << 20, proxy.StatusClosedClean, -1, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := newFakeDialer(grpcWebUpstream(c.ct, c.body, c.chunk))
+			d.h2c = true
+			d.register("app", &proxy.Resolved{ServiceID: "s1", AccessMode: "open", LocalHost: "127.0.0.1:8080", UpstreamProtocol: proto.UpstreamH2C})
+			logs := &connLogRec{}
+			ts, client := grpcFront(t, proxy.New(d, openChecker{}, authDomain, testLog(), proxy.WithConnLogSink(logs)), "h2c")
+			req := grpcRequest(t, ts, "app", "/pkg.Echo/Unary", strings.NewReader(string(grpcWebFrame(0, "hi"))))
+			req.Header.Set("Content-Type", c.ct)
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if string(got) != string(c.body) {
+				t.Fatalf("body changed: %q", got)
+			}
+			e := logs.last(t)
+			if e.Protocol != "grpc-web" || e.Status != c.wantRow {
+				t.Errorf("row %+v, want status %s", e, c.wantRow)
+			}
+			switch {
+			case c.wantCode < 0 && e.GRPCStatus != nil:
+				t.Errorf("grpc_status %d, want none", *e.GRPCStatus)
+			case c.wantCode >= 0 && (e.GRPCStatus == nil || *e.GRPCStatus != c.wantCode):
+				t.Errorf("grpc_status %v, want %d", e.GRPCStatus, c.wantCode)
+			}
+			if c.wantNoRsn && e.Reason != "" {
+				t.Errorf("reason %q", e.Reason)
+			}
+			if !c.wantNoRsn && e.Reason != proxy.ReasonGRPCNoStatus {
+				t.Errorf("reason %q, want %s", e.Reason, proxy.ReasonGRPCNoStatus)
+			}
+		})
+	}
+}
+
+// A grpc-timeout too long for a time.Duration does not wrap the relay's
+// deadline into the past: the call runs.
+func TestGRPC_HugeTimeout(t *testing.T) {
+	echo := &grpcEcho{}
+	_, _, p := echoProxy(t, echo, proxy.Resolved{})
+	ts, client := grpcFront(t, p, "h2c")
+	req := grpcRequest(t, ts, "app", "/pkg.Echo/Unary", strings.NewReader(string(grpcFrame("hi"))))
+	req.Header.Set("Grpc-Timeout", "99999999H")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, _ := readGRPCFrame(resp.Body)
+	_, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if msg != "echo:hi" || resp.Trailer.Get("Grpc-Status") != "0" {
+		t.Fatalf("%q headers %v trailers %v", msg, resp.Header, resp.Trailer)
+	}
+	if echo.lastTimeout() != "99999999H" {
+		t.Errorf("forwarded grpc-timeout %q", echo.lastTimeout())
+	}
+}
+
+// offlineDialer knows the service, and its tunnel is not connected.
+type offlineDialer struct{ *fakeDialer }
+
+func (offlineDialer) Lookup(context.Context, string) (*proxy.Resolved, error) {
+	return nil, proxy.ErrTunnelOffline
+}
+
+func (offlineDialer) LookupByServiceID(context.Context, string) (*proxy.Resolved, error) {
+	return nil, proxy.ErrTunnelOffline
+}
+
+// goneDialer finds the tunnel and it is gone when the stream is opened.
+type goneDialer struct{ *fakeDialer }
+
+func (goneDialer) DialTunnelStreamByServiceID(context.Context, string) (net.Conn, error) {
+	return nil, proxy.ErrNotFound
+}
+
+// For gRPC an offline tunnel is UNAVAILABLE, not UNIMPLEMENTED: on lookup,
+// by host and by custom domain, and when the tunnel went away before the
+// stream was opened. An unknown name stays UNIMPLEMENTED; plain HTTP keeps
+// its 404 throughout.
+func TestGRPC_OfflineTunnelIsUnavailable(t *testing.T) {
+	base := newFakeDialer(&grpcEcho{})
+	base.h2c = true
+	base.register("app", &proxy.Resolved{ServiceID: "s1", AccessMode: "open", LocalHost: "127.0.0.1:1", UpstreamProtocol: proto.UpstreamH2C})
+	lookup := proxy.WithCustomDomainLookup(func(_ context.Context, host string) (string, bool, error) {
+		return "s1", host == "grpc.example.org", nil
+	})
+	for _, c := range []struct {
+		name   string
+		dialer proxy.StreamDialer
+		host   string
+		want   string
+	}{
+		{"offline by host", offlineDialer{base}, "app." + authDomain, "14"},
+		{"offline by custom domain", offlineDialer{base}, "grpc.example.org", "14"},
+		{"gone before the stream", goneDialer{base}, "app." + authDomain, "14"},
+		{"gone before the stream, custom domain", goneDialer{base}, "grpc.example.org", "14"},
+		{"unknown name", base, "nope." + authDomain, "12"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ts, client := grpcFront(t, proxy.New(c.dialer, openChecker{}, authDomain, testLog(), lookup), "h2c")
+			req := grpcRequest(t, ts, "app", "/pkg.Echo/Unary", strings.NewReader(string(grpcFrame("hi"))))
+			req.Host = c.host
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != 200 || resp.Header.Get("Grpc-Status") != c.want {
+				t.Fatalf("%d grpc-status %q, want %s", resp.StatusCode, resp.Header.Get("Grpc-Status"), c.want)
+			}
+			// Plain HTTP is unchanged: 404.
+			req, _ = http.NewRequest("GET", ts.URL+"/", nil)
+			req.Host = c.host
+			resp, err = client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("plain HTTP: %d, want 404", resp.StatusCode)
+			}
+		})
+	}
+}
+
+// A refusal the upstream writes is held to become a status, but not for
+// long: past 64 KiB of error body, or a short while, the status is sent and
+// the upstream's answer dropped.
+func TestGRPC_HeldRefusalIsBounded(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		timeout time.Duration
+		local   http.Handler
+	}{
+		// The time bound is far off: the byte bound must end it.
+		{"endless body", 30 * time.Second, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			chunk := []byte(strings.Repeat("x", 4096))
+			for r.Context().Err() == nil {
+				if _, err := w.Write(chunk); err != nil {
+					return
+				}
+				w.(http.Flusher).Flush()
+			}
+		})},
+		{"stalled body", 300 * time.Millisecond, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, "down for maintenance")
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		})},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			defer proxy.SetHeldRefusalTimeoutForTest(c.timeout)()
+			d := newFakeDialer(c.local)
+			d.h2c = true
+			d.register("app", &proxy.Resolved{ServiceID: "s1", AccessMode: "open", LocalHost: "127.0.0.1:1", UpstreamProtocol: proto.UpstreamH2C})
+			ts, client := grpcFront(t, proxy.New(d, openChecker{}, authDomain, testLog()), "h2c")
+			req := grpcRequest(t, ts, "app", "/pkg.Echo/Unary", strings.NewReader(string(grpcFrame("hi"))))
+			start := time.Now()
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil || len(body) != 0 {
+				t.Fatalf("body %d bytes, err %v", len(body), err)
+			}
+			if resp.StatusCode != 200 || resp.Header.Get("Grpc-Status") != "14" {
+				t.Fatalf("%d grpc-status %q", resp.StatusCode, resp.Header.Get("Grpc-Status"))
+			}
+			if took := time.Since(start); took > 3*time.Second {
+				t.Fatalf("the status took %v", took)
+			}
+			streamsClosed(t, d)
+		})
+	}
+}

@@ -183,3 +183,25 @@ func TestStatusWriter_HijackAndUnwrap(t *testing.T) {
 		t.Fatal("Unwrap did not return the wrapped writer")
 	}
 }
+
+// A gRPC call to a /svc/ path whose slug cannot be one gets a gRPC status
+// (UNIMPLEMENTED, as for an unknown name), not a plain 404; plain HTTP keeps
+// the 404.
+func TestRouter_SvcPathInvalidSlugGRPC(t *testing.T) {
+	const authDomain = "burrow.example.com"
+	p := proxy.New(upgradeTunnel{slug: "app", addr: "127.0.0.1:1"}, allowAll{}, authDomain, discardLog())
+	h := NewRouter(Deps{TunnelProxy: p, AuthDomain: authDomain, Log: discardLog()})
+	req := httptest.NewRequest(http.MethodPost, "http://"+authDomain+"/svc/UPPER/pkg.S/M", strings.NewReader(""))
+	req.Header.Set("Content-Type", "application/grpc+proto")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || rec.Header().Get("Grpc-Status") != "12" || rec.Header().Get("Content-Type") != "application/grpc+proto" || rec.Body.Len() != 0 {
+		t.Fatalf("%d %v %q", rec.Code, rec.Header(), rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "http://"+authDomain+"/svc/UPPER/x", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("plain: %d", rec.Code)
+	}
+}

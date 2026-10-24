@@ -357,12 +357,31 @@ func WithTLSBase(c *tls.Config) Option {
 // that carries grpc-status pass untouched.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if grpcwire.Classify(r).GRPCShaped() {
-		gw := newGRPCWriter(w, r)
-		p.serveHTTP(gw, r)
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		r = r.WithContext(ctx)
+		gw := newGRPCWriter(w, r, cancel)
+		p.serveGRPC(gw, r)
 		gw.finish()
 		return
 	}
 	p.serveHTTP(w, r)
+}
+
+// serveGRPC serves a gRPC call through its grpcWriter. When the writer cut a
+// held refusal short (its body ran on too long), the reverse proxy aborts
+// the forward with http.ErrAbortHandler; that abort is the cut's own doing
+// and ends here, so ServeHTTP sends the held status. Any other panic goes on.
+func (p *Proxy) serveGRPC(gw *grpcWriter, r *http.Request) {
+	defer func() {
+		if v := recover(); v != nil {
+			if v == http.ErrAbortHandler && gw.cut.Load() && gw.denied {
+				return
+			}
+			panic(v)
+		}
+	}()
+	p.serveHTTP(gw, r)
 }
 
 func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -424,7 +443,7 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	res, err := p.dialer.Lookup(ctx, label)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			p.notFound(w)
+			p.notFoundFor(w, r, err)
 			return
 		}
 		p.log.Warn("proxy lookup error", "subdomain", label, "err", err)
@@ -445,7 +464,7 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 	res, err := p.dialer.LookupByServiceID(ctx, serviceID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			p.notFound(w)
+			p.notFoundFor(w, r, err)
 			return
 		}
 		p.log.Warn("proxy custom domain upstream lookup error", "host", host, "service_id", serviceID, "err", err)
@@ -598,7 +617,8 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 				}
 			}
 			if errors.Is(err, ErrNotFound) {
-				p.notFound(w)
+				// The lookup found the tunnel: it went away since.
+				p.notFoundFor(w, r, ErrTunnelOffline)
 				return
 			}
 			http.Error(w, "bad gateway", http.StatusBadGateway)
@@ -837,7 +857,8 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 				}
 			}
 			if errors.Is(err, ErrNotFound) {
-				p.notFound(w)
+				// The lookup found the tunnel: it went away since.
+				p.notFoundFor(w, r, ErrTunnelOffline)
 				return
 			}
 			http.Error(w, "bad gateway", http.StatusBadGateway)

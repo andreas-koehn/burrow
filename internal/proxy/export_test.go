@@ -22,3 +22,11 @@ func SetUpstreamTLSHandshakeTimeoutForTest(d time.Duration) func() {
 	upstreamTLSHandshakeTimeout = d
 	return func() { upstreamTLSHandshakeTimeout = old }
 }
+
+// SetHeldRefusalTimeoutForTest sets how long a refusal the upstream writes
+// is held for its body; the returned func restores it.
+func SetHeldRefusalTimeoutForTest(d time.Duration) func() {
+	old := heldRefusalTimeout
+	heldRefusalTimeout = d
+	return func() { heldRefusalTimeout = old }
+}

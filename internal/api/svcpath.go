@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/ankoehn/burrow/internal/auth"
+	"github.com/ankoehn/burrow/internal/grpcwire"
 	"github.com/ankoehn/burrow/internal/proxy"
 	"github.com/go-chi/chi/v5"
 )
@@ -25,6 +26,11 @@ func ServicePathHandler(next http.Handler, authDomain, publicHost string) http.H
 	return func(w http.ResponseWriter, r *http.Request) {
 		slug := chi.URLParam(r, "slug")
 		if !auth.ValidSlug(slug) {
+			if grpcwire.Classify(r).GRPCShaped() {
+				// As the proxy answers an unknown name (H7).
+				grpcwire.WriteTrailersOnly(w, r.Header.Get("Content-Type"), grpcwire.CodeUnimplemented, "tunnel not found")
+				return
+			}
 			http.NotFound(w, r)
 			return
 		}

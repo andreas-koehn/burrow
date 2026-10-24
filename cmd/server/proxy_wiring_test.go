@@ -1353,3 +1353,35 @@ func TestCheckServicesDomain(t *testing.T) {
 		t.Fatalf("a name that only ends the same way: %v", err)
 	}
 }
+
+// A known service whose tunnel is not connected is ErrTunnelOffline (still an
+// ErrNotFound), so the proxy answers a gRPC call with UNAVAILABLE; a missing
+// service, a missing slug and a hidden gateway-only service stay plain
+// ErrNotFound.
+func TestProxyDialerAdapter_OfflineIsDistinct(t *testing.T) {
+	offline := proxyDialerAdapter{
+		st:  &fakeStoreSubdomain{svc: db.Service{ID: "svc-1", Subdomain: "abc123"}},
+		srv: &fakeHTTPTunnelLookup{},
+	}
+	ctx := context.Background()
+	if _, err := offline.Lookup(ctx, "abc123"); !errors.Is(err, proxy.ErrTunnelOffline) || !errors.Is(err, proxy.ErrNotFound) {
+		t.Errorf("Lookup offline: %v", err)
+	}
+	if _, err := offline.LookupByServiceID(ctx, "svc-1"); !errors.Is(err, proxy.ErrTunnelOffline) {
+		t.Errorf("LookupByServiceID offline: %v", err)
+	}
+	if _, err := offline.DialTunnelStreamByServiceID(ctx, "svc-1"); !errors.Is(err, proxy.ErrTunnelOffline) {
+		t.Errorf("dial offline: %v", err)
+	}
+	missing := proxyDialerAdapter{st: &fakeStoreSubdomain{err: db.ErrNotFound}, srv: &fakeHTTPTunnelLookup{}}
+	if _, err := missing.Lookup(ctx, "xyz"); !errors.Is(err, proxy.ErrNotFound) || errors.Is(err, proxy.ErrTunnelOffline) {
+		t.Errorf("Lookup missing: %v", err)
+	}
+	gw := ingressDialerAdapter{proxyDialerAdapter{
+		st:  &fakeStoreSubdomain{svc: db.Service{ID: "svc-gw", GatewayOnly: true}},
+		srv: &fakeHTTPTunnelLookup{},
+	}}
+	if _, err := gw.LookupByServiceID(ctx, "svc-gw"); !errors.Is(err, proxy.ErrNotFound) || errors.Is(err, proxy.ErrTunnelOffline) {
+		t.Errorf("hidden gateway-only, offline: %v (must look like a missing service)", err)
+	}
+}

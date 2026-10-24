@@ -515,9 +515,10 @@ func (a proxyDialerAdapter) Lookup(ctx context.Context, sub string) (*proxy.Reso
 	}
 	tn, ok := a.srv.LookupHTTPTunnelByServiceID(svc.ID)
 	if !ok {
-		// Service exists but no live tunnel — treat as not found for the proxy
-		// (the client may have disconnected after registering the subdomain).
-		return nil, proxy.ErrNotFound
+		// Service exists but no live tunnel (the client may have
+		// disconnected after registering the subdomain): not found for plain
+		// HTTP, UNAVAILABLE for a gRPC call.
+		return nil, proxy.ErrTunnelOffline
 	}
 	userID, sessionID := a.lookupSessionFields(tn.ID)
 	ipgeo, err := a.st.GetServiceIPGeo(ctx, svc.ID)
@@ -591,7 +592,13 @@ func (a proxyDialerAdapter) LookupByServiceID(ctx context.Context, serviceID str
 func (a proxyDialerAdapter) lookupByServiceID(ctx context.Context, serviceID string, hideGatewayOnly bool) (*proxy.Resolved, error) {
 	tn, ok := a.srv.LookupHTTPTunnelByServiceID(serviceID)
 	if !ok {
-		return nil, proxy.ErrNotFound
+		// Offline, unless the row is missing, or hidden: a gateway-only
+		// service must answer like a missing one, connected or not.
+		svc, err := a.st.ServiceByID(ctx, serviceID)
+		if err != nil || (hideGatewayOnly && svc.GatewayOnly) {
+			return nil, proxy.ErrNotFound
+		}
+		return nil, proxy.ErrTunnelOffline
 	}
 	// We need the service row for access mode / api-key header. Use a fresh DB
 	// lookup by service ID (tolerate a miss — the tunnel may be gone).
@@ -684,7 +691,8 @@ func directServicePolicy(st subdomainStore) func(ctx context.Context, serviceID 
 func (a proxyDialerAdapter) DialTunnelStreamByServiceID(ctx context.Context, serviceID string) (net.Conn, error) {
 	tn, ok := a.srv.LookupHTTPTunnelByServiceID(serviceID)
 	if !ok {
-		return nil, proxy.ErrNotFound
+		// Dialled after a lookup: the tunnel went away since.
+		return nil, proxy.ErrTunnelOffline
 	}
 	conn, err := a.srv.OpenTunnelStream(ctx, tn)
 	if err != nil {

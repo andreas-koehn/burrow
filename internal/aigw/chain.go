@@ -403,12 +403,24 @@ func (c *Chain) ServeHTTP(w http.ResponseWriter, r *http.Request, svc Service, p
 	}
 
 	// A gRPC-like call (grpc, grpc-web, Connect streaming) goes to the
-	// upstream as it arrives, whatever AI sections the service has (H6): its
-	// body is a stream of binary messages, never buffered, inspected,
-	// redacted, cached or metered, and no system text is put into it. The
-	// rate limit and quota above applied per call; the service's upstream
-	// credential is still put on it.
-	if grpcwire.Classify(r).Streaming() {
+	// upstream as it arrives (H6): its body is a stream of binary messages,
+	// never buffered, inspected, cached or metered, and no system text is
+	// put into it. The rate limit and quota above applied per call; the
+	// service's upstream credential is still put on it.
+	//
+	// Fail closed, a deviation from H6 (review ruling): the content type is
+	// the caller's to choose, and an AI service such as Ollama takes a JSON
+	// body sent as application/connect+json just as well. On a service whose
+	// controls must read or rewrite the body (redaction, guardrails, routing,
+	// the anthropic section) the bypass would switch them all off, so such a
+	// call is refused with PERMISSION_DENIED instead. The inspector and the
+	// caches only watch or save work; a service with nothing else keeps the
+	// bypass, and its gRPC calls are not recorded.
+	if cls := grpcwire.Classify(r); cls.Streaming() {
+		if aiControlsBody(svc.AIConfig) {
+			grpcwire.WriteTrailersOnly(w, r.Header.Get("Content-Type"), grpcwire.CodePermissionDenied, msgGRPCOnAIControls)
+			return
+		}
 		c.injectCredential(r, svc)
 		httpduplex.Serve(w, r, proxyHandler)
 		return
@@ -429,6 +441,16 @@ func (c *Chain) ServeHTTP(w http.ResponseWriter, r *http.Request, svc Service, p
 		return
 	}
 	c.run(w, r, svc, proxyHandler, false)
+}
+
+// msgGRPCOnAIControls is the refusal of a gRPC-like call to a service whose
+// AI controls cannot run on it.
+const msgGRPCOnAIControls = "this service applies AI controls (redaction, guardrails, routing or the anthropic section) that cannot run on gRPC; remove them or serve gRPC from a separate service"
+
+// aiControlsBody reports whether cfg has a section that must read, judge or
+// rewrite each request body: such a service cannot take a gRPC-like call.
+func aiControlsBody(cfg ServiceAIConfig) bool {
+	return cfg.Redaction != nil || cfg.Guardrails != nil || cfg.Routing != nil || cfg.Anthropic != nil
 }
 
 // injectCredential strips the visitor's credential header and puts the

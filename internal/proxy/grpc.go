@@ -21,11 +21,15 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ankoehn/burrow/internal/grpcwire"
 	"github.com/ankoehn/burrow/internal/proto"
@@ -43,6 +47,19 @@ const grpcDeadlineSlack = time.Second
 // maxDenyBody is how much of a refusal's body is kept to become its
 // grpc-message.
 const maxDenyBody = 512
+
+// maxHeldBody is how much of a refusal's body is let through the copy before
+// the status is sent without the rest (M4).
+const maxHeldBody = 64 << 10
+
+// heldRefusalTimeout is how long a refusal the upstream writes is held for
+// its body before the status is sent without the rest. A variable for the
+// tests only.
+var heldRefusalTimeout = 2 * time.Second
+
+// msgTunnelOffline is the grpc-message of a call to a service whose tunnel
+// is not connected.
+const msgTunnelOffline = "the service's tunnel is not connected"
 
 // maxDenyMessage bounds the grpc-message of a refusal.
 const maxDenyMessage = 200
@@ -66,20 +83,63 @@ const msgDeadline = "the call's deadline passed before the service answered"
 // Header is the writer's own map throughout, so the wrappers further in
 // (countingResponseWriter, httpduplex) and the reverse proxy see the same
 // headers and trailers.
+//
+// A held refusal is bounded (M4): past maxHeldBody bytes of its body, or
+// heldRefusalTimeout after it began, the forward is cut short (its writes
+// fail, or the request's context is cancelled) and ServeHTTP sends the status
+// at once instead of waiting for an upstream that goes on writing or stalls.
+//
+// For a binary grpc-web call it reads the frames of the body as they pass,
+// without holding them, for the grpc-status of the trailers frame (flag
+// 0x80): grpc-web has no HTTP trailers.
 type grpcWriter struct {
 	http.ResponseWriter
 	contentType string // the request's, echoed in a trailers-only reply
+	web         bool   // the call is grpc-web
 
 	started  bool          // a response is passing through
 	denied   bool          // a refusal is held for finish
 	status   int           // the held refusal's HTTP status
 	code     grpcwire.Code // and its gRPC code
 	body     []byte        // the start of its body
+	held     int           // bytes of its body seen
 	finished bool
+
+	cancel func()      // cancels the request's context
+	timer  *time.Timer // cuts a held refusal short
+	cut    atomic.Bool // the forward was cut short for the held refusal
+
+	frames *webFrames // a binary grpc-web response's frames; nil otherwise
 }
 
-func newGRPCWriter(w http.ResponseWriter, r *http.Request) *grpcWriter {
-	return &grpcWriter{ResponseWriter: w, contentType: r.Header.Get("Content-Type")}
+func newGRPCWriter(w http.ResponseWriter, r *http.Request, cancel func()) *grpcWriter {
+	return &grpcWriter{
+		ResponseWriter: w, contentType: r.Header.Get("Content-Type"),
+		web: grpcwire.Classify(r) == grpcwire.ClassGRPCWeb, cancel: cancel,
+	}
+}
+
+// errHeldRefusalCut ends the copy of a held refusal's body past maxHeldBody.
+var errHeldRefusalCut = errors.New("proxy: the refusal's body is not read further")
+
+// start marks the response as passing through. For a grpc-web call in
+// binary form it starts reading the body's frames; grpc-web-text (base64)
+// is not read.
+func (g *grpcWriter) start() {
+	if g.started {
+		return
+	}
+	g.started = true
+	if !g.web {
+		return
+	}
+	ct := g.Header().Get("Content-Type")
+	if ct == "" {
+		ct = g.contentType
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "application/grpc-web-text") {
+		g.frames = &webFrames{}
+	}
 }
 
 func (g *grpcWriter) WriteHeader(code int) {
@@ -93,11 +153,18 @@ func (g *grpcWriter) WriteHeader(code int) {
 		g.ResponseWriter.WriteHeader(code)
 		return
 	case code == http.StatusOK || g.Header().Get("Grpc-Status") != "":
-		g.started = true
+		g.start()
 		g.ResponseWriter.WriteHeader(code)
 		return
 	}
 	g.denied, g.status, g.code = true, code, grpcwire.StatusForHTTP(code)
+	if g.cancel != nil {
+		cancel := g.cancel
+		g.timer = time.AfterFunc(heldRefusalTimeout, func() {
+			g.cut.Store(true)
+			cancel()
+		})
+	}
 }
 
 func (g *grpcWriter) Write(p []byte) (int, error) {
@@ -105,10 +172,19 @@ func (g *grpcWriter) Write(p []byte) (int, error) {
 		if room := maxDenyBody - len(g.body); room > 0 {
 			g.body = append(g.body, p[:min(room, len(p))]...)
 		}
+		g.held += len(p)
+		if g.held > maxHeldBody {
+			g.cut.Store(true)
+			return 0, errHeldRefusalCut
+		}
 		return len(p), nil
 	}
-	g.started = true
-	return g.ResponseWriter.Write(p)
+	g.start()
+	n, err := g.ResponseWriter.Write(p)
+	if g.frames != nil {
+		g.frames.feed(p[:n])
+	}
+	return n, err
 }
 
 // Flush implements http.Flusher; a held refusal is not flushed.
@@ -119,7 +195,7 @@ func (g *grpcWriter) FlushError() error {
 	if g.denied {
 		return nil
 	}
-	g.started = true
+	g.start()
 	return http.NewResponseController(g.ResponseWriter).Flush()
 }
 
@@ -133,6 +209,9 @@ func (g *grpcWriter) heldCode() (grpcwire.Code, bool) { return g.code, g.denied 
 // finish sends the held refusal, if there is one, as a trailers-only reply.
 // It is called once the handler is done.
 func (g *grpcWriter) finish() {
+	if g.timer != nil {
+		g.timer.Stop()
+	}
 	if !g.denied || g.finished {
 		return
 	}
@@ -170,9 +249,82 @@ func denyMessage(status int, body []byte) string {
 		msg = strings.ToLower(http.StatusText(status))
 	}
 	if len(msg) > maxDenyMessage {
-		msg = msg[:maxDenyMessage]
+		n := maxDenyMessage
+		for n > 0 && !utf8.RuneStart(msg[n]) {
+			n--
+		}
+		msg = msg[:n]
 	}
 	return msg
+}
+
+// webFrames reads the frames of a grpc-web body as they pass: 5 bytes of
+// flag and big-endian length, then the payload. A frame with flag 0x80 holds
+// the trailers as HTTP/1-style header lines; its grpc-status is the call's.
+// Data frames are skipped, not kept. A flag it does not know (a compressed
+// trailers frame included) makes it give up: failed.
+type webFrames struct {
+	hdr     [5]byte
+	nh      int    // bytes of hdr read
+	left    uint32 // payload bytes of the current frame still to come
+	trailer bool   // the current frame is the trailers frame
+	block   []byte // its payload, bounded
+	failed  bool
+	code    grpcwire.Code
+	has     bool // a trailers frame with a valid grpc-status was read
+}
+
+// maxWebTrailers bounds the trailers block kept for its grpc-status.
+const maxWebTrailers = 8 << 10
+
+func (f *webFrames) feed(p []byte) {
+	for len(p) > 0 && !f.failed {
+		if f.nh < len(f.hdr) {
+			n := copy(f.hdr[f.nh:], p)
+			f.nh += n
+			p = p[n:]
+			if f.nh < len(f.hdr) {
+				return
+			}
+			switch f.hdr[0] {
+			case 0x00, 0x01: // a message, plain or compressed
+			case 0x80:
+				f.trailer, f.block = true, f.block[:0]
+			default:
+				f.failed = true
+				return
+			}
+			if f.left = binary.BigEndian.Uint32(f.hdr[1:]); f.left == 0 {
+				f.endFrame()
+			}
+			continue
+		}
+		n := min(int(f.left), len(p))
+		if f.trailer {
+			if room := maxWebTrailers - len(f.block); room > 0 {
+				f.block = append(f.block, p[:min(room, n)]...)
+			}
+		}
+		f.left -= uint32(n)
+		p = p[n:]
+		if f.left == 0 {
+			f.endFrame()
+		}
+	}
+}
+
+func (f *webFrames) endFrame() {
+	if f.trailer {
+		for _, line := range strings.Split(string(f.block), "\n") {
+			k, v, ok := strings.Cut(strings.TrimRight(line, "\r"), ":")
+			if ok && strings.EqualFold(strings.TrimSpace(k), "grpc-status") {
+				if c, ok := grpcwire.Status(http.Header{"Grpc-Status": {strings.TrimSpace(v)}}); ok {
+					f.code, f.has = c, true
+				}
+			}
+		}
+	}
+	f.nh, f.trailer = 0, false
 }
 
 // grpcWriterOf finds the grpcWriter under w's wrappers, or nil.
@@ -188,6 +340,19 @@ func grpcWriterOf(w http.ResponseWriter) *grpcWriter {
 		w = u.Unwrap()
 	}
 	return nil
+}
+
+// notFoundFor answers a lookup or dial that found no tunnel (err is
+// ErrNotFound or wraps it). For a gRPC call a tunnel that is known but not
+// connected is UNAVAILABLE (M2): offline is a retryable outage, not a method
+// that does not exist. Everything else is the canonical 404 (UNIMPLEMENTED
+// for gRPC, by the writer).
+func (p *Proxy) notFoundFor(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, ErrTunnelOffline) && grpcwire.Classify(r).GRPCShaped() {
+		grpcwire.WriteTrailersOnly(w, r.Header.Get("Content-Type"), grpcwire.CodeUnavailable, msgTunnelOffline)
+		return
+	}
+	p.notFound(w)
 }
 
 // h2Upstream reports whether res's upstream protocol speaks HTTP/2.
@@ -228,6 +393,12 @@ func (p *Proxy) prepareUpstream(w http.ResponseWriter, r *http.Request, res *Res
 	if !ok {
 		// No grpc-timeout and no cap: no relay deadline. Dead peers are
 		// found by HTTP/2 pings and the tunnel's heartbeat.
+		return r, release, true
+	}
+	if d > math.MaxInt64-grpcDeadlineSlack {
+		// Longer than a time.Duration holds with the slack (ParseTimeout
+		// saturates): as good as none, and the sum must not wrap into the
+		// past. A cap is never this long.
 		return r, release, true
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), d+grpcDeadlineSlack)
@@ -306,7 +477,21 @@ func (p *Proxy) grpcResult(r *http.Request, res *Resolved, started time.Time, ww
 	if !ok && !ww.hijacked {
 		code, ok = grpcwire.Status(ww.Header())
 	}
+	unknown := false // nothing says whether a status was sent
+	if !ok && cls == grpcwire.ClassGRPCWeb {
+		// grpc-web sends its status in the body's trailers frame. In
+		// grpc-web-text (base64), or a body that was no grpc-web framing,
+		// it cannot be read: the row keeps its HTTP outcome.
+		g := grpcWriterOf(ww.ResponseWriter)
+		switch {
+		case g != nil && g.frames != nil && g.frames.has:
+			code, ok = g.frames.code, true
+		case g == nil || g.frames == nil || g.frames.failed:
+			unknown = true
+		}
+	}
 	switch {
+	case unknown:
 	case ok:
 		c := int(code)
 		out.status = &c

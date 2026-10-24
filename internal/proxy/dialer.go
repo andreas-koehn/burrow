@@ -35,6 +35,17 @@ import (
 // for the requested subdomain (or the tunnel has gone away).
 var ErrNotFound = errors.New("proxy: tunnel not found")
 
+// ErrTunnelOffline is returned by StreamDialer methods when the service
+// exists but its tunnel is not connected. It is an ErrNotFound
+// (errors.Is(ErrTunnelOffline, ErrNotFound) holds), so plain HTTP answers it
+// as before; a gRPC call gets UNAVAILABLE instead of UNIMPLEMENTED.
+var ErrTunnelOffline error = tunnelOffline{}
+
+type tunnelOffline struct{}
+
+func (tunnelOffline) Error() string        { return "proxy: tunnel not connected" }
+func (tunnelOffline) Is(target error) bool { return target == ErrNotFound }
+
 // Resolved carries the service metadata that the proxy needs after a
 // successful Lookup. It is populated by StreamDialer.Lookup and threaded
 // through the access checker before any stream is opened.
