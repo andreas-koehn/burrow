@@ -274,10 +274,11 @@ func TestE2EIPGeo_CIDRAllowBlock(t *testing.T) {
 	// ------------------------------------------------------------------
 	// Step 4: add allow_countries while geo not loaded.
 	//
-	// In the default build NoopGeoLookup returns Enabled=false, so the
-	// country list is accepted at write time but never enforced. CIDR
-	// allow-only enforcement keeps working: 203.0.113.7 → 200,
-	// 198.51.100.4 → 403.
+	// Without a database the country list cannot be verified (the API
+	// refuses to save one; this row stands for one saved while a database
+	// was there). An allow list never lets an unknown country through, so
+	// both addresses are refused: 203.0.113.7 matches the CIDR allow list
+	// but not a country it cannot resolve, 198.51.100.4 matches neither.
 	// ------------------------------------------------------------------
 	must(t, wrapped.SetServiceIPGeo(context.Background(), db.ServiceIPGeoConfig{
 		ServiceID:      s.serviceID,
@@ -307,17 +308,14 @@ func TestE2EIPGeo_CIDRAllowBlock(t *testing.T) {
 		t.Errorf("/geo/status.enabled: want false in default build, got %v body=%s", got, statusBody)
 	}
 
-	// CIDR enforcement still works with allow_countries set + geo off.
+	// An allow list of countries with no database fails closed.
 	req3, _ := http.NewRequest(http.MethodPost, target, strings.NewReader("payload"))
 	req3.Header.Set("X-Forwarded-For", "203.0.113.7")
 	r3, err := hc.Do(req3)
 	must(t, err, "POST (allowed, geo-off + countries)")
 	body3 := readAllString(t, r3)
-	if r3.StatusCode != http.StatusOK {
-		t.Fatalf("post-country-set allowed XFF: want 200, got %d body=%s", r3.StatusCode, body3)
-	}
-	if body3 != "ipgeo-ok" {
-		t.Errorf("post-country-set body: want 'ipgeo-ok', got %q", body3)
+	if r3.StatusCode != http.StatusForbidden || !strings.Contains(body3, `"reason":"ip_geo"`) {
+		t.Fatalf("post-country-set, no database: want 403 ip_geo, got %d body=%s", r3.StatusCode, body3)
 	}
 	req4, _ := http.NewRequest(http.MethodPost, target, strings.NewReader("payload"))
 	req4.Header.Set("X-Forwarded-For", "198.51.100.4")

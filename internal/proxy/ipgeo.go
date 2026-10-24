@@ -166,22 +166,21 @@ func (e *IPGeoEngine) Allow(ip net.IP) (bool, string) {
 		}
 	}
 
-	// 3. Country rules. In the default build (noopGeoLookup), Country
-	//    returns "" and we treat that as "unknown" — block_countries cannot
-	//    match an empty code, and an allowlist is treated as "deny when the
-	//    geo lookup is disabled and the API is gated by a country
-	//    allowlist". Spec Part J's intent: the geo-OFF build accepts the
-	//    config but never enforces.
-	if !e.geo.Enabled() {
+	// 3. Country rules. A country the database does not know (no record, a
+	//    failed lookup, or no database at all) follows the list: an allow
+	//    list denies it, a block list lets it through. Without a database
+	//    an allow list therefore denies everyone it has not already let in
+	//    by address; a block list cannot be enforced (the API says so and
+	//    refuses to save one, and /geo/status reports it).
+	if len(e.policy.AllowCountries) == 0 && len(e.policy.BlockCountries) == 0 {
 		return true, ""
 	}
-	country, err := e.geo.Country(ip)
-	if err != nil {
-		// Lookup error → fail open. Operators see logs; visitors aren't
-		// blocked because the geo db couldn't be read.
-		return true, ""
+	country := ""
+	if e.geo.Enabled() {
+		if c, err := e.geo.Country(ip); err == nil {
+			country = strings.ToUpper(strings.TrimSpace(c))
+		}
 	}
-	country = strings.ToUpper(strings.TrimSpace(country))
 	if country != "" {
 		for _, c := range e.policy.BlockCountries {
 			if c == country {
@@ -190,16 +189,12 @@ func (e *IPGeoEngine) Allow(ip net.IP) (bool, string) {
 		}
 	}
 	if len(e.policy.AllowCountries) > 0 {
-		matched := false
 		for _, c := range e.policy.AllowCountries {
 			if c == country {
-				matched = true
-				break
+				return true, ""
 			}
 		}
-		if !matched {
-			return false, "ip_geo"
-		}
+		return false, "ip_geo"
 	}
 	return true, ""
 }

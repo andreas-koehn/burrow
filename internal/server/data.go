@@ -307,7 +307,7 @@ func (s *Server) admitVisitor(tun *Tunnel, visitor net.Conn) (string, bool) {
 		s.refuseVisitor(tun, visitor, "", TCPRefusedNoAddress)
 		return "", false
 	}
-	if tun.accessMode == TCPAccessIP && !tun.policy.Load().allows(ip, time.Now()) {
+	if pol := tun.policy.Load(); (tun.accessMode == TCPAccessIP || pol != nil) && !pol.allows(ip, time.Now(), s.geoLookup(), &s.geoCache) {
 		s.refuseVisitor(tun, visitor, ip.String(), observe.RejectedIPGeo)
 		return "", false
 	}

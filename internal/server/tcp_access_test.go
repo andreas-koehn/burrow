@@ -296,16 +296,16 @@ func TestTCPPolicy_Allows(t *testing.T) {
 		"2001:db8::1": true, "2001:db9::1": false, "198.51.100.7": true,
 		"203.0.113.9": true, "203.0.113.10": false, "0.0.0.0": false,
 	} {
-		if got := p.allows(netip.MustParseAddr(ip), now); got != want {
+		if got := p.allows(netip.MustParseAddr(ip), now, nil, &geoCache{}); got != want {
 			t.Errorf("%s: %v, want %v", ip, got, want)
 		}
 	}
 	empty, _ := compileTCPPolicy(TCPAccess{})
-	if empty.allows(netip.MustParseAddr("192.0.2.1"), now) {
+	if empty.allows(netip.MustParseAddr("192.0.2.1"), now, nil, &geoCache{}) {
 		t.Error("an empty policy let a visitor in")
 	}
 	var none *tcpPolicy
-	if none.allows(netip.MustParseAddr("192.0.2.1"), now) {
+	if none.allows(netip.MustParseAddr("192.0.2.1"), now, nil, &geoCache{}) {
 		t.Error("no policy let a visitor in")
 	}
 	if _, err := compileTCPPolicy(TCPAccess{BlockCIDRs: []string{"nonsense"}}); err == nil {
@@ -733,5 +733,201 @@ func TestTCPAccess_TheStricterOfWishAndDashboard(t *testing.T) {
 			}
 			a.waitFor("the port is free", func() bool { _, ok := a.srv.LookupTunnelByServiceID(id); return !ok })
 		}
+	}
+}
+
+// fakeGeo is a GeoCountry over a map of address to country; a missing
+// address has no record. enabled false is no database.
+type fakeGeo struct {
+	mu      sync.Mutex
+	enabled bool
+	cc      map[string]string
+	err     error
+	calls   int
+}
+
+func (g *fakeGeo) Country(ip net.IP) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calls++
+	return g.cc[ip.String()], g.err
+}
+
+func (g *fakeGeo) Enabled() bool { g.mu.Lock(); defer g.mu.Unlock(); return g.enabled }
+
+// The country rules of the policy, in both modes: a block country wins; an
+// allow list of countries admits only its countries (in mode ip next to the
+// allow entries and grants); an unknown country (no record, a failed lookup,
+// no database) is denied by an allow list and let through by a block list.
+func TestTCPPolicy_Countries(t *testing.T) {
+	now := time.Now()
+	de, us := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.1")
+	unknown := netip.MustParseAddr("203.0.113.1")
+	geo := &fakeGeo{enabled: true, cc: map[string]string{"192.0.2.1": "DE", "198.51.100.1": "US"}}
+	none := &fakeGeo{}
+	failing := &fakeGeo{enabled: true, err: errors.New("read failed"), cc: map[string]string{"192.0.2.1": "DE"}}
+
+	type c struct {
+		name string
+		acc  TCPAccess
+		geo  GeoCountry
+		ip   netip.Addr
+		want bool
+	}
+	for _, tc := range []c{
+		// mode open
+		{"open block, blocked", TCPAccess{Mode: "open", BlockCC: []string{"de"}}, geo, de, false},
+		{"open block, other", TCPAccess{Mode: "open", BlockCC: []string{"DE"}}, geo, us, true},
+		{"open block, unknown", TCPAccess{Mode: "open", BlockCC: []string{"DE"}}, geo, unknown, true},
+		{"open block, no database", TCPAccess{Mode: "open", BlockCC: []string{"DE"}}, none, de, true},
+		{"open allow, listed", TCPAccess{Mode: "open", AllowCC: []string{"DE"}}, geo, de, true},
+		{"open allow, other", TCPAccess{Mode: "open", AllowCC: []string{"DE"}}, geo, us, false},
+		{"open allow, unknown", TCPAccess{Mode: "open", AllowCC: []string{"DE"}}, geo, unknown, false},
+		{"open allow, no database", TCPAccess{Mode: "open", AllowCC: []string{"DE"}}, none, de, false},
+		{"open allow, nil geo", TCPAccess{Mode: "open", AllowCC: []string{"DE"}}, nil, de, false},
+		{"open allow, failed lookup", TCPAccess{Mode: "open", AllowCC: []string{"DE"}}, failing, de, false},
+		{"open block, failed lookup", TCPAccess{Mode: "open", BlockCC: []string{"DE"}}, failing, de, true},
+		// mode ip
+		{"ip countries only, listed", TCPAccess{Mode: "ip", AllowCC: []string{"DE"}}, geo, de, true},
+		{"ip countries only, other", TCPAccess{Mode: "ip", AllowCC: []string{"DE"}}, geo, us, false},
+		{"ip countries only, no database", TCPAccess{Mode: "ip", AllowCC: []string{"DE"}}, none, de, false},
+		{"ip countries only, unknown", TCPAccess{Mode: "ip", AllowCC: []string{"DE"}}, geo, unknown, false},
+		{"ip allow entry beats missing database", TCPAccess{Mode: "ip", AllowCIDRs: []string{"192.0.2.0/24"}, AllowCC: []string{"US"}}, none, de, true},
+		{"ip block country beats allow entry", TCPAccess{Mode: "ip", AllowCIDRs: []string{"192.0.2.0/24"}, BlockCC: []string{"DE"}}, geo, de, false},
+		{"ip block entry beats allow country", TCPAccess{Mode: "ip", BlockCIDRs: []string{"192.0.2.1"}, AllowCC: []string{"DE"}}, geo, de, false},
+		{"ip block country with no allow lets nobody in", TCPAccess{Mode: "ip", BlockCC: []string{"US"}}, geo, de, false},
+		{"ip grant, blocked country", TCPAccess{Mode: "ip", BlockCC: []string{"DE"}, Grants: []TCPGrant{{CIDR: "192.0.2.1", ExpiresAt: now.Add(time.Hour)}}}, geo, de, false},
+		{"ip grant, other country", TCPAccess{Mode: "ip", BlockCC: []string{"US"}, Grants: []TCPGrant{{CIDR: "192.0.2.1", ExpiresAt: now.Add(time.Hour)}}}, geo, de, true},
+	} {
+		p, err := compileTCPPolicy(tc.acc)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		g := tc.geo
+		if p == nil {
+			t.Fatalf("%s: no policy", tc.name)
+		}
+		if got := p.allows(tc.ip, now, g, &geoCache{}); got != tc.want {
+			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// Mode open without country rules has no policy at all.
+	if p, _ := compileTCPPolicy(TCPAccess{Mode: "open"}); p != nil {
+		t.Error("open mode without country rules compiled a policy")
+	}
+}
+
+// The country of a source is looked up once and remembered.
+func TestGeoCache(t *testing.T) {
+	now := time.Now()
+	g := &fakeGeo{enabled: true, cc: map[string]string{"192.0.2.1": "de"}}
+	var c geoCache
+	ip := netip.MustParseAddr("192.0.2.1")
+	for i := 0; i < 5; i++ {
+		if cc := c.country(g, ip, now); cc != "DE" {
+			t.Fatalf("country %q", cc)
+		}
+	}
+	if g.calls != 1 {
+		t.Fatalf("%d lookups, want 1", g.calls)
+	}
+	if c.country(g, ip, now.Add(geoCacheTTL+time.Second)); g.calls != 2 {
+		t.Fatalf("an entry did not expire: %d lookups", g.calls)
+	}
+	g.err = errors.New("x")
+	other := netip.MustParseAddr("192.0.2.2")
+	c.country(g, other, now)
+	c.country(g, other, now)
+	if g.calls != 4 {
+		t.Fatalf("a failed lookup was remembered: %d lookups", g.calls)
+	}
+}
+
+// Country rules on the real accept path: mode open and mode ip, with and
+// without a database, a database that appears (a reload), an unknown country.
+func TestTCPAccess_CountryRules(t *testing.T) {
+	geo := &fakeGeo{enabled: true, cc: map[string]string{"127.0.0.1": "DE"}}
+	a := newAccessRelay(t, 19520, 19520, nil)
+	a.srv.SetGeo(geo)
+	id := a.res.setMode("svc", "open")
+	a.access.set(id, TCPAccess{Mode: TCPAccessOpen, BlockCC: []string{"DE"}})
+	rr := a.c.register(t, proto.TunnelRegister{Name: "svc", Type: "tcp", LocalAddr: "x"})
+	if !rr.OK || rr.RemotePort != 19520 {
+		t.Fatalf("answer: %+v", rr)
+	}
+	denied := func(why string) {
+		t.Helper()
+		if got, err := visit(t, 19520, 2*time.Second); len(got) != 0 || err == nil {
+			t.Fatalf("%s: a visitor got %q, %v", why, got, err)
+		}
+	}
+	allowed := func(why string) {
+		t.Helper()
+		if got, err := visit(t, 19520, 2*time.Second); err != nil || string(got) != "hello" {
+			t.Fatalf("%s: a visitor got %q, %v", why, got, err)
+		}
+	}
+	refresh := func(acc TCPAccess) {
+		t.Helper()
+		a.access.set(id, acc)
+		if err := a.srv.RefreshTCPService(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+		a.srv.geoCache.reset() // the countries are looked up again
+	}
+
+	denied("open, block DE")
+	if n := len(a.refusedRows(observe.RejectedIPGeo)); n != 1 {
+		t.Fatalf("%d rejected rows, want 1", n)
+	}
+	refresh(TCPAccess{Mode: TCPAccessOpen, BlockCC: []string{"US"}})
+	allowed("open, block US")
+	refresh(TCPAccess{Mode: TCPAccessOpen, AllowCC: []string{"DE"}})
+	allowed("open, allow DE")
+	refresh(TCPAccess{Mode: TCPAccessOpen, AllowCC: []string{"US"}})
+	denied("open, allow US")
+
+	// Unknown country: no record.
+	geo.mu.Lock()
+	geo.cc = map[string]string{}
+	geo.mu.Unlock()
+	refresh(TCPAccess{Mode: TCPAccessOpen, AllowCC: []string{"DE"}})
+	denied("open, allow DE, unknown country")
+	refresh(TCPAccess{Mode: TCPAccessOpen, BlockCC: []string{"DE"}})
+	allowed("open, block DE, unknown country")
+
+	// No database: an allow list denies everyone; a block list cannot match.
+	geo.mu.Lock()
+	geo.enabled = false
+	geo.mu.Unlock()
+	refresh(TCPAccess{Mode: TCPAccessOpen, AllowCC: []string{"DE"}})
+	denied("open, allow DE, no database")
+	refresh(TCPAccess{Mode: TCPAccessOpen, BlockCC: []string{"DE"}})
+	allowed("open, block DE, no database")
+}
+
+// Mode ip with an allow list made only of countries: no database lets
+// nobody in, a database that appears (a reload) lets its countries in.
+func TestTCPAccess_CountryOnlyAllowListWithoutDatabase(t *testing.T) {
+	geo := &fakeGeo{cc: map[string]string{"127.0.0.1": "DE"}} // no database yet
+	a := newAccessRelay(t, 19521, 19521, nil)
+	a.srv.SetGeo(geo)
+	id := a.res.setMode("rdp", "ip")
+	a.access.set(id, TCPAccess{Mode: TCPAccessIP, AllowCC: []string{"DE"}})
+	if rr := a.c.register(t, proto.TunnelRegister{Name: "rdp", Type: "tcp", LocalAddr: "x"}); !rr.OK {
+		t.Fatalf("answer: %+v", rr)
+	}
+	if got, err := visit(t, 19521, 2*time.Second); len(got) != 0 || err == nil {
+		t.Fatalf("no database: a visitor got %q, %v", got, err)
+	}
+	if n := a.told.Load(); n != 0 {
+		t.Fatalf("the home client was told of %d denied visitors", n)
+	}
+	geo.mu.Lock()
+	geo.enabled = true
+	geo.mu.Unlock()
+	a.srv.geoCache.reset()
+	if got, err := visit(t, 19521, 2*time.Second); err != nil || string(got) != "hello" {
+		t.Fatalf("database loaded: a visitor got %q, %v", got, err)
 	}
 }

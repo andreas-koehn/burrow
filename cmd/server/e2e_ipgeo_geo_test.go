@@ -1,5 +1,3 @@
-//go:build geo
-
 package main
 
 // e2e_ipgeo_geo_test.go — Task 9 of the v0.4.0 integration plan (geo

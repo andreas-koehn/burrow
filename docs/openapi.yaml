@@ -1474,7 +1474,13 @@ components:
       allOf:
         - $ref: '#/components/schemas/ServiceIpGeoInput'
         - type: object
-          required: [enabled, allow_cidrs, block_cidrs, allow_countries, block_countries]
+          required: [enabled, allow_cidrs, block_cidrs, allow_countries, block_countries, country_rules_enforced]
+          properties:
+            country_rules_enforced:
+              type: boolean
+              description: >
+                False when the rules have country lists and no GeoIP database
+                is loaded: nothing enforces them (see `/geo/status`).
     UpstreamCredentialBinding:
       type: object
       description: >
@@ -3968,10 +3974,19 @@ paths:
       summary: Replace per-service IP / Geo rules
       description: |
         For a tcp service in access mode `ip` the CIDR lists are the
-        permanent part of its policy (countries and `enabled` are not used):
+        permanent part of its policy (`enabled` is not used):
         a visitor is let in when an allow entry or a just-in-time grant holds
-        its address and no block entry does; an empty allow list without
-        grants lets nobody in. An allow entry of a tcp service is at most a
+        its address, or its country is on the country allow list, and no block
+        entry or block country holds it; an empty allow list without
+        grants lets nobody in. The country lists also apply to a tcp service in
+        mode `open` (a visitor must be from an allowed country and not from a
+        blocked one).
+
+        Country lists need a GeoIP database (`BURROW_GEOIP_DB`, a
+        GeoLite2-Country `.mmdb`, reloaded when the file changes): without one
+        a request with a country list is a 400 (empty country lists can
+        always be saved). An unknown country (no record, no database) follows
+        the list: an allow list denies it, a block list lets it through. An allow entry of a tcp service is at most a
         /8 of IPv4 or a /32 of IPv6 (a 400 otherwise). The relay applies a
         change to the next visitor. Audited as `ipgeo.update` with the lists
         before and after.
@@ -3986,6 +4001,7 @@ paths:
       responses:
         '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '204': { description: Updated. }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/v1/services/{serviceID}/ip-grants:
@@ -6715,6 +6731,10 @@ paths:
       operationId: geoStatusGet
       x-burrow-permission: {kind: needs, any_of: ["ipgeo:manage:own", "ipgeo:manage:any"]}
       summary: Global geo-lookup status (enabled, db path, age)
+      description: |
+        `enabled` is true while a GeoIP database is loaded (`BURROW_GEOIP_DB`).
+        While it is not, country rules cannot be enforced: `rules_not_enforced`
+        counts the services that have some.
       responses:
         '200':
           description: Status envelope.
@@ -6722,10 +6742,15 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [enabled, db_path, db_age_seconds]
+                required: [enabled, configured, db_path, db_age_seconds, rules_not_enforced]
                 properties:
                   enabled: { type: boolean }
+                  configured: { type: boolean, description: A database path is set. }
                   db_path: { type: string }
+                  error: { type: string, description: Why the database could not be loaded; absent when it could. }
+                  rules_not_enforced:
+                    type: integer
+                    description: Services with country rules that nothing enforces (no database loaded).
                   db_age_seconds:
                     type: integer
                     format: int64

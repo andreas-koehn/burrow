@@ -406,9 +406,10 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 	}
 	maxConns := svc.res.MaxConnections
 	var policy *tcpPolicy
-	if mode == TCPAccessIP {
+	if mode == TCPAccessIP || (mode == TCPAccessOpen && serviceID != "" && s.opts.TCPAccess != nil) {
 		var perr error
-		if policy, maxConns, perr = s.loadTCPPolicy(serviceID); perr != nil {
+		var loadedMax int
+		if policy, loadedMax, perr = s.loadTCPPolicy(serviceID, mode); perr != nil {
 			var re *RefusalError
 			if errors.As(perr, &re) {
 				refuseWith(re.Code, re.Message)
@@ -417,6 +418,9 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 			s.log.Warn("load tcp ip policy failed", "session_id", cs.SessionID, "service_id", serviceID, "err", perr)
 			refuseWith(proto.CodeInternal, errTCPLookup)
 			return
+		}
+		if mode == TCPAccessIP {
+			maxConns = loadedMax
 		}
 	}
 	if ok, same := s.claimTCPService(serviceID, cs.TokenID); !ok {
@@ -523,7 +527,7 @@ func (s *Server) openTCPPort(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 	port := plan.port
 	tn.RemotePort = port
 	tn.limits = newTCPLimits(maxConns)
-	if tn.accessMode == TCPAccessIP {
+	if policy != nil {
 		tn.policy.Store(policy)
 	}
 	if lerr := s.startPublicListener(tn); lerr != nil {
@@ -561,11 +565,12 @@ func (s *Server) openTCPPort(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 	return true
 }
 
-// loadTCPPolicy reads and compiles the ip policy of a service in mode ip,
+// loadTCPPolicy reads and compiles the ip policy of a service in mode ip (or
+// the country rules of one in mode open),
 // with its cap on visitors. A relay without a TCPAccessLoader cannot let
 // anybody in, and a service whose mode changed meanwhile is retried by the
 // client.
-func (s *Server) loadTCPPolicy(serviceID string) (*tcpPolicy, int, error) {
+func (s *Server) loadTCPPolicy(serviceID, mode string) (*tcpPolicy, int, error) {
 	if s.opts.TCPAccess == nil {
 		return nil, 0, &RefusalError{Code: proto.CodeAccessInvalid, Message: "this relay cannot apply the access mode ip; nothing was opened"}
 	}
@@ -575,7 +580,14 @@ func (s *Server) loadTCPPolicy(serviceID string) (*tcpPolicy, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	if acc.Mode != TCPAccessIP {
+	if mode == TCPAccessOpen {
+		// A mode that changed meanwhile is dealt with by the check after
+		// the registration (accessEpoch); here only the country rules count.
+		if acc.Mode != "" && acc.Mode != TCPAccessOpen {
+			return nil, 0, nil
+		}
+		acc.Mode = TCPAccessOpen
+	} else if acc.Mode != mode {
 		return nil, 0, &RefusalError{Code: proto.CodeServiceBusy, Message: "the access mode of the service changed while registering; trying again"}
 	}
 	p, err := compileTCPPolicy(acc)
@@ -633,7 +645,8 @@ func (s *Server) reconcileTCP(ctx context.Context, tn *Tunnel) error {
 	}
 	tn.setTCPSettings(acc.ProxyProtocol, acc.IdleTimeout)
 	tn.setHostname(acc.Hostname)
-	if mode == TCPAccessIP {
+	if mode == TCPAccessIP || mode == TCPAccessOpen {
+		acc.Mode = mode
 		p, err := compileTCPPolicy(acc)
 		if err != nil {
 			closeIt("its ip policy could not be compiled", err)

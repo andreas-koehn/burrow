@@ -117,6 +117,7 @@ func TestIPGeo_Get_OwnerDefault(t *testing.T) {
 // TestIPGeo_Put_OwnerRoundTrip verifies an owner can PUT and then GET back.
 func TestIPGeo_Put_OwnerRoundTrip(t *testing.T) {
 	d, store := makeIPGeoDeps(t, "user", "u-self")
+	d.GeoLookup = fakeGeoLookupSurface{enabled: true, dbPath: "/geo.mmdb"}
 	srv := httptest.NewServer(NewRouter(d))
 	defer srv.Close()
 	c := authedClient(t, srv)
@@ -354,5 +355,98 @@ func TestIPGeo_Status_Enabled(t *testing.T) {
 	}
 	if got.DBAgeSeconds == nil || *got.DBAgeSeconds != 3600 {
 		t.Errorf("want db_age_seconds=3600, got %v", got.DBAgeSeconds)
+	}
+}
+
+// CountCountryRules counts the stored rows that have a country list.
+func (f *fakeIPGeoStore) CountCountryRules(context.Context) (int, error) {
+	n := 0
+	for _, c := range f.rows {
+		if len(c.AllowCountries)+len(c.BlockCountries) > 0 {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// TestIPGeo_NoDatabase_CountryRulesRefused: without a GeoIP database country
+// lists cannot be saved (400 with a reason), lists without countries and the
+// clearing of countries can, and rules saved earlier are reported as not
+// enforced by both GETs.
+func TestIPGeo_NoDatabase_CountryRulesRefused(t *testing.T) {
+	d, store := makeIPGeoDeps(t, "user", "u-self")
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	for _, body := range []ipGeoReq{
+		{BlockCountries: []string{"KP"}},
+		{AllowCountries: []string{"DE"}},
+	} {
+		r := c.put(t, "/api/v1/services/svc-1/ip-geo", body)
+		txt := readBody(t, r)
+		if r.StatusCode != http.StatusBadRequest || !strings.Contains(txt, "BURROW_GEOIP_DB") {
+			t.Fatalf("want 400 naming BURROW_GEOIP_DB, got %d %s", r.StatusCode, txt)
+		}
+	}
+	if _, ok := store.rows["svc-1"]; ok {
+		t.Error("a refused save was stored")
+	}
+	if r := c.put(t, "/api/v1/services/svc-1/ip-geo", ipGeoReq{Enabled: true, BlockCIDRs: []string{"10.0.0.0/8"}}); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("a save without countries: %d", r.StatusCode)
+	}
+
+	// Rules that exist from when a database was there.
+	store.rows["svc-1"] = db.ServiceIPGeoConfig{ServiceID: "svc-1", BlockCountries: []string{"KP"}}
+	r := c.get(t, "/api/v1/services/svc-1/ip-geo")
+	var view struct {
+		Enforced bool `json:"country_rules_enforced"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&view)
+	if view.Enforced {
+		t.Error("existing country rules without a database were reported as enforced")
+	}
+	r = c.get(t, "/api/v1/geo/status")
+	var st struct {
+		Enabled    bool `json:"enabled"`
+		Configured bool `json:"configured"`
+		NotEnf     int  `json:"rules_not_enforced"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&st)
+	if st.Enabled || st.NotEnf != 1 {
+		t.Errorf("status: %+v", st)
+	}
+	// Clearing the countries is always possible.
+	if r := c.put(t, "/api/v1/services/svc-1/ip-geo", ipGeoReq{}); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("clearing: %d", r.StatusCode)
+	}
+	r = c.get(t, "/api/v1/services/svc-1/ip-geo")
+	_ = json.NewDecoder(r.Body).Decode(&view)
+	if !view.Enforced {
+		t.Error("no country rules is nothing to enforce")
+	}
+}
+
+// TestIPGeo_WithDatabase_CountryRulesSaved: with a database the same save
+// works and the rules are reported as enforced.
+func TestIPGeo_WithDatabase_CountryRulesSaved(t *testing.T) {
+	d, store := makeIPGeoDeps(t, "user", "u-self")
+	d.GeoLookup = fakeGeoLookupSurface{enabled: true, dbPath: "/geo.mmdb"}
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+	if r := c.put(t, "/api/v1/services/svc-1/ip-geo", ipGeoReq{BlockCountries: []string{"kp"}}); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("put: %d", r.StatusCode)
+	}
+	if len(store.rows["svc-1"].BlockCountries) != 1 {
+		t.Errorf("stored: %+v", store.rows["svc-1"])
+	}
+	r := c.get(t, "/api/v1/services/svc-1/ip-geo")
+	var view struct {
+		Enforced bool `json:"country_rules_enforced"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&view)
+	if !view.Enforced {
+		t.Error("rules with a database must be enforced")
 	}
 }

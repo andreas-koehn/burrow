@@ -115,6 +115,20 @@ func (x *DB) SetServiceIPGeo(ctx context.Context, cfg ServiceIPGeoConfig) error 
 	return nil
 }
 
+// CountCountryRules counts the services that have a country allow or block
+// list. Lists are stored as JSON arrays, so an empty one is "[]".
+func (x *DB) CountCountryRules(ctx context.Context) (int, error) {
+	var n int
+	err := x.sqlDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM service_ip_geo
+		  WHERE (allow_countries <> '[]' AND allow_countries <> '')
+		     OR (block_countries <> '[]' AND block_countries <> '')`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count country rules: %w", err)
+	}
+	return n, nil
+}
+
 // SetServiceMTLSCAPEM sets the operator-supplied CA PEM blob on the services
 // row. An empty pem string clears the column (NULL). Returns ErrNotFound when
 // no service row matches.

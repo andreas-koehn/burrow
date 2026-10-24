@@ -59,7 +59,7 @@ type Tunnel struct {
 	created    bool
 
 	// policy is the compiled ip policy of a tcp tunnel in mode ip (nil lets
-	// nobody in); limits are the limits of a tcp tunnel with a public port.
+	// nobody in), or the country rules of one in mode open (nil: none); limits are the limits of a tcp tunnel with a public port.
 	policy atomic.Pointer[tcpPolicy]
 	limits *tcpLimits
 

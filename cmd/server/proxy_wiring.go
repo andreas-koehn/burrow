@@ -763,8 +763,8 @@ type tcpAccessDB interface {
 
 // tcpAccessAdapter reads the access of a tcp service for the relay: its
 // mode and cap from the service row, and for mode ip the CIDR lists of
-// service_ip_geo (the countries and the enabled flag are not used: mode ip
-// is the switch) and the grants that have not expired.
+// service_ip_geo (the enabled flag is not used: mode ip is the switch), the
+// country lists in modes open and ip and the grants that have not expired.
 type tcpAccessAdapter struct {
 	db  tcpAccessDB
 	now func() time.Time
@@ -783,12 +783,18 @@ func (a tcpAccessAdapter) TCPAccess(ctx context.Context, serviceID string) (serv
 		ProxyProtocol: svc.ProxyProtocol, IdleTimeout: time.Duration(svc.IdleTimeoutS) * time.Second,
 		Hostname: svc.TCPHostname,
 	}
-	if acc.Mode != server.TCPAccessIP {
+	if acc.Mode == server.TCPAccessPrivate {
 		return acc, nil
 	}
 	ipgeo, err := a.db.GetServiceIPGeo(ctx, serviceID)
 	if err != nil {
 		return server.TCPAccess{}, fmt.Errorf("tcp access: ip lists: %w", err)
+	}
+	// The country lists apply in modes open and ip; the enabled flag is not
+	// used (the mode is the switch).
+	acc.AllowCC, acc.BlockCC = ipgeo.AllowCountries, ipgeo.BlockCountries
+	if acc.Mode != server.TCPAccessIP {
+		return acc, nil
 	}
 	acc.AllowCIDRs, acc.BlockCIDRs = ipgeo.AllowCIDRs, ipgeo.BlockCIDRs
 	now := time.Now

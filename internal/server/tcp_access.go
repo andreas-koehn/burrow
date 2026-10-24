@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 )
@@ -96,14 +97,16 @@ type TCPGrant struct {
 }
 
 // TCPAccess is what decides who may reach a tcp service: its mode and, for
-// mode ip, the permanent lists (service_ip_geo; countries are not used) and
-// the grants that have not expired. MaxConnections is the service's cap on
-// connected visitors, 0 for the default. ProxyProtocol and IdleTimeout are
-// the service's settings of the same names in Resolved; they are read with
-// the access so that a change applies without a new registration.
+// mode ip, the permanent lists (service_ip_geo) and the grants that have not
+// expired. The country lists apply in modes open and ip. MaxConnections is
+// the service's cap on connected visitors, 0 for the default. ProxyProtocol
+// and IdleTimeout are the service's settings of the same names in Resolved;
+// they are read with the access so that a change applies without a new
+// registration.
 type TCPAccess struct {
 	Mode                   string
 	AllowCIDRs, BlockCIDRs []string
+	AllowCC, BlockCC       []string
 	Grants                 []TCPGrant
 	MaxConnections         int
 	ProxyProtocol          string
@@ -123,8 +126,35 @@ type TCPAccessLoader interface {
 // tcpPolicy is the compiled ip policy of a tunnel in mode ip. It is never
 // changed; a change of the service swaps the tunnel's pointer.
 type tcpPolicy struct {
+	ipMode       bool // the CIDR lists and grants apply (mode ip)
 	allow, block []netip.Prefix
 	grants       []tcpGrant
+	// Country rules (modes open and ip), upper case.
+	allowCC, blockCC []string
+}
+
+// hasCountries reports whether the policy has a country rule.
+func (p *tcpPolicy) hasCountries() bool {
+	return p != nil && (len(p.allowCC) > 0 || len(p.blockCC) > 0)
+}
+
+func upperCodes(in []string) []string {
+	var out []string
+	for _, c := range in {
+		if c = strings.ToUpper(strings.TrimSpace(c)); c != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func hasCode(list []string, cc string) bool {
+	for _, c := range list {
+		if c == cc {
+			return true
+		}
+	}
+	return false
 }
 
 type tcpGrant struct {
@@ -157,7 +187,14 @@ func ParseTCPPrefix(s string) (netip.Prefix, error) {
 // fails the whole policy: a block entry left out would let in what it
 // blocks.
 func compileTCPPolicy(a TCPAccess) (*tcpPolicy, error) {
-	p := &tcpPolicy{}
+	p := &tcpPolicy{ipMode: a.Mode != TCPAccessOpen, allowCC: upperCodes(a.AllowCC), blockCC: upperCodes(a.BlockCC)}
+	if !p.ipMode {
+		// Mode open: only the country rules narrow it.
+		if !p.hasCountries() {
+			return nil, nil
+		}
+		return p, nil
+	}
 	for _, s := range a.AllowCIDRs {
 		pr, err := ParseTCPPrefix(s)
 		if err != nil {
@@ -182,20 +219,42 @@ func compileTCPPolicy(a TCPAccess) (*tcpPolicy, error) {
 	return p, nil
 }
 
-// allows reports whether a visitor from ip may connect at now: no block entry
-// holds it, and a permanent allow entry or a grant that has not expired at
-// now does. Nothing allowed is nothing allowed: unlike the http ip-geo
-// engine, an empty allow list lets nobody in. An expired grant stops new
-// connections only; one that is connected stays.
-func (p *tcpPolicy) allows(ip netip.Addr, now time.Time) bool {
+// allows reports whether a visitor from ip may connect at now.
+//
+// Mode ip: no block entry holds it and no block country is its country, and
+// then a permanent allow entry, a grant that has not expired at now, or a
+// country of the allow list does. Nothing allowed is nothing allowed: unlike
+// the http ip-geo engine, an empty allow list lets nobody in. An expired
+// grant stops new connections only; one that is connected stays.
+//
+// Mode open: the country rules only. A block country refuses, and a
+// non-empty allow list of countries refuses every other country.
+//
+// The country of ip is unknown without a database, without a record for it
+// and on a failed lookup. An allow list of countries never matches an
+// unknown country, so without a database it lets nobody in by country; a
+// block list never matches one either, so it lets it through.
+func (p *tcpPolicy) allows(ip netip.Addr, now time.Time, geo GeoCountry, cache *geoCache) bool {
 	if p == nil || !ip.IsValid() {
 		return false
 	}
 	ip = ip.Unmap().WithZone("")
-	for _, b := range p.block {
-		if b.Contains(ip) {
+	if p.ipMode {
+		for _, b := range p.block {
+			if b.Contains(ip) {
+				return false
+			}
+		}
+	}
+	cc := ""
+	if p.hasCountries() {
+		cc = cache.country(geo, ip, now)
+		if cc != "" && hasCode(p.blockCC, cc) {
 			return false
 		}
+	}
+	if !p.ipMode {
+		return len(p.allowCC) == 0 || (cc != "" && hasCode(p.allowCC, cc))
 	}
 	for _, a := range p.allow {
 		if a.Contains(ip) {
@@ -207,7 +266,7 @@ func (p *tcpPolicy) allows(ip netip.Addr, now time.Time) bool {
 			return true
 		}
 	}
-	return false
+	return cc != "" && hasCode(p.allowCC, cc)
 }
 
 // visitorAddr is the address a connection comes from, IPv4 unmapped; the

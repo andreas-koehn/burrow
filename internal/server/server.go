@@ -357,6 +357,11 @@ type Server struct {
 	// read a service's access before a call and added its tunnel after it
 	// reads the access again.
 	accessEpoch atomic.Uint64
+
+	// geo is the country database of the tcp services' country rules
+	// (SetGeo); geoCache remembers the countries it resolved.
+	geo      atomic.Pointer[geoBox]
+	geoCache geoCache
 	// forwardEpoch counts the forward rechecks (RecheckForwards,
 	// RecheckUserForwards). An open that was authorized before a recheck
 	// and registered after it asks again (see handleForward).

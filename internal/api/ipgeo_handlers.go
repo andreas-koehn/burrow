@@ -45,9 +45,24 @@ type ipGeoResp struct {
 	BlockCountries []string `json:"block_countries"`
 }
 
+// ipGeoView is ipGeoResp with whether its country rules are enforced: false
+// when it has country rules and no GeoIP database is loaded.
+type ipGeoView struct {
+	Enabled              bool     `json:"enabled"`
+	AllowCIDRs           []string `json:"allow_cidrs"`
+	BlockCIDRs           []string `json:"block_cidrs"`
+	AllowCountries       []string `json:"allow_countries"`
+	BlockCountries       []string `json:"block_countries"`
+	CountryRulesEnforced bool     `json:"country_rules_enforced"`
+}
+
+// geoEnabled reports whether a GeoIP database is loaded.
+func (d Deps) geoEnabled() bool {
+	return d.GeoLookup != nil && d.GeoLookup.Enabled()
+}
+
 // ipGeoReq is the PUT body shape. All four lists are accepted; the country
-// lists are stored for forward-compat with the geo build tag (Task 17) but
-// the default build's middleware ignores them.
+// lists need a GeoIP database (BURROW_GEOIP_DB) to be saved.
 type ipGeoReq struct {
 	Enabled        bool     `json:"enabled"`
 	AllowCIDRs     []string `json:"allow_cidrs"`
@@ -56,13 +71,17 @@ type ipGeoReq struct {
 	BlockCountries []string `json:"block_countries"`
 }
 
-// geoStatusResp is the wire shape of GET /api/v1/geo/status. enabled=false in
-// the default build (no geo tag); Task 17 will surface enabled=true + the
-// MMDB path + age once it lights up the lookup behind the build tag.
+// geoStatusResp is the wire shape of GET /api/v1/geo/status. enabled is true
+// while a database is loaded. Configured says a path is set (BURROW_GEOIP_DB),
+// Error why it could not be loaded, and RulesNotEnforced how many services
+// have country rules that nothing enforces because no database is loaded.
 type geoStatusResp struct {
-	Enabled      bool   `json:"enabled"`
-	DBPath       string `json:"db_path"`
-	DBAgeSeconds *int64 `json:"db_age_seconds"`
+	Enabled          bool   `json:"enabled"`
+	Configured       bool   `json:"configured"`
+	DBPath           string `json:"db_path"`
+	DBAgeSeconds     *int64 `json:"db_age_seconds"`
+	Error            string `json:"error,omitempty"`
+	RulesNotEnforced int    `json:"rules_not_enforced"`
 }
 
 // ensureIPGeoServiceAccess scopes a per-service IP/Geo handler by owner. The
@@ -140,12 +159,13 @@ func (d Deps) GetServiceIPGeo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "load ip-geo failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, ipGeoResp{
-		Enabled:        cfg.Enabled,
-		AllowCIDRs:     nonNilStrings(cfg.AllowCIDRs),
-		BlockCIDRs:     nonNilStrings(cfg.BlockCIDRs),
-		AllowCountries: nonNilStrings(cfg.AllowCountries),
-		BlockCountries: nonNilStrings(cfg.BlockCountries),
+	writeJSON(w, http.StatusOK, ipGeoView{
+		Enabled:              cfg.Enabled,
+		AllowCIDRs:           nonNilStrings(cfg.AllowCIDRs),
+		BlockCIDRs:           nonNilStrings(cfg.BlockCIDRs),
+		AllowCountries:       nonNilStrings(cfg.AllowCountries),
+		BlockCountries:       nonNilStrings(cfg.BlockCountries),
+		CountryRulesEnforced: d.geoEnabled() || (len(cfg.AllowCountries) == 0 && len(cfg.BlockCountries) == 0),
 	})
 }
 
@@ -198,6 +218,13 @@ func (d Deps) PutServiceIPGeo(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Country rules cannot be enforced without a database, and a rule that is
+	// not enforced is worse than none: a deny that lets everyone in. Clearing
+	// the country lists is always possible.
+	if len(in.AllowCountries)+len(in.BlockCountries) > 0 && !d.geoEnabled() {
+		writeErr(w, http.StatusBadRequest, "country rules need a GeoIP database: no GeoLite2-Country .mmdb is loaded; set BURROW_GEOIP_DB to its path and restart, or save the rules without countries")
+		return
+	}
 	if d.IPGeo == nil {
 		writeErr(w, http.StatusInternalServerError, "ip-geo store unavailable")
 		return
@@ -242,22 +269,37 @@ func (d Deps) PutServiceIPGeo(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetGeoStatus handles GET /api/v1/geo/status: the global geo-lookup status,
-// for a caller with ipgeo:manage:own or :any.
-//
-// In the default build (no geo tag) enabled=false and db_path="". Task 17
-// surfaces real values when the MMDBGeoLookup is wired.
+// for a caller with ipgeo:manage:own or :any. Country rules saved before the
+// database went missing are not enforced; rules_not_enforced counts the
+// services they belong to.
 func (d Deps) GetGeoStatus(w http.ResponseWriter, r *http.Request) {
 	g := d.GeoLookup
 	if g == nil {
 		g = proxy.NoopGeoLookup()
 	}
 	resp := geoStatusResp{
-		Enabled: g.Enabled(),
-		DBPath:  g.DBPath(),
+		Enabled:    g.Enabled(),
+		Configured: g.DBPath() != "",
+		DBPath:     g.DBPath(),
 	}
 	if g.Enabled() {
 		age := g.DBAgeSeconds()
 		resp.DBAgeSeconds = &age
+	}
+	if e, ok := g.(interface{ LastError() string }); ok {
+		resp.Error = e.LastError()
+	}
+	if !g.Enabled() {
+		if c, ok := d.IPGeo.(interface {
+			CountCountryRules(ctx context.Context) (int, error)
+		}); ok {
+			n, err := c.CountCountryRules(r.Context())
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, "count country rules failed")
+				return
+			}
+			resp.RulesNotEnforced = n
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

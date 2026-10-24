@@ -187,3 +187,27 @@ func TestIPGeoDecodeMalformedJSON(t *testing.T) {
 		t.Errorf("want error on garbage, got nil")
 	}
 }
+
+// CountCountryRules counts the services that have a country list, and only
+// those.
+func TestCountCountryRules(t *testing.T) {
+	x := testDB(t)
+	ctx := context.Background()
+	mustUser(t, x, "u1")
+	a, b, c := seedSvc(t, x, "u1", "svc-a"), seedSvc(t, x, "u1", "svc-b"), seedSvc(t, x, "u1", "svc-c")
+	if n, err := x.CountCountryRules(ctx); err != nil || n != 0 {
+		t.Fatalf("empty: %d, %v", n, err)
+	}
+	for _, cfg := range []ServiceIPGeoConfig{
+		{ServiceID: a, AllowCIDRs: []string{"10.0.0.0/8"}},
+		{ServiceID: b, BlockCountries: []string{"KP"}},
+		{ServiceID: c, AllowCountries: []string{"DE"}, BlockCountries: []string{"KP"}},
+	} {
+		if err := x.SetServiceIPGeo(ctx, cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := x.CountCountryRules(ctx); err != nil || n != 2 {
+		t.Fatalf("count: %d, %v, want 2", n, err)
+	}
+}

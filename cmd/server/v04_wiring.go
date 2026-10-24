@@ -253,13 +253,23 @@ func buildV04Stack(
 	})
 	aiChain.Observer = obs
 
-	// --- geo lookup (default build = noop; geo build tag = real MMDB) ------
+	// --- geo lookup (BURROW_GEOIP_DB: a GeoLite2-Country .mmdb, reloaded when
+	// the file changes; none configured = the no-op lookup, and country rules
+	// cannot be saved or enforced) ---------------------------------------------
 	geoLookup, err := proxy.OpenGeoDB(cfg.GeoDBPath)
 	if err != nil {
-		// Geo init failure: fall back to noop so misconfigured operators
-		// still get a running server.
-		log.Warn("v0.4 geo db open failed; running without country lookup", "err", err)
-		geoLookup = proxy.NoopGeoLookup()
+		// The server runs without country rules enforced (the API reports
+		// it) and the watcher picks the file up when it becomes readable.
+		log.Warn("geoip database not loaded; country rules are not enforced", "path", cfg.GeoDBPath, "err", err)
+	}
+	if w, ok := geoLookup.(*proxy.MMDBGeoLookup); ok {
+		go w.Watch(ctx, proxy.GeoReloadInterval, func(reloaded bool, err error) {
+			if err != nil {
+				log.Warn("geoip database reload failed", "path", cfg.GeoDBPath, "err", err)
+				return
+			}
+			log.Info("geoip database reloaded", "path", cfg.GeoDBPath)
+		})
 	}
 
 	// --- mcp server: built in main.go via BuildMCPServer, which hands it

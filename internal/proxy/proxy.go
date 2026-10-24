@@ -74,7 +74,10 @@ type Proxy struct {
 	gate           http.Handler // /__burrow/* gate; nil → 404 until Task 9
 	log            *slog.Logger
 	trustedProxies []*net.IPNet
-	ingressPort    string // optional; included in X-Forwarded-Port when non-empty
+	// geo resolves a visitor's country for the services' country rules; nil
+	// is the same as no database (see IPGeoEngine.Allow).
+	geo         GeoLookup
+	ingressPort string // optional; included in X-Forwarded-Port when non-empty
 
 	// v0.4.0 AI middleware chain; nil → v0.3.0 pass-through for every request.
 	// Wired via WithAIChain. The chain itself resolves whether a given
@@ -277,6 +280,12 @@ type Option func(*Proxy)
 // proxy responds 404 for those paths.
 func WithGate(h http.Handler) Option {
 	return func(p *Proxy) { p.gate = h }
+}
+
+// WithGeoLookup gives the proxy the country database its services' country
+// rules are checked against.
+func WithGeoLookup(g GeoLookup) Option {
+	return func(p *Proxy) { p.geo = g }
 }
 
 // WithTrustedProxies sets the CIDRs whose X-Forwarded-For headers are honored
@@ -875,7 +884,7 @@ func (p *Proxy) ipGeoDenied(res *Resolved, clientIP string) (bool, string) {
 	if ip == nil {
 		return false, ""
 	}
-	allowed, reason := NewIPGeoEngine(policy, nil).Allow(ip)
+	allowed, reason := NewIPGeoEngine(policy, p.geo).Allow(ip)
 	return !allowed, reason
 }
 

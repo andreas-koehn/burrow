@@ -139,7 +139,8 @@ type ServerConfig struct {
 	RetiredMCPFileVars []string `koanf:"-"`
 	// GeoDBPath is the on-disk path to a MaxMind GeoLite2 database file used
 	// by the geo-restriction access mode (spec Q11). Empty (default) selects
-	// the NoopGeoLookup — geo features are inert. Env: BURROW_GEO_DB_PATH.
+	// the NoopGeoLookup — country rules cannot be saved or enforced. Env:
+	// BURROW_GEOIP_DB (BURROW_GEO_DB_PATH is the older name).
 	GeoDBPath string `koanf:"geo_db_path"`
 	// PricingPath, when non-empty, overrides the embedded pricing.yaml the
 	// cost engine ships with (spec Part F). Empty (default) uses the embedded
@@ -486,6 +487,13 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 	// Both-or-neither validation for HTTP proxy TLS cert/key pair (xor is invalid).
 	if (c.HTTPProxyTLSCert == "") != (c.HTTPProxyTLSKey == "") {
 		return nil, fmt.Errorf("invalid server config: http_proxy_tls_cert and http_proxy_tls_key must both be set or both be empty")
+	}
+	// BURROW_GEOIP_DB names the country database; it wins over the older
+	// BURROW_GEO_DB_PATH, but not over an explicit override.
+	if v := strings.TrimSpace(os.Getenv("BURROW_GEOIP_DB")); v != "" {
+		if _, forced := overrides["geo_db_path"]; !forced {
+			c.GeoDBPath = v
+		}
 	}
 	// v0.4.0 (Task 24): derive BackupDir from the already-merged DatabasePath.
 	deriveV04Fields(&c)

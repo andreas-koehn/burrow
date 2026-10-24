@@ -126,9 +126,11 @@ func TestIPGeo_InvalidCIDR(t *testing.T) {
 	}
 }
 
-// TestIPGeo_CountryNoopBuild verifies that with the default noop GeoLookup
-// (geo build tag OFF), country lists are accepted but never enforced.
-func TestIPGeo_CountryNoopBuild(t *testing.T) {
+// TestIPGeo_CountryNoDatabase verifies what country lists do without a
+// database: nothing can match a country, so an allow list denies and a block
+// list lets through. The API refuses to save such lists and /geo/status
+// reports them as not enforced.
+func TestIPGeo_CountryNoDatabase(t *testing.T) {
 	p, err := proxy.CompileIPGeoPolicy(nil, nil, []string{"US"}, []string{"KP"})
 	if err != nil {
 		t.Fatal(err)
@@ -137,11 +139,13 @@ func TestIPGeo_CountryNoopBuild(t *testing.T) {
 	if len(p.AllowCountries) != 1 || p.AllowCountries[0] != "US" {
 		t.Errorf("allow_countries normalisation: %+v", p.AllowCountries)
 	}
-	e := proxy.NewIPGeoEngine(p, nil) // nil → NoopGeoLookup
-	// Noop returns Enabled()=false → country rules skipped entirely.
-	ok, _ := e.Allow(net.ParseIP("198.51.100.1"))
-	if !ok {
-		t.Error("noop build must allow despite country lists")
+	e := proxy.NewIPGeoEngine(p, nil) // nil -> NoopGeoLookup
+	if ok, _ := e.Allow(net.ParseIP("198.51.100.1")); ok {
+		t.Error("an allow list of countries must deny when no database can tell the country")
+	}
+	pb, _ := proxy.CompileIPGeoPolicy(nil, nil, nil, []string{"KP"})
+	if ok, _ := proxy.NewIPGeoEngine(pb, nil).Allow(net.ParseIP("198.51.100.1")); !ok {
+		t.Error("a block list of countries must let an unknown country through")
 	}
 }
 
@@ -181,15 +185,17 @@ func TestIPGeo_CountryGeoEnabled(t *testing.T) {
 	}
 }
 
-// TestIPGeo_CountryLookupErrorFailsOpen verifies that a Geo lookup error does
-// not block traffic. Operators investigate via logs; visitors aren't punished.
-func TestIPGeo_CountryLookupErrorFailsOpen(t *testing.T) {
-	p, _ := proxy.CompileIPGeoPolicy(nil, nil, []string{"US"}, nil)
+// TestIPGeo_CountryLookupErrorIsUnknown verifies that a failed lookup is an
+// unknown country: an allow list denies it, a block list lets it through.
+func TestIPGeo_CountryLookupErrorIsUnknown(t *testing.T) {
 	geo := fakeGeo{enabled: true, err: errors.New("db read failed")}
-	e := proxy.NewIPGeoEngine(p, geo)
-	ok, _ := e.Allow(net.ParseIP("203.0.113.7"))
-	if !ok {
-		t.Error("lookup error must fail open")
+	pa, _ := proxy.CompileIPGeoPolicy(nil, nil, []string{"US"}, nil)
+	if ok, _ := proxy.NewIPGeoEngine(pa, geo).Allow(net.ParseIP("203.0.113.7")); ok {
+		t.Error("allow list must deny an unknown country")
+	}
+	pb, _ := proxy.CompileIPGeoPolicy(nil, nil, nil, []string{"US"})
+	if ok, _ := proxy.NewIPGeoEngine(pb, geo).Allow(net.ParseIP("203.0.113.7")); !ok {
+		t.Error("block list must allow an unknown country")
 	}
 }
 

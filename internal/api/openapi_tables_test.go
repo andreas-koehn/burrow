@@ -507,7 +507,7 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"serviceApiKeysList":       {status: "200", typ: oaType[apiKeyResp](), list: true},
 	"serviceApiKeyCreate":      {status: "201", typ: oaType[createAPIKeyResp]()},
 	"serviceAccessPolicyGet":   {status: "200", typ: oaType[accessPolicyResp]()},
-	"serviceIpGeoGet":          {status: "200", typ: oaType[ipGeoResp]()},
+	"serviceIpGeoGet":          {status: "200", typ: oaType[ipGeoView]()},
 	"serviceIpGrantsList":      {status: "200", typ: oaType[ipGrantResp](), list: true},
 	"serviceConnectionsList":   {status: "200", typ: oaType[serviceConnectionResp](), list: true},
 	"serviceTcpSettingsGet":    {status: "200", typ: oaType[tcpSettingsResp]()},

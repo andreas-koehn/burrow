@@ -756,6 +756,8 @@ func newRootCmd() *cobra.Command {
 			// Sessions, tunnels and tcp connections are told to the observer;
 			// no client is served yet.
 			srv.SetObserver(v04.Observer)
+			// The country database of the tcp services' country rules.
+			srv.SetGeo(v04.GeoLookup)
 			// The gauges a scrape reads, and the statement durations. Stopped
 			// before the database closes (LIFO defers).
 			defer registerGauges(v04.Metrics, database, backend.Driver(), log)()
@@ -921,6 +923,8 @@ func newRootCmd() *cobra.Command {
 				// Each finished request is told to the observer: metrics,
 				// webhook events.
 				proxy.WithObserver(v04.Observer),
+				// The country database of the services' country rules.
+				proxy.WithGeoLookup(v04.GeoLookup),
 			}
 			if ingressPort != "" {
 				proxyOpts = append(proxyOpts, proxy.WithIngressPort(ingressPort))
