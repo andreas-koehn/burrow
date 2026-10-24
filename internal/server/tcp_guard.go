@@ -23,10 +23,13 @@ package server
 // starts on a relay that does not hold the guard, so they survive a restart.
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -134,6 +137,9 @@ type TCPGuardStore interface {
 	TCPUsage(ctx context.Context, serviceID, day string) (in, out uint64, err error)
 	// AddTCPUsage adds in and out to the service's day.
 	AddTCPUsage(ctx context.Context, serviceID, day string, in, out uint64) error
+	// PruneTCPBans deletes the bans of the service that expired at or
+	// before now.
+	PruneTCPBans(ctx context.Context, serviceID string, now time.Time) error
 }
 
 // utcDay is the UTC day of t as tcp_daily_usage keeps it.
@@ -316,6 +322,11 @@ type tcpGuard struct {
 	autoban         TCPAutoBan
 	bans            map[string]TCPBan
 	shorts          map[string]*shortEnds
+	// banStore orders the write of an automatic ban with an unban: a ban
+	// is written only while the guard still holds it, and an unban waits
+	// for a write under way, so a ban lifted before it was written is not
+	// written after.
+	banStore sync.Mutex
 }
 
 // subU64 takes n from a.
@@ -535,10 +546,11 @@ func (g *tcpGuard) forgetShortsLocked(now time.Time, window time.Duration) {
 // its day from the store when the relay does not hold it yet. An error of
 // the store refuses the registration: a ban that was not read would let its
 // source in.
+//
+// The store is read without guardMu, so a slow one holds up only this
+// service; two loads of one service at once keep the guard put first.
 func (s *Server) guardFor(serviceID string) (*tcpGuard, error) {
-	s.guardMu.Lock()
-	defer s.guardMu.Unlock()
-	if g, ok := s.guards[serviceID]; ok {
+	if g := s.guard(serviceID); g != nil {
 		return g, nil
 	}
 	now := s.now()
@@ -561,6 +573,11 @@ func (s *Server) guardFor(serviceID string) (*tcpGuard, error) {
 		}
 		g.baseIn.Store(in)
 		g.baseOut.Store(out)
+	}
+	s.guardMu.Lock()
+	defer s.guardMu.Unlock()
+	if have, ok := s.guards[serviceID]; ok {
+		return have, nil
 	}
 	if s.guards == nil {
 		s.guards = map[string]*tcpGuard{}
@@ -660,20 +677,34 @@ func (s *Server) shortVisit(tn *Tunnel, source string, lasted time.Duration) {
 	}
 	s.log.Info("tcp source banned", "service_id", tn.ServiceID, "source", source, "until", b.Until.UTC().Format(time.RFC3339), "reason", b.Reason)
 	s.closeBanned(tn, source)
-	if st := s.opts.TCPGuards; st != nil {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), guardLoadTimeout)
-			defer cancel()
-			if err := st.SaveTCPBan(ctx, tn.ServiceID, b); err != nil {
-				s.log.Warn("persist tcp ban failed; it holds until the relay restarts", "service_id", tn.ServiceID, "source", source, "err", err)
-			}
-		}()
-	}
+	go s.persistBan(tn.ServiceID, g, b)
 	s.reg.observer().ObserveSession(observe.Session{
 		Kind: observe.TCPBanned, ServiceID: tn.ServiceID, TunnelID: tn.ID, TunnelType: "tcp",
 		UserID: tn.sess.UserID, OwnerID: tn.sess.UserID, SessionID: tn.sess.SessionID,
 		SourceIP: source, Until: b.Until, Reason: b.Reason,
 	})
+}
+
+// persistBan writes the automatic ban b to the store, unless the guard no
+// longer holds it (it was lifted or replaced meanwhile).
+func (s *Server) persistBan(serviceID string, g *tcpGuard, b TCPBan) {
+	st := s.opts.TCPGuards
+	if st == nil {
+		return
+	}
+	g.banStore.Lock()
+	defer g.banStore.Unlock()
+	g.mu.Lock()
+	cur, ok := g.bans[b.Source]
+	g.mu.Unlock()
+	if !ok || cur != b {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), guardLoadTimeout)
+	defer cancel()
+	if err := st.SaveTCPBan(ctx, serviceID, b); err != nil {
+		s.log.Warn("persist tcp ban failed; it holds until the relay restarts", "service_id", serviceID, "source", b.Source, "err", err)
+	}
 }
 
 // closeBanned closes the live visitors of the tunnel that come from source
@@ -710,11 +741,41 @@ func (s *Server) BanTCPSource(serviceID, source string, until time.Time, reason 
 }
 
 // UnbanTCPSource lifts a ban on the relay that holds the service, and
-// forgets the source's short connections.
-func (s *Server) UnbanTCPSource(serviceID, source string) {
-	if g := s.guard(serviceID); g != nil {
-		g.removeBan(source)
+// forgets the source's short connections; it reports whether the relay held
+// the ban. A write of the ban under way ends first, so a caller that deletes
+// the stored ban after this deletes that write too, and a later write is not
+// made.
+func (s *Server) UnbanTCPSource(serviceID, source string) bool {
+	g := s.guard(serviceID)
+	if g == nil {
+		return false
 	}
+	g.banStore.Lock()
+	defer g.banStore.Unlock()
+	return g.removeBan(source)
+}
+
+// TCPBans are the active bans the relay holds for the service, the first to
+// expire first; nil when it does not hold the service. They include bans
+// the store does not have (a write that failed).
+func (s *Server) TCPBans(serviceID string) []TCPBan {
+	g := s.guard(serviceID)
+	if g == nil {
+		return nil
+	}
+	now := s.now()
+	g.mu.Lock()
+	out := make([]TCPBan, 0, len(g.bans))
+	for _, b := range g.bans {
+		if now.Before(b.Until) {
+			out = append(out, b)
+		}
+	}
+	g.mu.Unlock()
+	slices.SortFunc(out, func(a, b TCPBan) int {
+		return cmp.Or(a.Until.Compare(b.Until), cmp.Compare(a.Source, b.Source))
+	})
+	return out
 }
 
 // TCPUsageToday is what the tcp service carried on the UTC day day as the
@@ -780,9 +841,12 @@ func (g *tcpGuard) idle() bool {
 	return len(g.carries) == 0 && g.pendIn.Load() == 0 && g.pendOut.Load() == 0
 }
 
-// flushGuard writes what g counted and has not written. Without a store it
-// only moves the count into what is kept for the day. What cannot be written
-// is kept for the next time.
+// flushGuard writes what g counted and has not written, and prunes the
+// service's expired bans from the store. Without a store it only moves the
+// count into what is kept for the day. What cannot be written is kept for
+// the next time; a write whose context ended while it ran may have been
+// made, so it is not tried again (the count may then miss up to a minute of
+// bytes, never count them twice).
 func (s *Server) flushGuard(ctx context.Context, g *tcpGuard) {
 	now := s.now()
 	g.mu.Lock()
@@ -803,17 +867,18 @@ func (s *Server) flushGuard(ctx context.Context, g *tcpGuard) {
 	if st == nil {
 		return
 	}
+	if pi+po > 0 {
+		carries = append(carries, usageCarry{day: day, in: pi, out: po})
+	}
 	var failed []usageCarry
 	for _, c := range carries {
-		if err := st.AddTCPUsage(ctx, g.serviceID, c.day, c.in, c.out); err != nil {
-			s.log.Warn("write tcp usage failed; trying again", "service_id", g.serviceID, "day", c.day, "err", err)
+		if !s.addUsage(ctx, st, g.serviceID, c) {
 			failed = append(failed, c)
 		}
 	}
-	if pi+po > 0 {
-		if err := st.AddTCPUsage(ctx, g.serviceID, day, pi, po); err != nil {
-			s.log.Warn("write tcp usage failed; trying again", "service_id", g.serviceID, "day", day, "err", err)
-			failed = append(failed, usageCarry{day: day, in: pi, out: po})
+	if ctx.Err() == nil {
+		if err := st.PruneTCPBans(ctx, g.serviceID, now); err != nil {
+			s.log.Warn("prune tcp bans failed", "service_id", g.serviceID, "err", err)
 		}
 	}
 	if len(failed) == 0 {
@@ -832,6 +897,27 @@ func (s *Server) flushGuard(ctx context.Context, g *tcpGuard) {
 		g.carries = append(g.carries, c)
 	}
 	g.mu.Unlock()
+}
+
+// addUsage writes c; false when it was not written and is to be tried
+// again. One whose context ended while it ran is not: it may have been
+// written.
+func (s *Server) addUsage(ctx context.Context, st TCPGuardStore, serviceID string, c usageCarry) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	err := st.AddTCPUsage(ctx, serviceID, c.day, c.in, c.out)
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		s.log.Warn("write tcp usage timed out; it may not have been written and is not tried again",
+			"service_id", serviceID, "day", c.day, "bytes", c.in+c.out, "err", err)
+		return true
+	default:
+		s.log.Warn("write tcp usage failed; trying again", "service_id", serviceID, "day", c.day, "err", err)
+		return false
+	}
 }
 
 // FlushTCPUsage writes what every guard counted and has not written yet.

@@ -49,6 +49,9 @@ var (
 	ErrInvalidTCPLimits = errors.New("store: invalid tcp limits")
 	ErrInvalidTCPBan    = errors.New("store: invalid tcp ban")
 	ErrTooManyTCPBans   = errors.New("store: the service has its maximum of active bans")
+	// ErrNoTCPBan: the service has no ban of that source (the service is
+	// there; db.ErrNotFound is a service that is not).
+	ErrNoTCPBan = errors.New("store: no ban of that source")
 )
 
 // TCPAutoBan are the automatic ban settings of a tcp service: a source whose
@@ -240,8 +243,8 @@ func NormalizeTCPBanSource(s string) (string, bool) {
 }
 
 // ListTCPBans lists the active bans of a tcp service, the first to expire
-// first, and prunes the expired ones. Same permission rule as
-// SetServiceMaxConnections.
+// first. It only reads: the relay prunes the expired ones. Same permission
+// rule as SetServiceMaxConnections.
 func (s *Store) ListTCPBans(ctx context.Context, callerID, callerRole, serviceID string) ([]db.TCPBan, error) {
 	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
 	if err != nil {
@@ -250,11 +253,7 @@ func (s *Store) ListTCPBans(ctx context.Context, callerID, callerRole, serviceID
 	if svc.Type != "tcp" {
 		return nil, ErrServiceNotTCP
 	}
-	now := time.Now()
-	if _, err := s.q.PruneTCPBans(ctx, serviceID, now); err != nil {
-		return nil, err
-	}
-	return s.q.ListTCPBans(ctx, serviceID, now)
+	return s.q.ListTCPBans(ctx, serviceID, time.Now())
 }
 
 // AddTCPBan bans source (see NormalizeTCPBanSource) from a tcp service for
@@ -314,9 +313,13 @@ func (s *Store) AddTCPBan(ctx context.Context, callerID, callerRole, serviceID, 
 }
 
 // RemoveTCPBan lifts the ban of source (normalised as for AddTCPBan) from a
-// tcp service and returns it; db.ErrNotFound when there is none. Same
+// tcp service and returns it. held, when not nil, lifts the ban on the relay
+// and reports whether the relay held one; it is called before the stored
+// ban is deleted, so a write of the relay under way is deleted too. A ban
+// only the relay holds (its write failed) is lifted as well. ErrNoTCPBan
+// when neither has one; db.ErrNotFound when there is no such service. Same
 // permission rule as SetServiceMaxConnections. Audited as tcp.ban.remove.
-func (s *Store) RemoveTCPBan(ctx context.Context, callerID, callerRole, serviceID, source string) (db.TCPBan, error) {
+func (s *Store) RemoveTCPBan(ctx context.Context, callerID, callerRole, serviceID, source string, held func(src string) bool) (db.TCPBan, error) {
 	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
 	if err != nil {
 		return db.TCPBan{}, err
@@ -328,16 +331,24 @@ func (s *Store) RemoveTCPBan(ctx context.Context, callerID, callerRole, serviceI
 	if !ok {
 		return db.TCPBan{}, fmt.Errorf("%w: source must be an IP address, or an IPv6 /64", ErrInvalidTCPBan)
 	}
+	wasHeld := held != nil && held(src)
 	b, err := s.q.DeleteTCPBan(ctx, serviceID, src)
-	if err != nil {
+	switch {
+	case errors.Is(err, db.ErrNotFound) && wasHeld:
+		b = db.TCPBan{ServiceID: serviceID, Source: src}
+	case errors.Is(err, db.ErrNotFound):
+		return db.TCPBan{}, ErrNoTCPBan
+	case err != nil:
 		return db.TCPBan{}, err
 	}
 	s.emitAudit(withAuditDeadline(ctx), audit.ActionTCPBanRemove, func(e *audit.Event) {
 		e.SubjectID = serviceID
 		e.SubjectLabel = svc.Name
-		e.Payload = audit.MustJSON(map[string]any{
-			"source": src, "until": b.Until.Format(time.RFC3339), "reason": b.Reason,
-		})
+		p := map[string]any{"source": src, "reason": b.Reason}
+		if !b.Until.IsZero() {
+			p["until"] = b.Until.Format(time.RFC3339)
+		}
+		e.Payload = audit.MustJSON(p)
 	})
 	return b, nil
 }

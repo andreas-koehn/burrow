@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -195,6 +196,11 @@ func TestTCPBans(t *testing.T) {
 	if err != nil || len(bans) != 3 || bans[0].Source != "2001:db8:1:2::/64" {
 		t.Fatalf("list: %+v %v", bans, err)
 	}
+	// The list is a read: the expired ban is still stored (the relay
+	// prunes).
+	if n, err := st.q.PruneTCPBans(ctx, rdp.ID, time.Now()); err != nil || n != 1 {
+		t.Fatalf("the list pruned the expired ban: %d %v", n, err)
+	}
 	for _, c := range []struct {
 		source string
 		min    int
@@ -220,19 +226,38 @@ func TestTCPBans(t *testing.T) {
 	if _, err := st.ListTCPBans(ctx, other.ID, "user", rdp.ID); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("another user lists: %v", err)
 	}
-	if _, err := st.RemoveTCPBan(ctx, other.ID, "user", rdp.ID, "203.0.113.7"); !errors.Is(err, ErrForbidden) {
+	if _, err := st.RemoveTCPBan(ctx, other.ID, "user", rdp.ID, "203.0.113.7", nil); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("another user removes: %v", err)
 	}
 
-	got, err := st.RemoveTCPBan(ctx, owner.ID, "user", rdp.ID, "2001:db8:1:2::1")
-	if err != nil || got.Source != "2001:db8:1:2::/64" {
-		t.Fatalf("remove by an address of the /64: %+v %v", got, err)
+	// The relay is told before the row goes (a write of the relay under
+	// way then ends before the delete).
+	var told []string
+	held := func(src string) bool {
+		active, _ := st.q.ListTCPBans(ctx, rdp.ID, time.Now())
+		stored := false
+		for _, b := range active {
+			stored = stored || b.Source == src
+		}
+		told = append(told, fmt.Sprintf("%s stored=%v", src, stored))
+		return src == "192.0.2.50"
 	}
-	if _, err := st.RemoveTCPBan(ctx, owner.ID, "user", rdp.ID, "2001:db8:1:2::1"); !errors.Is(err, db.ErrNotFound) {
+	got, err := st.RemoveTCPBan(ctx, owner.ID, "user", rdp.ID, "2001:db8:1:2::1", held)
+	if err != nil || got.Source != "2001:db8:1:2::/64" || len(told) != 1 || told[0] != "2001:db8:1:2::/64 stored=true" {
+		t.Fatalf("remove by an address of the /64: %+v %v; told %v", got, err, told)
+	}
+	if _, err := st.RemoveTCPBan(ctx, owner.ID, "user", rdp.ID, "2001:db8:1:2::1", held); !errors.Is(err, ErrNoTCPBan) {
 		t.Fatalf("second remove: %v", err)
 	}
-	if _, err := st.RemoveTCPBan(ctx, owner.ID, "user", rdp.ID, "nonsense"); !errors.Is(err, ErrInvalidTCPBan) {
+	// A ban only the relay holds is lifted.
+	if got, err := st.RemoveTCPBan(ctx, owner.ID, "user", rdp.ID, "192.0.2.50", held); err != nil || got.Source != "192.0.2.50" {
+		t.Fatalf("remove a held ban: %+v %v", got, err)
+	}
+	if _, err := st.RemoveTCPBan(ctx, owner.ID, "user", rdp.ID, "nonsense", held); !errors.Is(err, ErrInvalidTCPBan) {
 		t.Fatalf("bad source: %v", err)
+	}
+	if _, err := st.RemoveTCPBan(ctx, owner.ID, "user", "no-such-service", "192.0.2.50", held); !errors.Is(err, db.ErrNotFound) || errors.Is(err, ErrNoTCPBan) {
+		t.Fatalf("unknown service: %v", err)
 	}
 
 	adds, removes := auditPayloads(sink, audit.ActionTCPBanAdd), auditPayloads(sink, audit.ActionTCPBanRemove)
@@ -240,7 +265,7 @@ func TestTCPBans(t *testing.T) {
 		!strings.Contains(adds[0], `"ban_min":30`) {
 		t.Fatalf("adds %v", adds)
 	}
-	if len(removes) != 1 || !strings.Contains(removes[0], `"source":"2001:db8:1:2::/64"`) {
+	if len(removes) != 2 || !strings.Contains(removes[0], `"source":"2001:db8:1:2::/64"`) || !strings.Contains(removes[1], `"source":"192.0.2.50"`) {
 		t.Fatalf("removes %v", removes)
 	}
 }

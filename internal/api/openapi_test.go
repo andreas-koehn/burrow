@@ -535,7 +535,7 @@ func (*fullDepsStub) AddTCPBan(context.Context, string, string, string, string, 
 	stubPanic("AddTCPBan")
 	return db.TCPBan{}, nil
 }
-func (*fullDepsStub) RemoveTCPBan(context.Context, string, string, string, string) (db.TCPBan, error) {
+func (*fullDepsStub) RemoveTCPBan(context.Context, string, string, string, string, func(string) bool) (db.TCPBan, error) {
 	stubPanic("RemoveTCPBan")
 	return db.TCPBan{}, nil
 }

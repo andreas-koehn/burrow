@@ -81,3 +81,35 @@ func TestPipeClosesBothWhenOneEnds(t *testing.T) {
 		t.Fatal("other side was not closed")
 	}
 }
+
+// PipeSides says which conn ended the pipe: the one that closed first.
+func TestPipeSidesNamesTheSideThatEnded(t *testing.T) {
+	defer testutil.AssertNoGoroutineLeak(t)()
+	for _, c := range []struct {
+		name string
+		want Side
+	}{{"a closes", SideA}, {"b closes", SideB}} {
+		t.Run(c.name, func(t *testing.T) {
+			a1, a2 := tcpPipe(t)
+			b1, b2 := tcpPipe(t)
+			defer a1.Close()
+			defer b2.Close()
+			var in, out atomic.Uint64
+			got := make(chan Side, 1)
+			go func() { got <- PipeSides(a2, b1, &in, &out) }()
+			if c.want == SideA {
+				_ = a1.Close()
+			} else {
+				_ = b2.Close()
+			}
+			select {
+			case s := <-got:
+				if s != c.want {
+					t.Fatalf("side %d, want %d", s, c.want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("PipeSides did not return")
+			}
+		})
+	}
+}

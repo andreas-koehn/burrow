@@ -106,6 +106,9 @@ type forwardRelay struct {
 	*accessRelay
 	fwd  *fakeForwards
 	home *handClient
+	// homeCloses makes the home client close every new stream at once, as
+	// one does whose local dial failed.
+	homeCloses *atomic.Bool
 }
 
 func newForwardRelay(t *testing.T, port int, mut func(*Options)) *forwardRelay {
@@ -126,14 +129,17 @@ func newForwardRelayCaps(t *testing.T, port int, caps []string, mut func(*Option
 			mut(o)
 		}
 	})
-	told := &atomic.Int32{}
+	told, homeCloses := &atomic.Int32{}, &atomic.Bool{}
 	home := r.clientCaps("secret", caps, func(st *yamux.Stream) {
 		told.Add(1)
+		if homeCloses.Load() {
+			return
+		}
 		_, _ = st.Write([]byte("hi "))
 		_, _ = io.Copy(st, st)
 	})
 	a := &accessRelay{observedRelay: r, res: res, access: access, log: log, c: home, told: told}
-	return &forwardRelay{accessRelay: a, fwd: fwd, home: home}
+	return &forwardRelay{accessRelay: a, fwd: fwd, home: home, homeCloses: homeCloses}
 }
 
 // forwarder is a signed-in client that holds no tunnel: it opens its

@@ -37,6 +37,7 @@ type tcpGuardDB interface {
 	PutTCPBan(ctx context.Context, b db.TCPBan) error
 	TCPDailyUsage(ctx context.Context, serviceID, day string) (in, out int64, err error)
 	AddTCPDailyUsage(ctx context.Context, serviceID, day string, in, out int64) error
+	PruneTCPBans(ctx context.Context, serviceID string, now time.Time) (int64, error)
 }
 
 // tcpGuardStore keeps the relay's bans and daily usage of tcp services in the
@@ -68,4 +69,9 @@ func (a tcpGuardStore) TCPUsage(ctx context.Context, serviceID, day string) (uin
 
 func (a tcpGuardStore) AddTCPUsage(ctx context.Context, serviceID, day string, in, out uint64) error {
 	return a.db.AddTCPDailyUsage(ctx, serviceID, day, int64(in), int64(out))
+}
+
+func (a tcpGuardStore) PruneTCPBans(ctx context.Context, serviceID string, now time.Time) error {
+	_, err := a.db.PruneTCPBans(ctx, serviceID, now)
+	return err
 }

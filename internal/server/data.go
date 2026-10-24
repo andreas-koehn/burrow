@@ -373,7 +373,7 @@ func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn, source string) {
 	}
 	s.addLiveConn(tun, c)
 	var in, out atomic.Uint64
-	bridge.Pipe(c.watched(visitor), &countingStream{
+	ended := bridge.PipeSides(c.watched(visitor), &countingStream{
 		Conn: &countingStream{Conn: home, in: &tun.BytesIn, out: &tun.BytesOut},
 		in:   &c.in, out: &c.out,
 	}, &in, &out)
@@ -382,8 +382,10 @@ func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn, source string) {
 	}
 	tun.dropConn(c.id)
 	reason := c.endReason(tun.sess)
-	if reason == "" {
-		// It ended by itself: a short one counts towards a ban.
+	if reason == "" && ended == bridge.SideA {
+		// The visitor ended it: a short one counts towards a ban. One the
+		// home side ended never does (its backend may be down, and every
+		// visitor that tries again would be banned).
 		s.shortVisit(tun, source, time.Since(started))
 	}
 	s.tcpTraffic(tun, visitor, c, started, c.in.Load(), c.out.Load(), observe.OutcomeClean, reason)

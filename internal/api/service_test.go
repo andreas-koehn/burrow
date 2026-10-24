@@ -95,6 +95,7 @@ type fakeServiceStore struct {
 	lastBan     string // "<source> <ban_min> <note>"
 	lastUnban   string
 	unbanSource string // the source RemoveTCPBan answers; "" the one asked for
+	noBanRow    bool   // RemoveTCPBan finds no stored ban
 
 	// last args captured for inspection
 	lastMode   string
@@ -218,13 +219,17 @@ func (f *fakeServiceStore) AddTCPBan(_ context.Context, _, _, id, source string,
 	now := time.Now().UTC().Truncate(time.Second)
 	return db.TCPBan{ServiceID: id, Source: source, Until: now.Add(time.Duration(banMin) * time.Minute), Reason: "manual: " + note, CreatedAt: now}, nil
 }
-func (f *fakeServiceStore) RemoveTCPBan(_ context.Context, _, _, id, source string) (db.TCPBan, error) {
+func (f *fakeServiceStore) RemoveTCPBan(_ context.Context, _, _, id, source string, held func(string) bool) (db.TCPBan, error) {
 	if f.tcpBanErr != nil {
 		return db.TCPBan{}, f.tcpBanErr
 	}
 	f.lastUnban = source
 	if f.unbanSource != "" {
 		source = f.unbanSource
+	}
+	wasHeld := held != nil && held(source)
+	if f.noBanRow && !wasHeld {
+		return db.TCPBan{}, store.ErrNoTCPBan
 	}
 	return db.TCPBan{ServiceID: id, Source: source}, nil
 }

@@ -16,9 +16,11 @@ package api
 // service at once.
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,7 +40,8 @@ type TCPGuardRelay interface {
 	TCPUsageToday(serviceID string) (day string, in, out uint64, ok bool)
 	TCPQuotaReached(serviceID string) bool
 	BanTCPSource(serviceID, source string, until time.Time, reason string)
-	UnbanTCPSource(serviceID, source string)
+	UnbanTCPSource(serviceID, source string) bool
+	TCPBans(serviceID string) []server.TCPBan
 }
 
 type tcpAutoBanJSON struct {
@@ -212,13 +215,16 @@ func mapBanErr(w http.ResponseWriter, err error, notFound string) {
 		writeErr(w, http.StatusBadRequest, storeErrText(err, store.ErrInvalidTCPBan))
 	case errors.Is(err, store.ErrTooManyTCPBans):
 		writeErr(w, http.StatusConflict, "the service has its maximum of 4096 active bans")
+	case errors.Is(err, store.ErrNoTCPBan):
+		writeErr(w, http.StatusNotFound, "no ban of that source")
 	case !mapServiceErr(w, err, notFound):
 		writeErr(w, http.StatusInternalServerError, "internal error")
 	}
 }
 
 // ListServiceTCPBans handles GET /api/v1/services/{serviceID}/tcp-bans: the
-// active bans, the first to expire first.
+// active bans, the first to expire first: the stored ones and those the
+// relay holds that the store does not have (a write that failed).
 func (d Deps) ListServiceTCPBans(w http.ResponseWriter, r *http.Request) {
 	serviceID := chi.URLParam(r, "serviceID")
 	role, err := d.actingRole(r, authz.PermServicesConfigureOwn, authz.PermServicesConfigureAny)
@@ -230,6 +236,23 @@ func (d Deps) ListServiceTCPBans(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		mapBanErr(w, err, "service not found")
 		return
+	}
+	if g, ok := d.Connections.(TCPGuardRelay); ok {
+		stored := make(map[string]bool, len(bans))
+		for _, b := range bans {
+			stored[b.Source] = true
+		}
+		n := len(bans)
+		for _, b := range g.TCPBans(serviceID) {
+			if !stored[b.Source] {
+				bans = append(bans, db.TCPBan{ServiceID: serviceID, Source: b.Source, Until: b.Until, Reason: b.Reason, CreatedAt: b.CreatedAt})
+			}
+		}
+		if len(bans) > n {
+			slices.SortFunc(bans, func(a, b db.TCPBan) int {
+				return cmp.Or(a.Until.Compare(b.Until), cmp.Compare(a.Source, b.Source))
+			})
+		}
 	}
 	out := make([]tcpBanResp, 0, len(bans))
 	for _, b := range bans {
@@ -278,8 +301,9 @@ func (d Deps) PostServiceTCPBan(w http.ResponseWriter, r *http.Request) {
 
 // DeleteServiceTCPBan handles DELETE
 // /api/v1/services/{serviceID}/tcp-bans?source=…: the ban of the source (an
-// address of a banned IPv6 /64 lifts the /64) ends now. 404 when there is
-// none. Audited as tcp.ban.remove.
+// address of a banned IPv6 /64 lifts the /64) ends now, in the store and on
+// the relay (which may hold a ban the store does not have). 404 when there
+// is none. Audited as tcp.ban.remove.
 func (d Deps) DeleteServiceTCPBan(w http.ResponseWriter, r *http.Request) {
 	serviceID := chi.URLParam(r, "serviceID")
 	source := strings.TrimSpace(r.URL.Query().Get("source"))
@@ -292,13 +316,13 @@ func (d Deps) DeleteServiceTCPBan(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	b, err := d.Services.RemoveTCPBan(r.Context(), userID(r.Context()), role, serviceID, source)
-	if err != nil {
-		mapBanErr(w, err, "no ban of that source")
-		return
-	}
+	var held func(string) bool
 	if g, ok := d.Connections.(TCPGuardRelay); ok {
-		g.UnbanTCPSource(serviceID, b.Source)
+		held = func(src string) bool { return g.UnbanTCPSource(serviceID, src) }
+	}
+	if _, err := d.Services.RemoveTCPBan(r.Context(), userID(r.Context()), role, serviceID, source, held); err != nil {
+		mapBanErr(w, err, "service not found")
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

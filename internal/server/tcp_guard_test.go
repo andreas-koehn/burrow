@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"strconv"
 	"sync"
@@ -25,6 +26,12 @@ type fakeGuardStore struct {
 	usage map[string][2]uint64         // service|day → in, out
 	err   error
 	adds  int
+	// loadGate holds the read of a service's bans until it is closed.
+	loadGate map[string]chan struct{}
+	// lostAnswers is how many usage writes commit and then answer as if
+	// their context ran out.
+	lostAnswers int
+	prunes      []string
 }
 
 func newFakeGuardStore() *fakeGuardStore {
@@ -32,6 +39,12 @@ func newFakeGuardStore() *fakeGuardStore {
 }
 
 func (f *fakeGuardStore) ActiveTCPBans(_ context.Context, id string, now time.Time) ([]TCPBan, error) {
+	f.mu.Lock()
+	gate := f.loadGate[id]
+	f.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -75,6 +88,22 @@ func (f *fakeGuardStore) AddTCPUsage(_ context.Context, id, day string, in, out 
 	u := f.usage[id+"|"+day]
 	f.usage[id+"|"+day] = [2]uint64{u[0] + in, u[1] + out}
 	f.adds++
+	if f.lostAnswers > 0 {
+		f.lostAnswers--
+		return fmt.Errorf("add tcp daily usage: %w", context.DeadlineExceeded)
+	}
+	return nil
+}
+
+func (f *fakeGuardStore) PruneTCPBans(_ context.Context, id string, now time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prunes = append(f.prunes, id)
+	for src, b := range f.bans[id] {
+		if !now.Before(b.Until) {
+			delete(f.bans[id], src)
+		}
+	}
 	return nil
 }
 
@@ -650,5 +679,164 @@ func TestTCPQuota_UsageIsWrittenAndTheGuardLetGo(t *testing.T) {
 	})
 	if got := st.used("svc-web", day); got != 2003 {
 		t.Fatalf("stored %d", got)
+	}
+}
+
+// A home client that closes the stream at once (its local dial failed: the
+// backend is down) bans nobody, however often a visitor tries: the visitor
+// did not end those visits. Visits the visitor ends at once still ban.
+func TestTCPBan_AHomeThatClosesAtOnceBansNobody(t *testing.T) {
+	r := newGuardRelay(t, 19660, newFakeGuardStore(), nil, autoBan(2, time.Hour))
+	r.homeCloses.Store(true)
+	// Three visits (count is 2), and a fourth that is let in: the
+	// source's burst is 5 connections.
+	for range 3 {
+		before := len(r.closedFrom("127.0.0.9"))
+		conn := dialFrom(t, "127.0.0.9", 19660)
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if n, err := conn.Read(make([]byte, 8)); n != 0 || err == nil {
+			t.Fatalf("read %d bytes, %v; want the close of the home client", n, err)
+		}
+		_ = conn.Close()
+		r.waitFor("the row of the visit", func() bool { return len(r.closedFrom("127.0.0.9")) > before })
+	}
+	settle()
+	if n := len(r.sessionEvents(observe.TCPBanned)); n != 0 {
+		t.Fatalf("visits the home client ended banned the visitor: %d events", n)
+	}
+	r.homeCloses.Store(false)
+	greeted(t, "127.0.0.9", 19660)
+	r.shortVisits(t, "127.0.0.10", 19660, 2)
+	r.waitFor("the ban event", func() bool { return len(r.sessionEvents(observe.TCPBanned)) == 1 })
+}
+
+// newGuardServer is a Server with a guard store and nothing else.
+func newGuardServer(st TCPGuardStore) *Server {
+	return &Server{opts: Options{TCPGuards: st}, log: slog.New(slog.DiscardHandler), reg: NewRegistry(), usageFlush: time.Hour, clock: time.Now}
+}
+
+// A slow store holds up the service whose guard it reads, and no other.
+func TestTCPGuard_ASlowStoreStallsNoOtherService(t *testing.T) {
+	st := newFakeGuardStore()
+	gate := make(chan struct{})
+	st.loadGate = map[string]chan struct{}{"svc-slow": gate}
+	s := newGuardServer(st)
+	if _, err := s.guardFor("svc-held"); err != nil {
+		t.Fatal(err)
+	}
+	slow := make(chan *tcpGuard, 2)
+	for range 2 {
+		go func() {
+			g, err := s.guardFor("svc-slow")
+			if err != nil {
+				t.Error(err)
+			}
+			slow <- g
+		}()
+	}
+	time.Sleep(50 * time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = s.guard("svc-held")
+		if _, err := s.guardFor("svc-other"); err != nil {
+			t.Error(err)
+		}
+		s.UnbanTCPSource("svc-held", "192.0.2.1")
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a slow read of one service's guard stalled the others")
+	}
+	close(gate)
+	a, b := <-slow, <-slow
+	if a == nil || a != b || s.guard("svc-slow") != a {
+		t.Fatal("two loads of one service gave two guards")
+	}
+}
+
+// The bans the relay holds are listed and lifted even when the store never
+// got them; an unban before the ban was written keeps it from being
+// written, so it cannot come back.
+func TestTCPBan_HeldBansAreListedAndLifted(t *testing.T) {
+	st := newFakeGuardStore()
+	s := newGuardServer(st)
+	g, err := s.guardFor("svc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bans := s.TCPBans("svc-none"); bans != nil {
+		t.Fatalf("bans of a service not held: %+v", bans)
+	}
+	now := time.Now()
+	b := TCPBan{Source: "192.0.2.1", Until: now.Add(time.Hour), Reason: "auto", CreatedAt: now}
+	g.addBan(b, now)
+	g.addBan(TCPBan{Source: "192.0.2.2", Until: now.Add(-time.Minute)}, now.Add(-time.Hour))
+	if bans := s.TCPBans("svc"); len(bans) != 1 || bans[0] != b {
+		t.Fatalf("held bans %+v", bans)
+	}
+	if !s.UnbanTCPSource("svc", "192.0.2.1") || s.UnbanTCPSource("svc", "192.0.2.1") || s.UnbanTCPSource("svc-none", "192.0.2.1") {
+		t.Fatal("unban answers")
+	}
+	// The write of the ban comes after the unban: it is not made.
+	s.persistBan("svc", g, b)
+	if _, ok := st.ban("svc", "192.0.2.1"); ok {
+		t.Fatal("a lifted ban was written")
+	}
+	// A ban still held is written.
+	g.addBan(b, now)
+	s.persistBan("svc", g, b)
+	if _, ok := st.ban("svc", "192.0.2.1"); !ok {
+		t.Fatal("a held ban was not written")
+	}
+}
+
+// A usage write that committed but answered too late is not written again:
+// the bytes are counted once.
+func TestTCPQuota_AWriteThatAnswersTooLateCountsOnce(t *testing.T) {
+	st := newFakeGuardStore()
+	st.lostAnswers = 1
+	s := newGuardServer(st)
+	g, err := s.guardFor("svc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.pendIn.Add(100)
+	g.pendOut.Add(50)
+	s.flushGuard(context.Background(), g)
+	s.flushGuard(context.Background(), g)
+	if got := st.used("svc", g.day); got != 150 {
+		t.Fatalf("stored %d bytes, want 150", got)
+	}
+	if got := g.used(); got != 150 {
+		t.Fatalf("the guard counts %d bytes, want 150", got)
+	}
+	// A write that was never sent (its context ended first) is kept.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	g.pendIn.Add(10)
+	s.flushGuard(ctx, g)
+	if g.pendIn.Load() != 10 {
+		t.Fatalf("an unsent write was dropped: pending %d", g.pendIn.Load())
+	}
+	s.flushGuard(context.Background(), g)
+	if got := st.used("svc", g.day); got != 160 {
+		t.Fatalf("stored %d bytes, want 160", got)
+	}
+}
+
+// The flush prunes the service's expired bans from the store.
+func TestTCPBan_TheFlushPrunesExpiredBans(t *testing.T) {
+	st := newFakeGuardStore()
+	_ = st.SaveTCPBan(context.Background(), "svc", TCPBan{Source: "192.0.2.1", Until: time.Now().Add(-time.Minute)})
+	s := newGuardServer(st)
+	g, err := s.guardFor("svc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.flushGuard(context.Background(), g)
+	if _, ok := st.ban("svc", "192.0.2.1"); ok || len(st.prunes) != 1 {
+		t.Fatalf("expired ban kept; prunes %v", st.prunes)
 	}
 }

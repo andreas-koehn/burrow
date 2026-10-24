@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/server"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -22,6 +23,7 @@ type guardRelay struct {
 	usage   map[string][3]any // service → day, in, out
 	reached map[string]bool
 	bans    []string // "ban <service> <source> <until>" and "unban <service> <source>"
+	held    map[string][]server.TCPBan
 }
 
 func (g *guardRelay) TCPUsageToday(id string) (string, uint64, uint64, bool) {
@@ -35,9 +37,17 @@ func (g *guardRelay) TCPQuotaReached(id string) bool { return g.reached[id] }
 func (g *guardRelay) BanTCPSource(id, source string, until time.Time, reason string) {
 	g.bans = append(g.bans, fmt.Sprintf("ban %s %s %s %s", id, source, until.UTC().Format(time.RFC3339), reason))
 }
-func (g *guardRelay) UnbanTCPSource(id, source string) {
+func (g *guardRelay) UnbanTCPSource(id, source string) bool {
 	g.bans = append(g.bans, "unban "+id+" "+source)
+	for i, b := range g.held[id] {
+		if b.Source == source {
+			g.held[id] = append(g.held[id][:i], g.held[id][i+1:]...)
+			return true
+		}
+	}
+	return false
 }
+func (g *guardRelay) TCPBans(id string) []server.TCPBan { return g.held[id] }
 
 func decodeTCPLimits(t *testing.T, r *http.Response) tcpLimitsResp {
 	t.Helper()
@@ -194,7 +204,8 @@ func TestTCPBans_ListBanUnban(t *testing.T) {
 		{"ban on http", http.MethodPost, "/tcp-bans", `{"source": "203.0.113.1", "ban_min": 5}`, store.ErrServiceNotTCP, http.StatusConflict, "tcp services only"},
 		{"ban another user's", http.MethodPost, "/tcp-bans", `{"source": "203.0.113.1", "ban_min": 5}`, store.ErrForbidden, http.StatusForbidden, ""},
 		{"unban without a source", http.MethodDelete, "/tcp-bans", ``, nil, http.StatusBadRequest, "source"},
-		{"unban what is not banned", http.MethodDelete, "/tcp-bans?source=203.0.113.1", ``, db.ErrNotFound, http.StatusNotFound, "no ban"},
+		{"unban what is not banned", http.MethodDelete, "/tcp-bans?source=203.0.113.1", ``, store.ErrNoTCPBan, http.StatusNotFound, "no ban of that source"},
+		{"unban on an unknown service", http.MethodDelete, "/tcp-bans?source=203.0.113.1", ``, db.ErrNotFound, http.StatusNotFound, "service not found"},
 		{"unban nonsense", http.MethodDelete, "/tcp-bans?source=x", ``, fmt.Errorf("%w: source must be an IP address, or an IPv6 /64", store.ErrInvalidTCPBan),
 			http.StatusBadRequest, "IP address"},
 		{"list another user's", http.MethodGet, "/tcp-bans", ``, store.ErrForbidden, http.StatusForbidden, ""},
@@ -233,4 +244,37 @@ func (c *authClient) doRaw(t *testing.T, method, path, body string) *http.Respon
 		t.Fatal(err)
 	}
 	return resp
+}
+
+// The relay's bans are listed with the stored ones, and lifted by a DELETE
+// though the store has none of them (a write that failed).
+func TestTCPBans_HeldBansAreListedAndLifted(t *testing.T) {
+	until := time.Date(2026, 10, 24, 13, 0, 0, 0, time.UTC)
+	relay := &guardRelay{held: map[string][]server.TCPBan{"rdp": {
+		{Source: "198.51.100.1", Until: until.Add(-time.Minute), Reason: "auto: 10 connections", CreatedAt: until.Add(-time.Hour)},
+		{Source: "203.0.113.7", Until: until.Add(time.Minute), Reason: "auto: newer", CreatedAt: until},
+	}}}
+	a := newTCPAPI(t, func(d *Deps) { d.Connections = relay })
+	a.svcs.tcpBans = []db.TCPBan{{ServiceID: "rdp", Source: "203.0.113.7", Until: until, Reason: "manual: stored", CreatedAt: until.Add(-time.Hour)}}
+	r := a.c.get(t, "/api/v1/services/rdp/tcp-bans")
+	var bans []tcpBanResp
+	if err := json.NewDecoder(r.Body).Decode(&bans); err != nil || r.StatusCode != http.StatusOK {
+		t.Fatalf("list: %d %v", r.StatusCode, err)
+	}
+	r.Body.Close()
+	if len(bans) != 2 || bans[0].Source != "198.51.100.1" || !bans[0].Auto || bans[1].Source != "203.0.113.7" || bans[1].Reason != "manual: stored" {
+		t.Fatalf("bans %+v", bans)
+	}
+
+	a.svcs.noBanRow = true
+	if r := a.c.delete(t, "/api/v1/services/rdp/tcp-bans?source=198.51.100.1"); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("unban a held ban: %d %s", r.StatusCode, readBody(t, r))
+	}
+	if len(relay.held["rdp"]) != 1 {
+		t.Fatalf("held %+v", relay.held["rdp"])
+	}
+	r = a.c.delete(t, "/api/v1/services/rdp/tcp-bans?source=198.51.100.1")
+	if body := readBody(t, r); r.StatusCode != http.StatusNotFound || !strings.Contains(body, "no ban of that source") {
+		t.Fatalf("second unban: %d %s", r.StatusCode, body)
+	}
 }

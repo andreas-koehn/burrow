@@ -57,10 +57,11 @@ type ServiceStore interface {
 	ServiceTCPLimits(ctx context.Context, callerID, callerRole, serviceID string) (store.TCPLimits, store.TCPUsage, error)
 	SetServiceTCPLimits(ctx context.Context, callerID, callerRole, serviceID string, u store.TCPLimitsUpdate) (before, after store.TCPLimits, err error)
 	// ListTCPBans, AddTCPBan and RemoveTCPBan keep the banned sources of a
-	// tcp service.
+	// tcp service. RemoveTCPBan calls held (when not nil) to lift the ban on
+	// the relay first; store.ErrNoTCPBan when neither had one.
 	ListTCPBans(ctx context.Context, callerID, callerRole, serviceID string) ([]db.TCPBan, error)
 	AddTCPBan(ctx context.Context, callerID, callerRole, serviceID, source string, banMin int, note string) (db.TCPBan, error)
-	RemoveTCPBan(ctx context.Context, callerID, callerRole, serviceID, source string) (db.TCPBan, error)
+	RemoveTCPBan(ctx context.Context, callerID, callerRole, serviceID, source string, held func(src string) bool) (db.TCPBan, error)
 	// DeleteService removes the service and returns its name. Owner or a
 	// holder of services:configure:any; store.ErrForbidden otherwise.
 	// store.ErrServiceHasProvider and store.ErrProviderInUse refuse it.
