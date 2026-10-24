@@ -138,7 +138,9 @@ func TestServe_TLSPassthrough(t *testing.T) {
 	r := bootObsRelayEnv(t, map[string]string{
 		"BURROW_TLS_PASSTHROUGH_LISTEN": passAddr,
 		"BURROW_TCP_DOMAIN":             "tcp.example.com",
-		"BURROW_TRUSTED_PROXIES":        "127.0.0.1",
+		// The passthrough's own proxies; BURROW_TRUSTED_PROXIES (the
+		// dashboard's) is not one of them.
+		"BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES": "127.0.0.1",
 	})
 	target := tlsEcho(t)
 	var token struct {
@@ -164,14 +166,18 @@ func TestServe_TLSPassthrough(t *testing.T) {
 		t.Fatalf("GET %+v", got)
 	}
 	slugName := got.Hostnames[0]
-	if err := passVisit(passAddr, slugName, nil); err != nil {
+	header := passProxyV2("198.51.100.7:4242", "10.0.0.2:443")
+	if err := passVisit(passAddr, slugName, header); err != nil {
 		t.Fatalf("by slug name: %v", err)
+	}
+	// From the trusted proxy every connection names its visitor.
+	if err := passVisit(passAddr, slugName, nil); err == nil {
+		t.Fatal("the trusted proxy without a header got through")
 	}
 	r.mustAdmin(http.MethodPut, "/api/v1/services/"+id+"/tcp-hostname", map[string]string{"tcp_hostname": "RDP.example.com"}, http.StatusOK, &got)
 	if got.TCPHostname != "rdp.example.com" || !slices.Equal(got.Hostnames, []string{slugName, "rdp.example.com"}) {
 		t.Fatalf("PUT %+v", got)
 	}
-	header := passProxyV2("198.51.100.7:4242", "10.0.0.2:443")
 	if err := passVisit(passAddr, "rdp.example.com", header); err != nil {
 		t.Fatalf("by host name behind the proxy: %v", err)
 	}
@@ -183,7 +189,7 @@ func TestServe_TLSPassthrough(t *testing.T) {
 		t.Fatalf("private service reachable: %+v", got)
 	}
 	for _, sni := range []string{"vault.example.com", "nobody.example.com"} {
-		if err := passVisit(passAddr, sni, nil); err == nil {
+		if err := passVisit(passAddr, sni, header); err == nil {
 			t.Fatalf("%s reached a service", sni)
 		}
 	}

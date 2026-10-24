@@ -242,3 +242,25 @@ func isDuplicateError(err error) bool {
 // ErrDuplicateHostname is returned when a hostname INSERT conflicts with an
 // existing row (UNIQUE constraint on service_custom_domains.hostname).
 var ErrDuplicateHostname = fmt.Errorf("hostname already bound")
+
+// CustomDomainCovers reports whether a custom domain (service_custom_domains)
+// is name, a parent of name, or a wildcard "*.<parent>" over it: a TLS
+// passthrough host name there would take a name an http service is reached
+// by. name is lower case.
+func (x *DB) CustomDomainCovers(ctx context.Context, name string) (bool, error) {
+	cands := []any{name}
+	for rest := name; ; {
+		_, parent, ok := strings.Cut(rest, ".")
+		if !ok || parent == "" {
+			break
+		}
+		cands = append(cands, parent, "*."+parent)
+		rest = parent
+	}
+	q := `SELECT COUNT(*) FROM service_custom_domains WHERE hostname IN (?` + strings.Repeat(",?", len(cands)-1) + `)`
+	var n int
+	if err := x.sqlDB.QueryRowContext(ctx, q, cands...).Scan(&n); err != nil {
+		return false, fmt.Errorf("custom domain covers: %w", err)
+	}
+	return n > 0, nil
+}

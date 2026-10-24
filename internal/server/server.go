@@ -326,9 +326,10 @@ type Options struct {
 	// <slug>.<TCPDomain> as well as by its own host name. Empty: by its own
 	// host name only.
 	TCPDomain string
-	// TrustedProxies are the addresses (BURROW_TRUSTED_PROXIES) whose PROXY
-	// protocol v2 header the TLS passthrough listener believes. Anyone else
-	// who sends one is closed.
+	// TrustedProxies are the proxies in front of the TLS passthrough
+	// listener (BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES): each connection from
+	// one must start with a PROXY protocol v2 header naming the visitor, and
+	// anyone else who sends one is closed. Empty: no header is believed.
 	TrustedProxies []netip.Prefix
 }
 
@@ -367,11 +368,12 @@ type Server struct {
 	// The bounds of the TLS passthrough listener's hello read (see
 	// passthrough.go), and the connections that wait for their hello now
 	// (under peekMu), in all and per address.
-	helloTimeout         time.Duration
-	peekMax, peekPerPeer int
-	peekMu               sync.Mutex
-	peekTotal            int
-	peekBy               map[string]int
+	helloTimeout, helloTimeoutBusy time.Duration
+	peekMax, peekPerPeer           int
+	peekTrustedMax                 int
+	peekMu                         sync.Mutex
+	peekTotal, peekTrusted         int
+	peekBy                         map[string]int
 }
 
 // New validates options and loads the TLS keypair.
@@ -421,7 +423,8 @@ func New(o Options) (*Server, error) {
 		authFails: newAuthFailures(),
 		idleTick:  defaultIdleTick,
 
-		helloTimeout: defaultHelloTimeout, peekMax: defaultPeekMax, peekPerPeer: defaultPeekPerPeer,
+		helloTimeout: defaultHelloTimeout, helloTimeoutBusy: defaultHelloTimeoutBusy,
+		peekMax: defaultPeekMax, peekPerPeer: defaultPeekPerPeer, peekTrustedMax: defaultPeekTrusted,
 	}
 	s.ports = newPortAllocator(o.PortMin, o.PortMax)
 	return s, nil

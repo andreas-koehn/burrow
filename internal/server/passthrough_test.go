@@ -410,17 +410,26 @@ func TestPassthrough_ProxyHeaderFromTrustedProxiesOnly(t *testing.T) {
 	if row.SourceIP != "198.51.100.7" || row.SNI != "s-guard.tcp.example.com" {
 		t.Fatalf("row %+v", row)
 	}
-	// No header: the proxy itself, which the policy does not allow.
-	if _, err := rawVisit(r.addr, hello, 3*time.Second); err == nil {
-		t.Fatal("the proxy's own address got through")
-	}
-	r.waitFor("a rejected row of the proxy", func() bool {
-		rows := r.refusedRows(observe.RejectedIPGeo)
-		return len(rows) == 1 && rows[0].SourceIP == "127.0.0.1"
-	})
+	// A trusted proxy must name the visitor: without a header, or with a
+	// LOCAL one, it is closed before the service judges anybody.
 	local := append(append([]byte{}, proxyproto.Signature[:]...), 0x20, 0x00, 0, 0)
-	if _, err := rawVisit(r.addr, append(local, hello...), 3*time.Second); err == nil {
-		t.Fatal("a LOCAL header got through as someone else")
+	for name, first := range map[string][]byte{"no header": hello, "a LOCAL header": append(local, hello...)} {
+		conn, err := net.Dial("tcp", r.addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = conn.Write(first)
+		if err := closedWithoutAByte(conn, 3*time.Second); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		_ = conn.Close()
+	}
+	if n := r.srv.refusals.count(passthroughRefusalKey, PassthroughRefusedProxyMissing); n != 2 {
+		t.Fatalf("%d proxy_missing refusals", n)
+	}
+	settle()
+	if rows := r.refusedRows(observe.RejectedIPGeo); len(rows) != 0 {
+		t.Fatalf("the proxy itself was judged by the service: %+v", rows)
 	}
 	// A trusted proxy that stops in its header is closed when the read
 	// times out.
@@ -435,10 +444,18 @@ func TestPassthrough_ProxyHeaderFromTrustedProxiesOnly(t *testing.T) {
 	}
 	_ = stalled.Close()
 
-	// A relay that does not trust this peer.
-	u := newPassRelay(t, 19579, 19579, func(o *Options) {
-		o.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
-	}, nil)
+	// A relay that trusts no proxy, and one that trusts another: a header is
+	// closed, and the peer without one is the visitor.
+	for i, trust := range [][]netip.Prefix{nil, {netip.MustParsePrefix("10.0.0.0/8")}} {
+		untrustedPeer(t, 19579+i*2, trust)
+	}
+}
+
+// untrustedPeer checks a relay on port whose trusted proxies do not hold
+// 127.0.0.1.
+func untrustedPeer(t *testing.T, port int, trust []netip.Prefix) {
+	t.Helper()
+	u := newPassRelay(t, port, port, func(o *Options) { o.TrustedProxies = trust }, nil)
 	if rr := u.c.register(t, proto.TunnelRegister{Name: "open", Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK {
 		t.Fatalf("register: %+v", rr)
 	}
@@ -469,7 +486,7 @@ func TestPassthrough_ProxyHeaderFromTrustedProxiesOnly(t *testing.T) {
 // time.
 func TestPassthrough_TheHelloReadIsBounded(t *testing.T) {
 	const timeout = time.Second
-	r := newPassRelay(t, 19580, 19580, nil, func(s *Server) {
+	r := newPassRelay(t, 19582, 19582, nil, func(s *Server) {
 		s.helloTimeout = timeout
 		s.peekMax, s.peekPerPeer = 3, 2
 	})
@@ -523,5 +540,114 @@ func TestPassthrough_TheHelloReadIsBounded(t *testing.T) {
 	r.waitFor("the waits end", func() bool { return r.srv.peeking() == 0 })
 	if got, err := rawVisit(r.addr, hello, 5*time.Second); err != nil || string(got) != string(hello) {
 		t.Fatalf("after the waits: %v", err)
+	}
+}
+
+// holdSilent opens n connections that send nothing.
+func holdSilent(t *testing.T, addr string, n int) []net.Conn {
+	t.Helper()
+	var held []net.Conn
+	for range n {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		held = append(held, c)
+	}
+	time.Sleep(100 * time.Millisecond)
+	return held
+}
+
+// closesWithin reports whether a new silent connection is closed within d.
+func closesWithin(addr string, d time.Duration) error {
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return closedWithoutAByte(c, d)
+}
+
+// The budgets of the hello wait: the relay's total for untrusted peers, a
+// budget of their own for the trusted proxies (no per-peer cap), and a
+// shorter wait once a budget is more than three quarters full.
+func TestPassthrough_PeekBudgets(t *testing.T) {
+	t.Run("the total of untrusted peers", func(t *testing.T) {
+		r := newPassRelay(t, 19583, 19583, nil, func(s *Server) { s.peekMax, s.peekPerPeer, s.helloTimeout = 2, 10, 5*time.Second })
+		holdSilent(t, r.addr, 2)
+		if err := closesWithin(r.addr, 500*time.Millisecond); err != nil {
+			t.Fatalf("over the total: %v", err)
+		}
+		if n := r.srv.refusals.count(passthroughRefusalKey, PassthroughRefusedBusy); n != 1 {
+			t.Fatalf("%d busy", n)
+		}
+	})
+	t.Run("trusted proxies have their own budget", func(t *testing.T) {
+		r := newPassRelay(t, 19584, 19584, func(o *Options) {
+			o.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
+		}, func(s *Server) { s.peekMax, s.peekPerPeer, s.peekTrustedMax, s.helloTimeout = 1, 1, 3, 5*time.Second })
+		// Three from one trusted address: beyond the per-peer cap and the
+		// untrusted total, within the trusted budget.
+		held := holdSilent(t, r.addr, 3)
+		for i, c := range held {
+			if err := closedWithoutAByte(c, 200*time.Millisecond); err == nil || err.Error() != "still open" {
+				t.Fatalf("trusted wait %d: %v", i, err)
+			}
+		}
+		if err := closesWithin(r.addr, 500*time.Millisecond); err != nil {
+			t.Fatalf("over the trusted budget: %v", err)
+		}
+	})
+	t.Run("a full budget waits less", func(t *testing.T) {
+		r := newPassRelay(t, 19585, 19585, nil, func(s *Server) {
+			s.peekMax, s.peekPerPeer, s.helloTimeout, s.helloTimeoutBusy = 4, 10, 5*time.Second, 300*time.Millisecond
+		})
+		held := holdSilent(t, r.addr, 3) // three quarters: the full wait
+		start := time.Now()
+		if err := closesWithin(r.addr, 2*time.Second); err != nil || time.Since(start) > 1500*time.Millisecond {
+			t.Fatalf("the fourth: %v after %v", err, time.Since(start))
+		}
+		for i, c := range held {
+			if err := closedWithoutAByte(c, 100*time.Millisecond); err == nil || err.Error() != "still open" {
+				t.Fatalf("wait %d: %v", i, err)
+			}
+		}
+	})
+}
+
+// One site's IPv6 addresses share one per-peer budget: a /48.
+func TestPeekKey(t *testing.T) {
+	a, b := netip.MustParseAddr("2001:db8:1:2::1"), netip.MustParseAddr("2001:db8:1:ffff::9")
+	if peekKey(a) != peekKey(b) || peekKey(a) == peekKey(netip.MustParseAddr("2001:db8:2::1")) {
+		t.Fatalf("%s %s", peekKey(a), peekKey(b))
+	}
+	if peekKey(netip.MustParseAddr("::ffff:198.51.100.7")) != "198.51.100.7" {
+		t.Fatal("v4-mapped")
+	}
+}
+
+// A ClientHello that comes in two writes is read whole.
+func TestPassthrough_AHelloInTwoWrites(t *testing.T) {
+	r := newPassRelay(t, 19586, 19586, nil, nil)
+	if rr := r.c.register(t, proto.TunnelRegister{Name: "open", Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	hello := clientHello(t, "s-open.tcp.example.com")
+	conn, err := net.Dial("tcp", r.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	for _, part := range [][]byte{hello[:3], hello[3:40], hello[40:]} {
+		if _, err := conn.Write(part); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	got := make([]byte, len(hello))
+	if _, err := io.ReadFull(conn, got); err != nil || string(got) != string(hello) {
+		t.Fatalf("echo: %v", err)
 	}
 }

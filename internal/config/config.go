@@ -111,6 +111,15 @@ type ServerConfig struct {
 	// service is reached by its own host name only (tcp_hostname).
 	// Env: BURROW_TCP_DOMAIN.
 	TCPDomain string `koanf:"tcp_domain"`
+	// TLSPassthroughTrustedProxies are the proxies in front of the TLS
+	// passthrough listener (CIDRs or addresses, e.g. Traefik's address on the
+	// Docker network). Each connection from one must start with a PROXY
+	// protocol v2 header that names the visitor; one without is closed.
+	// Empty (the default): no header is believed and the TCP peer is the
+	// visitor. It is not BURROW_TRUSTED_PROXIES, whose HTTP proxies would
+	// otherwise be let in as anyone they name.
+	// Env: BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES (comma-separated).
+	TLSPassthroughTrustedProxies []string `koanf:"tls_passthrough_trusted_proxies"`
 
 	// ----- v0.4.0 additions (Task 24) ---------------------------------------
 
@@ -245,7 +254,7 @@ func envProvider(prefix string) *env.Env {
 func burrowEnvProvider() *env.Env {
 	return env.ProviderWithValue("BURROW_", ".", func(rawKey, rawVal string) (string, interface{}) {
 		key := strings.ReplaceAll(strings.ToLower(strings.TrimPrefix(rawKey, "BURROW_")), "__", ".")
-		if key == "trusted_proxies" {
+		if key == "trusted_proxies" || key == "tls_passthrough_trusted_proxies" {
 			if rawVal == "" {
 				return key, []string{}
 			}
@@ -467,6 +476,9 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 	if err := parseTrustedProxies(c.TrustedProxies); err != nil {
 		return nil, fmt.Errorf("invalid server config: %w", err)
 	}
+	if err := parseTrustedProxies(c.TLSPassthroughTrustedProxies); err != nil {
+		return nil, fmt.Errorf("invalid server config: tls_passthrough_%w", err)
+	}
 	// Both-or-neither validation for HTTP TLS cert/key pair (xor is invalid).
 	if (c.HTTPTLSCert == "") != (c.HTTPTLSKey == "") {
 		return nil, fmt.Errorf("invalid server config: http_tls_cert and http_tls_key must both be set or both be empty")
@@ -581,6 +593,11 @@ func cleanTCPDomain(c *ServerConfig) error {
 	}
 	if c.TCPDomain == dashboard || c.TCPDomain == c.ServicesDomain {
 		return fmt.Errorf("tcp_domain must differ from the dashboard's host and the services host")
+	}
+	// A parent of the dashboard's host would make the dashboard's own name
+	// (or one above it) a slug name of a tcp service.
+	if dashboard != "" && strings.HasSuffix(dashboard, "."+c.TCPDomain) {
+		return fmt.Errorf("tcp_domain %q must not be a parent of the dashboard's host %q", c.TCPDomain, dashboard)
 	}
 	return nil
 }

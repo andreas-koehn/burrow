@@ -93,9 +93,14 @@ var (
 // ErrInvalidTCPHostname: a TLS passthrough host name that is no DNS name
 // of two labels or more (see NormalizeTCPHostname). ErrTCPHostnameTaken:
 // another service holds it.
+// ErrTCPHostnameNeedsAny: only a holder of services:configure:any may set
+// one (an owner may clear it). ErrTCPHostnameReserved: a custom domain is the
+// name or a parent of it.
 var (
-	ErrInvalidTCPHostname = errors.New("store: tcp_hostname must be a host name such as rdp.example.com")
-	ErrTCPHostnameTaken   = errors.New("store: tcp_hostname is used by another service")
+	ErrInvalidTCPHostname  = errors.New("store: tcp_hostname must be a host name such as rdp.example.com")
+	ErrTCPHostnameTaken    = errors.New("store: tcp_hostname is used by another service")
+	ErrTCPHostnameNeedsAny = errors.New("store: a custom tcp_hostname needs services:configure:any")
+	ErrTCPHostnameReserved = errors.New("store: tcp_hostname is a custom domain of a service or under one")
 )
 
 // ErrNameRequired is returned by CreateAPIKey when the name argument is empty

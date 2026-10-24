@@ -52,8 +52,9 @@ func (d Deps) tcpHostnameView(h store.TCPHostname) tcpHostnameResp {
 
 // reservedTCPHostname names the relay's own domain a host name is, or is
 // under, "" for none: the tcp domain (whose names are the slugs'), the
-// dashboard's domain and the services host. A passthrough name there would
-// shadow a name the relay gives out itself.
+// dashboard's domain and the services host, and the names under each. A passthrough name there would
+// shadow a name the relay gives out itself. A custom domain of a service is
+// refused by the store (store.ErrTCPHostnameReserved).
 func (d Deps) reservedTCPHostname(name string) string {
 	for _, dom := range []string{d.TCPDomain, d.AuthDomain} {
 		dom = strings.ToLower(strings.TrimSuffix(dom, "."))
@@ -61,7 +62,7 @@ func (d Deps) reservedTCPHostname(name string) string {
 			return dom
 		}
 	}
-	if sd := strings.ToLower(d.ServicesDomain); sd != "" && name == sd {
+	if sd := strings.ToLower(d.ServicesDomain); sd != "" && (name == sd || strings.HasSuffix(name, "."+sd)) {
 		return sd
 	}
 	return ""
@@ -88,7 +89,9 @@ func (d Deps) GetServiceTCPHostname(w http.ResponseWriter, r *http.Request) {
 // PutServiceTCPHostname handles PUT /api/v1/services/{serviceID}/tcp-hostname:
 // tcp_hostname, a host name such as rdp.example.com, or "" for none. It is
 // stored lower case and is unique among services; a name of the relay's own
-// domains is refused. The relay applies it at once. The store audits the
+// domains or of a custom domain is refused. Setting one (not clearing it)
+// needs services:configure:any: an owner with :own alone gets the slug name
+// under the tcp domain only. The relay applies it at once. The store audits the
 // write (service.tcp_hostname.update).
 func (d Deps) PutServiceTCPHostname(w http.ResponseWriter, r *http.Request) {
 	serviceID := chi.URLParam(r, "serviceID")
@@ -127,6 +130,10 @@ func (d Deps) PutServiceTCPHostname(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "tcp_hostname must be a host name such as rdp.example.com")
 		case errors.Is(err, store.ErrTCPHostnameTaken):
 			writeErr(w, http.StatusConflict, "tcp_hostname is used by another service")
+		case errors.Is(err, store.ErrTCPHostnameReserved):
+			writeErr(w, http.StatusConflict, "tcp_hostname is a custom domain of a service, or under one")
+		case errors.Is(err, store.ErrTCPHostnameNeedsAny):
+			writeErr(w, http.StatusForbidden, "a tcp_hostname of its own needs services:configure:any; the service is reached by its slug name under the tcp domain")
 		case !mapServiceErr(w, err, "service not found"):
 			writeErr(w, http.StatusInternalServerError, "internal error")
 		}

@@ -10,7 +10,7 @@ import (
 	"github.com/ankoehn/burrow/internal/server"
 )
 
-// trustedPrefixes reads BURROW_TRUSTED_PROXIES (addresses and CIDRs, already
+// trustedPrefixes reads BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES (addresses and CIDRs, already
 // validated by the config) as the prefixes the relay's tcp listeners believe
 // a PROXY protocol header from. An entry that cannot be read is left out:
 // it trusts nobody.

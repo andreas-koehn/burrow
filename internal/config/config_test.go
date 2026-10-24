@@ -1047,7 +1047,23 @@ func TestLoadServer_TLSPassthrough(t *testing.T) {
 	if c.TLSPassthroughListen != ":8444" || c.TCPDomain != "tcp.example.com" {
 		t.Fatalf("got %q %q", c.TLSPassthroughListen, c.TCPDomain)
 	}
-	for _, bad := range []string{"burrow.example.com", "apps.example.com", "https://tcp.example.com", "tcp.example.com:8444", "tcp", "*.tcp.example.com", "-x.example.com"} {
+	// The passthrough's own trusted proxies: empty by default, never
+	// BURROW_TRUSTED_PROXIES.
+	t.Setenv("BURROW_TRUSTED_PROXIES", "10.0.0.0/8")
+	if c, err = LoadServer(nil); err != nil || len(c.TLSPassthroughTrustedProxies) != 0 {
+		t.Fatalf("passthrough proxies from BURROW_TRUSTED_PROXIES: %v %v", c.TLSPassthroughTrustedProxies, err)
+	}
+	t.Setenv("BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES", "172.18.0.5, 10.1.0.0/16")
+	if c, err = LoadServer(nil); err != nil || len(c.TLSPassthroughTrustedProxies) != 2 || c.TLSPassthroughTrustedProxies[1] != "10.1.0.0/16" {
+		t.Fatalf("passthrough proxies: %v %v", c.TLSPassthroughTrustedProxies, err)
+	}
+	t.Setenv("BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES", "not-an-address")
+	if _, err := LoadServer(nil); err == nil {
+		t.Fatal("a bad passthrough proxy accepted")
+	}
+	t.Setenv("BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES", "")
+	for _, bad := range []string{"burrow.example.com", "apps.example.com", "https://tcp.example.com", "tcp.example.com:8444", "tcp", "*.tcp.example.com", "-x.example.com",
+		"example.com", "Example.COM."} { // a parent of the dashboard's host
 		t.Setenv("BURROW_TCP_DOMAIN", bad)
 		if _, err := LoadServer(nil); err == nil {
 			t.Errorf("tcp domain %q accepted", bad)

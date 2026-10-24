@@ -420,8 +420,10 @@ func (s *Store) ServiceTCPHostname(ctx context.Context, callerID, callerRole, se
 // ("" clears it), stored in NormalizeTCPHostname form. It widens who can
 // reach the service (a client that names it on the passthrough listener),
 // so the API puts it behind a recent confirmation and off the MCP tools.
-// Same permission rule as SetServiceMaxConnections. ErrServiceNotTCP for
+// Same permission rule as SetServiceMaxConnections, and a name (not a clear)
+// needs services:configure:any (ErrTCPHostnameNeedsAny). ErrServiceNotTCP for
 // any other type, ErrInvalidTCPHostname for a name that is none,
+// ErrTCPHostnameReserved for one a custom domain covers,
 // ErrTCPHostnameTaken when another service holds it. Every write is
 // audited as service.tcp_hostname.update {from, to}.
 func (s *Store) SetServiceTCPHostname(ctx context.Context, callerID, callerRole, serviceID, hostname string) (before, after TCPHostname, err error) {
@@ -434,9 +436,22 @@ func (s *Store) SetServiceTCPHostname(ctx context.Context, callerID, callerRole,
 	}
 	name := ""
 	if hostname != "" {
+		// A name of its own is a way in that is not under the tcp domain
+		// the operator chose: an administrator's decision. Clearing one
+		// narrows access, which the owner may.
+		if !authz.Can(callerRole, authz.PermServicesConfigureAny) {
+			return TCPHostname{}, TCPHostname{}, ErrTCPHostnameNeedsAny
+		}
 		var ok bool
 		if name, ok = NormalizeTCPHostname(hostname); !ok {
 			return TCPHostname{}, TCPHostname{}, ErrInvalidTCPHostname
+		}
+		covered, err := s.q.CustomDomainCovers(ctx, name)
+		if err != nil {
+			return TCPHostname{}, TCPHostname{}, err
+		}
+		if covered {
+			return TCPHostname{}, TCPHostname{}, ErrTCPHostnameReserved
 		}
 	}
 	before = tcpHostnameOf(svc)

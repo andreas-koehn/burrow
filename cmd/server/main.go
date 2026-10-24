@@ -667,10 +667,11 @@ func newRootCmd() *cobra.Command {
 				GetCertificate: acmeGetCert(acmeMgr),
 				CertNames:      acmeCertNames(cfg, acmeMgr),
 				// tcp complete (E1): the TLS passthrough listener names
-				// every tcp service <slug>.<tcp domain>, and believes a
-				// PROXY protocol header from the trusted proxies only.
+				// every tcp service <slug>.<tcp domain>; its own trusted
+				// proxies (not BURROW_TRUSTED_PROXIES) must send a PROXY
+				// protocol header, and nobody else may.
 				TCPDomain:      cfg.TCPDomain,
-				TrustedProxies: trustedPrefixes(cfg.TrustedProxies),
+				TrustedProxies: trustedPrefixes(cfg.TLSPassthroughTrustedProxies),
 			})
 			if err != nil {
 				return err
