@@ -17,6 +17,17 @@ import (
 // inserted row. Returns ErrDuplicateHostname (wrapping a sqlite UNIQUE error)
 // when the hostname is already bound to another service.
 func (x *DB) InsertCustomDomain(ctx context.Context, d ServiceCustomDomain) (ServiceCustomDomain, error) {
+	return x.insertCustomDomain(ctx, d, nil)
+}
+
+// InsertCustomDomainCapped is InsertCustomDomain that also refuses an auto
+// row over caps (ErrAutoDomainCap, ErrAutoDomainUserCap), counted in the
+// write's transaction.
+func (x *DB) InsertCustomDomainCapped(ctx context.Context, d ServiceCustomDomain, caps AutoDomainCaps) (ServiceCustomDomain, error) {
+	return x.insertCustomDomain(ctx, d, &caps)
+}
+
+func (x *DB) insertCustomDomain(ctx context.Context, d ServiceCustomDomain, caps *AutoDomainCaps) (ServiceCustomDomain, error) {
 	d.ID = uuid.NewString()
 	var ok bool
 	if d.Hostname, ok = NormalizeDomainName(d.Hostname); !ok {
@@ -42,6 +53,12 @@ func (x *DB) InsertCustomDomain(ctx context.Context, d ServiceCustomDomain) (Ser
 	if err := refuseTCPNameUnder(ctx, tx, d.Hostname); err != nil {
 		return ServiceCustomDomain{}, err
 	}
+	if err := refuseWildcardOverlap(ctx, tx, d); err != nil {
+		return ServiceCustomDomain{}, err
+	}
+	if err := refuseOverAutoCaps(ctx, tx, d, caps); err != nil {
+		return ServiceCustomDomain{}, err
+	}
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO service_custom_domains
 		   (id, service_id, hostname, cert_pem, key_pem, cert_sha256, not_before, not_after, created_at, updated_at, cert_source)
@@ -65,6 +82,16 @@ func (x *DB) InsertCustomDomain(ctx context.Context, d ServiceCustomDomain) (Ser
 // for an existing row. Returns ErrNotFound when no row matches (id, service_id).
 // Returns ErrDuplicateHostname when the new hostname conflicts.
 func (x *DB) UpdateCustomDomain(ctx context.Context, d ServiceCustomDomain) error {
+	return x.updateCustomDomain(ctx, d, nil)
+}
+
+// UpdateCustomDomainCapped is UpdateCustomDomain with the caps of
+// InsertCustomDomainCapped; the row itself is not counted.
+func (x *DB) UpdateCustomDomainCapped(ctx context.Context, d ServiceCustomDomain, caps AutoDomainCaps) error {
+	return x.updateCustomDomain(ctx, d, &caps)
+}
+
+func (x *DB) updateCustomDomain(ctx context.Context, d ServiceCustomDomain, caps *AutoDomainCaps) error {
 	var ok bool
 	if d.Hostname, ok = NormalizeDomainName(d.Hostname); !ok {
 		return ErrInvalidHostname
@@ -85,6 +112,12 @@ func (x *DB) UpdateCustomDomain(ctx context.Context, d ServiceCustomDomain) erro
 	}
 	defer func() { _ = tx.Rollback() }()
 	if err := refuseTCPNameUnder(ctx, tx, d.Hostname); err != nil {
+		return err
+	}
+	if err := refuseWildcardOverlap(ctx, tx, d); err != nil {
+		return err
+	}
+	if err := refuseOverAutoCaps(ctx, tx, d, caps); err != nil {
 		return err
 	}
 	res, err := tx.ExecContext(ctx,
@@ -173,6 +206,35 @@ func (x *DB) DeleteCustomDomain(ctx context.Context, serviceID, id string) error
 		return fmt.Errorf("delete custom domain: %w", err)
 	}
 	return nil
+}
+
+// ListCustomDomainsOfUser returns the custom domains of every service the
+// user owns: what a user delete takes with it (its cache entries and ACME
+// orders end with them).
+func (x *DB) ListCustomDomainsOfUser(ctx context.Context, userID string) ([]ServiceCustomDomain, error) {
+	rows, err := x.sqlDB.QueryContext(ctx,
+		`SELECT d.id, d.service_id, d.hostname, d.cert_pem, d.key_pem, d.cert_sha256,
+		        d.not_before, d.not_after, d.created_at, d.updated_at,
+		        d.status, d.status_updated_at, d.cert_source
+		   FROM service_custom_domains d JOIN services s ON s.id = d.service_id
+		  WHERE s.user_id = ? ORDER BY d.hostname`,
+		userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list custom domains of user: %w", err)
+	}
+	defer rows.Close()
+	var out []ServiceCustomDomain
+	for rows.Next() {
+		var d ServiceCustomDomain
+		if err := rows.Scan(&d.ID, &d.ServiceID, &d.Hostname, &d.CertPEM, &d.KeyPEM, &d.CertSHA256,
+			&d.NotBefore, &d.NotAfter, &d.CreatedAt, &d.UpdatedAt,
+			&d.Status, &d.StatusUpdatedAt, &d.CertSource); err != nil {
+			return nil, fmt.Errorf("scan custom domain: %w", err)
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }
 
 // LookupCustomDomainByHostname returns the domain row matching the given
@@ -387,6 +449,91 @@ func refuseTCPNameUnder(ctx context.Context, q queryer, hostname string) error {
 		}
 	}
 	return rows.Err()
+}
+
+// ErrHostOverlapsWildcard is what InsertCustomDomain and UpdateCustomDomain
+// return for a custom domain that lies under another service's wildcard
+// custom domain, or a wildcard that covers another service's custom domain
+// (R09 review C1): one service could otherwise take the names of another.
+var ErrHostOverlapsWildcard = errors.New("db: hostname overlaps a wildcard custom domain of another service")
+
+// wildcardOverlap reports whether the custom domains a and b (lower case,
+// "*.<parent>" for a wildcard, covering every name under the parent) share
+// a name while one is a wildcard. Two equal plain names are the UNIQUE
+// constraint's.
+func wildcardOverlap(a, b string) bool {
+	pa, wa := strings.CutPrefix(a, "*.")
+	pb, wb := strings.CutPrefix(b, "*.")
+	switch {
+	case wa && wb:
+		return pa == pb || strings.HasSuffix(pa, "."+pb) || strings.HasSuffix(pb, "."+pa)
+	case wa:
+		return strings.HasSuffix(b, "."+pa)
+	case wb:
+		return strings.HasSuffix(a, "."+pb)
+	}
+	return false
+}
+
+// refuseWildcardOverlap returns ErrHostOverlapsWildcard when d overlaps a
+// wildcard custom domain of another service (wildcardOverlap).
+func refuseWildcardOverlap(ctx context.Context, q queryer, d ServiceCustomDomain) error {
+	rows, err := q.QueryContext(ctx, `SELECT hostname FROM service_custom_domains WHERE service_id <> ?`, d.ServiceID)
+	if err != nil {
+		return fmt.Errorf("custom domain: other services' names: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return fmt.Errorf("custom domain: scan name: %w", err)
+		}
+		if wildcardOverlap(d.Hostname, strings.ToLower(n)) {
+			return ErrHostOverlapsWildcard
+		}
+	}
+	return rows.Err()
+}
+
+// AutoDomainCaps bound the custom domains with cert_source auto
+// (BURROW_ACME_CUSTOM_MAX, BURROW_ACME_CUSTOM_PER_USER): Max in all,
+// PerUser for the owner of the service. 0 allows none.
+type AutoDomainCaps struct{ Max, PerUser int }
+
+// ErrAutoDomainCap and ErrAutoDomainUserCap refuse an auto row over the
+// relay's cap and over its owner's.
+var (
+	ErrAutoDomainCap     = errors.New("db: the relay has as many automatic certificates as it may")
+	ErrAutoDomainUserCap = errors.New("db: the user has as many automatic certificates as they may")
+)
+
+// refuseOverAutoCaps counts the auto rows other than d's own and refuses
+// d when it is auto and one more would pass a cap. nil caps: no limit.
+func refuseOverAutoCaps(ctx context.Context, q queryer, d ServiceCustomDomain, caps *AutoDomainCaps) error {
+	if caps == nil || d.CertSource != CertSourceAuto {
+		return nil
+	}
+	var all int
+	if err := q.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM service_custom_domains WHERE cert_source = 'auto' AND id <> ?`, d.ID,
+	).Scan(&all); err != nil {
+		return fmt.Errorf("custom domain: count auto: %w", err)
+	}
+	if all+1 > caps.Max {
+		return ErrAutoDomainCap
+	}
+	var mine int
+	if err := q.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM service_custom_domains d JOIN services s ON s.id = d.service_id
+		  WHERE d.cert_source = 'auto' AND d.id <> ?
+		    AND s.user_id = (SELECT user_id FROM services WHERE id = ?)`, d.ID, d.ServiceID,
+	).Scan(&mine); err != nil {
+		return fmt.Errorf("custom domain: count auto of the user: %w", err)
+	}
+	if mine+1 > caps.PerUser {
+		return ErrAutoDomainUserCap
+	}
+	return nil
 }
 
 // CustomDomainCovers reports whether a custom domain (service_custom_domains)

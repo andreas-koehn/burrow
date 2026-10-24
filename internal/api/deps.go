@@ -833,6 +833,11 @@ type Deps struct {
 	// With neither this nor CustomDomainCerts, TLS ends at a proxy in front
 	// and auto needs no certificate (cert_status not_needed).
 	CustomDomainFileTLS bool
+	// CustomDomainAutoCaps caps the auto custom domains, in all and per
+	// owner (BURROW_ACME_CUSTOM_MAX, BURROW_ACME_CUSTOM_PER_USER): over one
+	// a write is refused with 429. nil: no caps. Counted in the store's
+	// transaction when the store implements the capped writes (*db.DB).
+	CustomDomainAutoCaps *db.AutoDomainCaps
 
 	// v0.5.0 Task 8: per-tunnel connection logs (spec E).
 	// ConnLogDB is the read surface for GET /api/v1/connection-logs and the

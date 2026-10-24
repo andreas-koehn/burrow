@@ -365,6 +365,8 @@ func (d Deps) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "delete user failed")
 		return
 	}
+	// The custom domains go with the user's services.
+	domains := d.customDomainsOfUser(r.Context(), targetID)
 	err = d.Users.DeleteUser(r.Context(), targetID)
 	if errors.Is(err, db.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "user not found")
@@ -386,5 +388,6 @@ func (d Deps) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.closeClientSessions(tokenIDs...)
+	d.endCustomDomains(domains)
 	w.WriteHeader(http.StatusNoContent)
 }

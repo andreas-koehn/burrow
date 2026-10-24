@@ -68,6 +68,7 @@ func newAutoAPI(t *testing.T, acme, fileTLS bool) *autoAPI {
 		d.CustomDomainCerts = a.certs
 	}
 	d.CustomDomainFileTLS = fileTLS
+	d.CustomDomainAutoCaps = &db.AutoDomainCaps{Max: 7, PerUser: 3}
 	srv := httptest.NewServer(NewRouter(d))
 	t.Cleanup(srv.Close)
 	a.c = authedClient(t, srv)

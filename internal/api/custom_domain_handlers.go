@@ -62,6 +62,57 @@ type CustomDomainCacheInvalidator interface {
 	InvalidateHostname(hostname string)
 }
 
+// cappedCustomDomainStore is the store's writes with the caps of auto rows
+// counted in their transaction (*db.DB).
+type cappedCustomDomainStore interface {
+	InsertCustomDomainCapped(ctx context.Context, d db.ServiceCustomDomain, caps db.AutoDomainCaps) (db.ServiceCustomDomain, error)
+	UpdateCustomDomainCapped(ctx context.Context, d db.ServiceCustomDomain, caps db.AutoDomainCaps) error
+}
+
+// customDomainsOfUser lists the custom domains of a user's services, for the
+// user delete (*db.DB).
+type customDomainsOfUser interface {
+	ListCustomDomainsOfUser(ctx context.Context, userID string) ([]db.ServiceCustomDomain, error)
+}
+
+// insertDomain and updateDomain write through the capped store when caps
+// are set and the store has them.
+func (d Deps) insertDomain(ctx context.Context, row db.ServiceCustomDomain) (db.ServiceCustomDomain, error) {
+	if c, ok := d.CustomDomains.(cappedCustomDomainStore); ok && d.CustomDomainAutoCaps != nil {
+		return c.InsertCustomDomainCapped(ctx, row, *d.CustomDomainAutoCaps)
+	}
+	return d.CustomDomains.InsertCustomDomain(ctx, row)
+}
+
+func (d Deps) updateDomain(ctx context.Context, row db.ServiceCustomDomain) error {
+	if c, ok := d.CustomDomains.(cappedCustomDomainStore); ok && d.CustomDomainAutoCaps != nil {
+		return c.UpdateCustomDomainCapped(ctx, row, *d.CustomDomainAutoCaps)
+	}
+	return d.CustomDomains.UpdateCustomDomain(ctx, row)
+}
+
+// writeDomainStoreErr answers the store's refusals of a custom-domain
+// write; false for an error it does not know.
+func writeDomainStoreErr(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, db.ErrHostIsTCPName):
+		writeErr(w, http.StatusConflict, "hostname is a tcp host name")
+	case errors.Is(err, db.ErrHostOverlapsWildcard):
+		writeErr(w, http.StatusConflict, "hostname overlaps a wildcard custom domain of another service: it lies under one, or as a wildcard it covers another service's custom domain")
+	case errors.Is(err, db.ErrAutoDomainCap):
+		writeErr(w, http.StatusTooManyRequests, "the relay has as many custom domains with automatic certificates as it may (BURROW_ACME_CUSTOM_MAX); upload a certificate instead, or remove one")
+	case errors.Is(err, db.ErrAutoDomainUserCap):
+		writeErr(w, http.StatusTooManyRequests, "the owner of this service has as many custom domains with automatic certificates as they may (BURROW_ACME_CUSTOM_PER_USER); upload a certificate instead, or remove one")
+	case errors.Is(err, db.ErrInvalidHostname):
+		writeErr(w, http.StatusBadRequest, "hostname must be a DNS name such as app.example.com")
+	case errors.Is(err, db.ErrDuplicateHostname):
+		writeErr(w, http.StatusConflict, "hostname already bound")
+	default:
+		return false
+	}
+	return true
+}
+
 // CustomDomainCerts obtains the certificates of the custom domains with
 // cert_source auto while the relay terminates TLS with ACME (H10).
 // *acme.CustomDomains satisfies it. Manage and Unmanage never wait on the
@@ -210,12 +261,24 @@ type domainCert struct {
 // wildcard (HTTP-01 and TLS-ALPN-01 cannot prove one) and where the relay
 // serves a file certificate without ACME, since nobody could serve the
 // name. ok false: the 400 is written.
-func (d Deps) domainCert(w http.ResponseWriter, hostname, source, certPEM, keyPEM string) (domainCert, bool) {
+func (d Deps) domainCert(w http.ResponseWriter, r *http.Request, hostname, source, certPEM, keyPEM string) (domainCert, bool) {
 	if source == "" {
 		source = db.CertSourceUploaded
 	}
 	switch source {
 	case db.CertSourceAuto:
+		// auto proves no control of the name (anyone whose DNS points here
+		// could claim it), so only an administrator of every service may;
+		// an upload proves it by its chain to a system root (R09 review).
+		role, err := d.callerRole(r)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return domainCert{}, false
+		}
+		if !effectivePerms(r.Context(), role, authz.PermServicesConfigureAny) {
+			writeErr(w, http.StatusForbidden, "automatic certificates need an administrator; upload a certificate instead")
+			return domainCert{}, false
+		}
 		switch {
 		case strings.HasPrefix(hostname, "*."):
 			writeErr(w, http.StatusBadRequest, "a wildcard custom domain needs cert_source uploaded")
@@ -576,7 +639,7 @@ func (d Deps) PostCustomDomain(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, why)
 		return
 	}
-	cert, ok := d.domainCert(w, in.Hostname, in.CertSource, in.CertPEM, in.KeyPEM)
+	cert, ok := d.domainCert(w, r, in.Hostname, in.CertSource, in.CertPEM, in.KeyPEM)
 	if !ok {
 		return
 	}
@@ -591,21 +654,11 @@ func (d Deps) PostCustomDomain(w http.ResponseWriter, r *http.Request) {
 		NotBefore:  cert.notBefore,
 		NotAfter:   cert.notAfter,
 	}
-	inserted, err := d.CustomDomains.InsertCustomDomain(r.Context(), row)
+	inserted, err := d.insertDomain(r.Context(), row)
 	if err != nil {
-		if errors.Is(err, db.ErrHostIsTCPName) {
-			writeErr(w, http.StatusConflict, "hostname is a tcp host name")
-			return
+		if !writeDomainStoreErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "insert domain failed")
 		}
-		if errors.Is(err, db.ErrInvalidHostname) {
-			writeErr(w, http.StatusBadRequest, "hostname must be a DNS name such as app.example.com")
-			return
-		}
-		if errors.Is(err, db.ErrDuplicateHostname) {
-			writeErr(w, http.StatusConflict, "hostname already bound")
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, "insert domain failed")
 		return
 	}
 
@@ -700,7 +753,7 @@ func (d Deps) PutCustomDomain(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, why)
 		return
 	}
-	cert, ok := d.domainCert(w, in.Hostname, in.CertSource, in.CertPEM, in.KeyPEM)
+	cert, ok := d.domainCert(w, r, in.Hostname, in.CertSource, in.CertPEM, in.KeyPEM)
 	if !ok {
 		return
 	}
@@ -719,24 +772,14 @@ func (d Deps) PutCustomDomain(w http.ResponseWriter, r *http.Request) {
 		NotBefore:  cert.notBefore,
 		NotAfter:   cert.notAfter,
 	}
-	if err := d.CustomDomains.UpdateCustomDomain(r.Context(), row); err != nil {
+	if err := d.updateDomain(r.Context(), row); err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "domain not found")
 			return
 		}
-		if errors.Is(err, db.ErrHostIsTCPName) {
-			writeErr(w, http.StatusConflict, "hostname is a tcp host name")
-			return
+		if !writeDomainStoreErr(w, err) {
+			writeErr(w, http.StatusInternalServerError, "update domain failed")
 		}
-		if errors.Is(err, db.ErrInvalidHostname) {
-			writeErr(w, http.StatusBadRequest, "hostname must be a DNS name such as app.example.com")
-			return
-		}
-		if errors.Is(err, db.ErrDuplicateHostname) {
-			writeErr(w, http.StatusConflict, "hostname already bound")
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, "update domain failed")
 		return
 	}
 
@@ -750,9 +793,20 @@ func (d Deps) PutCustomDomain(w http.ResponseWriter, r *http.Request) {
 	// The ACME order follows the row (H10): the old auto name stops when
 	// it is renamed or switched to uploaded, the new auto name starts.
 	if d.CustomDomainCerts != nil {
-		if oldErr == nil && old.CertSource == db.CertSourceAuto &&
-			(cert.source != db.CertSourceAuto || old.Hostname != in.Hostname) {
-			d.CustomDomainCerts.Unmanage(old.Hostname)
+		if oldErr == nil {
+			if old.CertSource == db.CertSourceAuto &&
+				(cert.source != db.CertSourceAuto || old.Hostname != in.Hostname) {
+				d.CustomDomainCerts.Unmanage(old.Hostname)
+			}
+		} else {
+			// The old row could not be read: stop what is known, the name
+			// itself when it is no longer auto (a no-op when it never was);
+			// an earlier name may still be ordered until the next restart.
+			if cert.source != db.CertSourceAuto {
+				d.CustomDomainCerts.Unmanage(in.Hostname)
+			}
+			d.warn("custom domain update: the old row was not read; its earlier name may stay managed",
+				"service_id", serviceID, "domain_id", did, "err", oldErr)
 		}
 		if cert.source == db.CertSourceAuto {
 			_ = d.CustomDomainCerts.Manage(serviceID, in.Hostname)
@@ -810,6 +864,10 @@ func (d Deps) DeleteCustomDomain(w http.ResponseWriter, r *http.Request) {
 	if fetchErr == nil && row.CertSource == db.CertSourceAuto && d.CustomDomainCerts != nil {
 		d.CustomDomainCerts.Unmanage(row.Hostname)
 	}
+	if fetchErr != nil && !errors.Is(fetchErr, db.ErrNotFound) {
+		d.warn("custom domain delete: the row was not read first; its name may stay cached and managed until a restart",
+			"service_id", serviceID, "domain_id", did, "err", fetchErr)
+	}
 
 	// Audit (best-effort).
 	if fetchErr == nil && d.AuditAppender != nil {
@@ -829,6 +887,35 @@ func (d Deps) DeleteCustomDomain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// endCustomDomains is what a delete that takes custom domains with it (a
+// service's, a user's) does for them: their certificates leave the SNI
+// cache, and the auto ones are no longer obtained or renewed.
+func (d Deps) endCustomDomains(rows []db.ServiceCustomDomain) {
+	for _, row := range rows {
+		if d.CustomDomainCache != nil {
+			d.CustomDomainCache.InvalidateHostname(row.Hostname)
+		}
+		if row.CertSource == db.CertSourceAuto && d.CustomDomainCerts != nil {
+			d.CustomDomainCerts.Unmanage(row.Hostname)
+		}
+	}
+}
+
+// customDomainsOfUser lists the custom domains of the user's services
+// before a user delete; a store without the listing, or a failed one
+// (logged), gives none.
+func (d Deps) customDomainsOfUser(ctx context.Context, userID string) []db.ServiceCustomDomain {
+	l, ok := d.CustomDomains.(customDomainsOfUser)
+	if !ok {
+		return nil
+	}
+	rows, err := l.ListCustomDomainsOfUser(ctx, userID)
+	if err != nil {
+		d.warn("user delete: custom domains not listed", "user_id", userID, "err", err)
+	}
+	return rows
 }
 
 // uploadedCertSignals sets the expiry gauge of an uploaded certificate and

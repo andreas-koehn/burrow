@@ -277,6 +277,17 @@ type stubCustomDomainStore struct {
 	lastInsert  db.ServiceCustomDomain
 	lastUpdate  db.ServiceCustomDomain
 	lastDeleted string
+	lastCaps    *db.AutoDomainCaps
+}
+
+func (s *stubCustomDomainStore) InsertCustomDomainCapped(ctx context.Context, d db.ServiceCustomDomain, caps db.AutoDomainCaps) (db.ServiceCustomDomain, error) {
+	s.lastCaps = &caps
+	return s.InsertCustomDomain(ctx, d)
+}
+
+func (s *stubCustomDomainStore) UpdateCustomDomainCapped(ctx context.Context, d db.ServiceCustomDomain, caps db.AutoDomainCaps) error {
+	s.lastCaps = &caps
+	return s.UpdateCustomDomain(ctx, d)
 }
 
 func newStubDomainStore() *stubCustomDomainStore {

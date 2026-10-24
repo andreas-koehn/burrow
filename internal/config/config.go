@@ -247,6 +247,13 @@ type ServerConfig struct {
 	ACMEEmail   string `koanf:"acme_email"`
 	ACMECA      string `koanf:"acme_ca"`
 	ACMEStorage string `koanf:"acme_storage"`
+	// ACMECustomMax and ACMECustomPerUser cap the custom domains with
+	// cert_source auto, whose certificates the relay obtains (H10, R09
+	// review): BURROW_ACME_CUSTOM_MAX in all (default 100) and
+	// BURROW_ACME_CUSTOM_PER_USER per owner of the service (default 10).
+	// 0 allows none; over a cap a write is refused (429).
+	ACMECustomMax     int `koanf:"acme_custom_max" validate:"gte=0"`
+	ACMECustomPerUser int `koanf:"acme_custom_per_user" validate:"gte=0"`
 }
 
 // ClientConfig configures burrow.
@@ -445,6 +452,7 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 		"listen": ":7000", "tls_cert": "certs/dev-server.pem",
 		"tls_key": "certs/dev-server-key.pem", "log_level": "info", "log_format": "text",
 		"public_bind": "0.0.0.0", "port_min": 9000, "port_max": 9100, "tcp_ports_per_user": 10,
+		"acme_custom_max": 100, "acme_custom_per_user": 10,
 		// database_path is resolved relative to the process working directory;
 		// supply an absolute path via BURROW_DATABASE_PATH in production.
 		"database_path": "./burrow.db", "http_listen": ":8080", "http_secure_cookies": false,

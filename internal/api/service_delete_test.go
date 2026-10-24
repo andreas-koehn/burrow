@@ -51,7 +51,7 @@ type deleteFixture struct {
 	certs  *invalidated
 }
 
-func newDeleteFixture(t *testing.T) *deleteFixture {
+func newDeleteFixture(t *testing.T, mods ...func(*Deps)) *deleteFixture {
 	t.Helper()
 	f := &deleteFixture{aud: &stubAuditAppender{}, closed: &closedServices{}, forgot: &forgotten{},
 		live: deleteLive{}, certs: &invalidated{}}
@@ -61,6 +61,9 @@ func newDeleteFixture(t *testing.T) *deleteFixture {
 		d.OnServiceDeleted = f.forgot.forget
 		d.LiveTunnels = f.live
 		d.CustomDomainCache = f.certs
+		for _, m := range mods {
+			m(d)
+		}
 	})
 	return f
 }

@@ -1267,7 +1267,10 @@ func newRootCmd() *cobra.Command {
 				CertValidationRoots: certValidationRoots,
 				CustomDomainCerts:   domainCerts,
 				CustomDomainFileTLS: httpsEnabled && acmeMgr == nil,
-				ConnLogDB:           v05.ConnLogDB,
+				// R09 review: caps on the auto custom domains, counted in the
+				// write's transaction.
+				CustomDomainAutoCaps: &db.AutoDomainCaps{Max: cfg.ACMECustomMax, PerUser: cfg.ACMECustomPerUser},
+				ConnLogDB:            v05.ConnLogDB,
 			})
 			// A tool call of the MCP server is replayed through this router,
 			// so it is the same API with the same gate. Set before anything

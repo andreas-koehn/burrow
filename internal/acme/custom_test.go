@@ -175,7 +175,9 @@ func TestCustomDomains_NoAllowRefusesAll(t *testing.T) {
 }
 
 // A failure of certmagic is reported for the names CustomDomains manages
-// (audited by the caller), and only for those.
+// (audited by the caller), and only for those. A ManageAsync that fails
+// leaves the name unmanaged (its context cancelled), so the next bind
+// tries again.
 func TestCustomDomains_CertEvents(t *testing.T) {
 	iss := newFakeIssuer()
 	iss.manageErr = errors.New("storage broken")
@@ -183,6 +185,22 @@ func TestCustomDomains_CertEvents(t *testing.T) {
 	c := NewCustomDomains(context.Background(), iss, CustomOptions{Allow: ownsAllBut(), OnFailure: f.add})
 	if err := c.Manage("svc1", "app.example.com"); err == nil {
 		t.Fatal("the error of ManageAsync is lost")
+	}
+	if iss.ctxs["app.example.com"].Err() == nil {
+		t.Fatal("a failed order keeps its context")
+	}
+	c.CertEvent("cert_failed", "app.example.com", errors.New("not managed any more"))
+	iss.ready["app.example.com"] = true
+	if c.Ready("app.example.com") {
+		t.Fatal("a failed order is ready")
+	}
+
+	iss.manageErr = nil
+	if err := c.Manage("svc1", "app.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if managed, _ := iss.snapshot(); len(managed) != 2 {
+		t.Fatalf("the second bind did not order again: %v", managed)
 	}
 	c.CertEvent("cert_failed", "app.example.com", errors.New("acme: 429 rate limited"))
 	c.CertEvent("cert_failed", "burrow.example.com", errors.New("the relay's own name"))

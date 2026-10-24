@@ -40,7 +40,7 @@ func (h *hangingIssuer) ManageAsync(_ context.Context, names []string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.managed = append(h.managed, names...)
-	return errors.New("acme: directory unreachable")
+	return nil // as certmagic: a failure comes later, as an event
 }
 func (h *hangingIssuer) Unmanage([]string)                                  {}
 func (h *hangingIssuer) HasCertificate(string) bool                         { return false }
@@ -115,7 +115,6 @@ func TestStartCustomDomainCerts(t *testing.T) {
 		got = append(got, e.SubjectID+"|"+p["hostname"]+"|"+p["error"])
 	}
 	want := []string{
-		"s1|a.example.com|acme: directory unreachable",
 		"s3|x.burrow.example.com|a name the relay serves itself",
 		"s1|a.example.com|429 too many orders",
 	}

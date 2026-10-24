@@ -66,11 +66,13 @@ type CustomDomains struct {
 	managed map[string]customEntry // hostname → its order
 	queued  map[string]string      // hostname → service id, waiting in Load
 	wg      sync.WaitGroup
+	gen     uint64
 }
 
 type customEntry struct {
 	serviceID string
 	cancel    context.CancelFunc
+	gen       uint64 // tells this order from a later one for the name
 }
 
 // NewCustomDomains returns a CustomDomains whose orders live as long as
@@ -124,10 +126,20 @@ func (c *CustomDomains) manage(serviceID, hostname string, fromQueue bool) error
 	// The order outlives the request that bound the name; Unmanage or the
 	// relay's end stops its retries.
 	ctx, cancel := context.WithCancel(c.base)
-	c.managed[hostname] = customEntry{serviceID: serviceID, cancel: cancel}
+	c.gen++
+	gen := c.gen
+	c.managed[hostname] = customEntry{serviceID: serviceID, cancel: cancel, gen: gen}
 	c.mu.Unlock()
 
 	if err := c.iss.ManageAsync(ctx, []string{hostname}); err != nil {
+		// Nothing was started: the name is not managed, and the next bind
+		// tries again.
+		c.mu.Lock()
+		if e, ok := c.managed[hostname]; ok && e.gen == gen {
+			delete(c.managed, hostname)
+		}
+		c.mu.Unlock()
+		cancel()
 		c.log.Warn("acme: managing a custom domain failed", "hostname", hostname, "service_id", serviceID, "err", err)
 		c.fail(serviceID, hostname, err.Error())
 		return err

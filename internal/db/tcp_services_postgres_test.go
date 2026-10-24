@@ -42,6 +42,8 @@ func TestTCPServices_Postgres(t *testing.T) {
 	t.Run("tcp hostname only", func(t *testing.T) { checkServiceTCPHostnameOnly(t, x, "u-hostonly-pg") })
 	t.Run("http settings", func(t *testing.T) { checkServiceHTTPSettings(t, x, "u-httpset-pg") })
 	t.Run("custom domain cert source", func(t *testing.T) { checkCustomDomainCertSource(t, x, "u-certsrc-pg") })
+	t.Run("custom domain wildcard overlap", func(t *testing.T) { checkCustomDomainWildcardOverlap(t, x, "u-wildover-pg") })
+	t.Run("custom domain auto caps", func(t *testing.T) { checkCustomDomainAutoCaps(t, x, "u-autocap-pg") })
 	t.Run("connection log grpc columns", func(t *testing.T) { checkConnectionLogGRPCColumns(t, x) })
 	t.Run("migration 0045 down and up", func(t *testing.T) {
 		checkMigration0029DownAndUp(t, x, "0045_v0.13.0_http2_grpc.postgres.sql")

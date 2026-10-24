@@ -7469,8 +7469,13 @@ paths:
                     `auto` takes neither (400 when they are sent with a
                     value): under ACME the relay obtains the certificate,
                     behind a proxy that terminates TLS none is needed. auto
-                    is refused (400) for a wildcard and on a relay that
-                    serves a file certificate without ACME.
+                    proves no control of the name, so it needs
+                    `services:configure:any` (403 `automatic certificates
+                    need an administrator; upload a certificate instead`);
+                    an upload is proved by its chain to a system root and
+                    stays open to `services:configure:own`. auto is refused
+                    (400) for a wildcard and on a relay that serves a file
+                    certificate without ACME, and is capped (429).
                 cert_pem: { type: string, description: The certificate chain (PEM); `uploaded` only. }
                 key_pem: { type: string, description: The private key (PEM); `uploaded` only. }
       responses:
@@ -7482,7 +7487,8 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
-        '409': { description: "Hostname already bound, or `hostname is a tcp host name`: it equals, is a parent of, or is a wildcard over the tcp_hostname of a tcp service, or it is, lies under, or covers `BURROW_TCP_DOMAIN`; or it is a name the relay serves itself (the dashboard's host, the services host, the ACME names, the names of its certificate) or lies under one." }
+        '409': { description: "Hostname already bound, or `hostname is a tcp host name`: it equals, is a parent of, or is a wildcard over the tcp_hostname of a tcp service, or it is, lies under, or covers `BURROW_TCP_DOMAIN`; or it is a name the relay serves itself (the dashboard's host, the services host, the ACME names, the names of its certificate) or lies under one; or it overlaps a wildcard custom domain of another service (it lies under one, or as a wildcard it covers another service's custom domain), whatever its cert_source." }
+        '429': { description: "`cert_source` auto over a cap: the relay's (`BURROW_ACME_CUSTOM_MAX`, default 100) or the service owner's (`BURROW_ACME_CUSTOM_PER_USER`, default 10). Upload a certificate instead, or remove an auto domain." }
   /api/v1/services/{serviceID}/domains/{did}:
     get:
       tags: [services]
@@ -7544,8 +7550,13 @@ paths:
                     `auto` takes neither (400 when they are sent with a
                     value): under ACME the relay obtains the certificate,
                     behind a proxy that terminates TLS none is needed. auto
-                    is refused (400) for a wildcard and on a relay that
-                    serves a file certificate without ACME.
+                    proves no control of the name, so it needs
+                    `services:configure:any` (403 `automatic certificates
+                    need an administrator; upload a certificate instead`);
+                    an upload is proved by its chain to a system root and
+                    stays open to `services:configure:own`. auto is refused
+                    (400) for a wildcard and on a relay that serves a file
+                    certificate without ACME, and is capped (429).
                 cert_pem: { type: string, description: The certificate chain (PEM); `uploaded` only. }
                 key_pem: { type: string, description: The private key (PEM); `uploaded` only. }
       responses:
@@ -7554,7 +7565,8 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { description: "Hostname already bound, or `hostname is a tcp host name`: it equals, is a parent of, or is a wildcard over the tcp_hostname of a tcp service, or it is, lies under, or covers `BURROW_TCP_DOMAIN`; or it is a name the relay serves itself (the dashboard's host, the services host, the ACME names, the names of its certificate) or lies under one." }
+        '409': { description: "Hostname already bound, or `hostname is a tcp host name`: it equals, is a parent of, or is a wildcard over the tcp_hostname of a tcp service, or it is, lies under, or covers `BURROW_TCP_DOMAIN`; or it is a name the relay serves itself (the dashboard's host, the services host, the ACME names, the names of its certificate) or lies under one; or it overlaps a wildcard custom domain of another service (it lies under one, or as a wildcard it covers another service's custom domain), whatever its cert_source." }
+        '429': { description: "`cert_source` auto over a cap: the relay's (`BURROW_ACME_CUSTOM_MAX`, default 100) or the service owner's (`BURROW_ACME_CUSTOM_PER_USER`, default 10). Upload a certificate instead, or remove an auto domain." }
     delete:
       tags: [services]
       operationId: serviceDomainDelete

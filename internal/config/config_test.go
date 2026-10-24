@@ -1239,3 +1239,33 @@ func TestLoadServer_TCPDomainIsDisjoint(t *testing.T) {
 		t.Fatalf("mux, sibling: %v", err)
 	}
 }
+
+// R09 review I2: the caps on custom domains with automatic certificates.
+func TestLoadServer_ACMECustomCaps(t *testing.T) {
+	c, err := LoadServer(nil)
+	if err != nil || c.ACMECustomMax != 100 || c.ACMECustomPerUser != 10 {
+		t.Fatalf("defaults: %d %d %v", c.ACMECustomMax, c.ACMECustomPerUser, err)
+	}
+	t.Setenv("BURROW_ACME_CUSTOM_MAX", "5")
+	t.Setenv("BURROW_ACME_CUSTOM_PER_USER", "0")
+	if c, err := LoadServer(nil); err != nil || c.ACMECustomMax != 5 || c.ACMECustomPerUser != 0 {
+		t.Fatalf("set: %+v %v", c, err)
+	}
+	for k, v := range map[string]string{
+		"BURROW_ACME_CUSTOM_MAX":      "-1",
+		"BURROW_ACME_CUSTOM_PER_USER": "-3",
+	} {
+		t.Run(k+"="+v, func(t *testing.T) {
+			t.Setenv(k, v)
+			if _, err := LoadServer(nil); err == nil || !strings.Contains(err.Error(), "ACME") && !strings.Contains(strings.ToLower(err.Error()), "acme_custom") {
+				t.Fatalf("%s=%s: %v", k, v, err)
+			}
+		})
+	}
+	t.Run("not a number", func(t *testing.T) {
+		t.Setenv("BURROW_ACME_CUSTOM_MAX", "many")
+		if _, err := LoadServer(nil); err == nil {
+			t.Fatal("accepted")
+		}
+	})
+}

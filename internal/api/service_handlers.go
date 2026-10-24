@@ -352,15 +352,13 @@ func (d Deps) DeleteService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The hostnames are read first: the rows go with the service.
-	var hostnames []string
+	var domains []db.ServiceCustomDomain
 	if d.CustomDomains != nil {
 		rows, err := d.CustomDomains.ListCustomDomains(r.Context(), serviceID)
 		if err != nil {
 			d.warn("service delete: custom domains not listed", "service_id", serviceID, "err", err)
 		}
-		for _, row := range rows {
-			hostnames = append(hostnames, row.Hostname)
-		}
+		domains = rows
 	}
 	name, err := d.Services.DeleteService(r.Context(), uid, role, serviceID)
 	switch {
@@ -383,11 +381,7 @@ func (d Deps) DeleteService(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if d.CustomDomainCache != nil {
-		for _, h := range hostnames {
-			d.CustomDomainCache.InvalidateHostname(h)
-		}
-	}
+	d.endCustomDomains(domains)
 	// A client that connected after the check above.
 	if d.ServiceSessions != nil {
 		if n := d.ServiceSessions.CloseByService(serviceID); n > 0 {
