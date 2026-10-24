@@ -276,3 +276,158 @@ func TestNormalizeHostname(t *testing.T) {
 		}
 	}
 }
+
+// helloALPN captures the first flight of a real Go TLS client that offers
+// protos in ALPN.
+func helloALPN(t *testing.T, serverName string, protos []string) []byte {
+	t.Helper()
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	go func() {
+		c := tls.Client(a, &tls.Config{ServerName: serverName, NextProtos: protos, InsecureSkipVerify: serverName == ""}) //nolint:gosec // the handshake is never finished
+		_ = c.SetDeadline(time.Now().Add(2 * time.Second))
+		_ = c.Handshake()
+	}()
+	_ = b.SetReadDeadline(time.Now().Add(2 * time.Second))
+	hdr := make([]byte, 5)
+	if _, err := ioReadFull(b, hdr); err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, binary.BigEndian.Uint16(hdr[3:5]))
+	if _, err := ioReadFull(b, body); err != nil {
+		t.Fatal(err)
+	}
+	return append(hdr, body...)
+}
+
+func TestParseClientHello(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		sni    string
+		protos []string
+	}{
+		{"no alpn", "a.example", nil},
+		{"acme", "a.example", []string{"acme-tls/1"}},
+		{"h2 and http/1.1", "a.example", []string{"h2", "http/1.1"}},
+		{"alpn without sni", "", []string{"h2"}},
+		{"no sni no alpn", "", nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, err := ParseClientHello(helloALPN(t, c.sni, c.protos))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if h.ServerName != c.sni {
+				t.Errorf("sni = %q, want %q", h.ServerName, c.sni)
+			}
+			if strings.Join(h.ALPN, ",") != strings.Join(c.protos, ",") {
+				t.Errorf("alpn = %v, want %v", h.ALPN, c.protos)
+			}
+		})
+	}
+}
+
+func TestHello_Offers(t *testing.T) {
+	h, err := ParseClientHello(helloALPN(t, "a.example", []string{"h2", "acme-tls/1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !h.Offers("acme-tls/1") || !h.Offers("h2") || h.Offers("http/1.1") {
+		t.Errorf("Offers wrong for %v", h.ALPN)
+	}
+}
+
+func TestParseClientHello_Errors(t *testing.T) {
+	hello := helloALPN(t, "a.example", []string{"h2", "http/1.1"})
+	if _, err := ParseClientHello(hello[:3]); !errors.Is(err, ErrShort) {
+		t.Errorf("3 bytes: %v", err)
+	}
+	if _, err := ParseClientHello(hello[:len(hello)-1]); !errors.Is(err, ErrShort) {
+		t.Errorf("truncated: %v", err)
+	}
+	if _, err := ParseClientHello([]byte("GET / HTTP/1.1\r\n\r\n")); !errors.Is(err, ErrNotClientHello) {
+		t.Errorf("http: %v", err)
+	}
+	// Every prefix and every flipped byte: no panic; an error or a hello
+	// whose ALPN entries are non-empty.
+	for i := 0; i < len(hello); i++ {
+		_, _ = ParseClientHello(hello[:i])
+	}
+	for i := 5; i < len(hello); i++ {
+		for _, v := range []byte{0x00, 0xff, 0x01} {
+			m := append([]byte{}, hello...)
+			m[i] = v
+			h, err := ParseClientHello(m)
+			if err != nil {
+				continue
+			}
+			for _, p := range h.ALPN {
+				if p == "" {
+					t.Fatalf("byte %d = %#x: empty protocol accepted", i, v)
+				}
+			}
+		}
+	}
+}
+
+// helloWithExt builds a minimal ClientHello record whose only extension is
+// ext (type, raw data).
+func helloWithExt(typ uint16, data []byte) []byte {
+	var exts []byte
+	exts = binary.BigEndian.AppendUint16(exts, typ)
+	exts = binary.BigEndian.AppendUint16(exts, uint16(len(data)))
+	exts = append(exts, data...)
+	var h []byte
+	h = append(h, 3, 3)
+	h = append(h, make([]byte, 32)...)
+	h = append(h, 0)             // session id
+	h = append(h, 0, 2, 0, 0x2f) // one cipher suite
+	h = append(h, 1, 0)          // compression
+	h = binary.BigEndian.AppendUint16(h, uint16(len(exts)))
+	h = append(h, exts...)
+	msg := []byte{1, byte(len(h) >> 16), byte(len(h) >> 8), byte(len(h))}
+	msg = append(msg, h...)
+	rec := []byte{0x16, 3, 1, byte(len(msg) >> 8), byte(len(msg))}
+	return append(rec, msg...)
+}
+
+func TestParseClientHello_MalformedALPN(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		data []byte
+	}{
+		{"list longer than extension", []byte{0x00, 0x09, 2, 'h', '2'}},
+		{"entry longer than list", []byte{0x00, 0x03, 5, 'h', '2'}},
+		{"empty entry", []byte{0x00, 0x03, 0, 2, 'h'}},
+		{"empty list", []byte{0x00, 0x00}},
+		{"no list", nil},
+		{"trailing byte", []byte{0x00, 0x03, 2, 'h', '2', 9}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if h, err := ParseClientHello(helloWithExt(16, c.data)); !errors.Is(err, ErrMalformed) {
+				t.Fatalf("got %+v, %v; want ErrMalformed", h, err)
+			}
+		})
+	}
+	h, err := ParseClientHello(helloWithExt(16, []byte{0x00, 0x03, 2, 'h', '2'}))
+	if err != nil || len(h.ALPN) != 1 || h.ALPN[0] != "h2" {
+		t.Fatalf("well-formed: %+v, %v", h, err)
+	}
+}
+
+func FuzzParseClientHello(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0x16, 3, 1, 0, 4, 1, 0, 0, 0})
+	f.Fuzz(func(t *testing.T, b []byte) {
+		h, err := ParseClientHello(b)
+		if err != nil {
+			return
+		}
+		for _, p := range h.ALPN {
+			if p == "" {
+				t.Fatal("empty protocol")
+			}
+		}
+	})
+}

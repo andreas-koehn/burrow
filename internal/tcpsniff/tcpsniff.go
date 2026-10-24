@@ -173,44 +173,9 @@ func matchBytes(b []byte, checks []func(byte) bool) verdict {
 // that record does, ErrNotClientHello for anything else than a ClientHello,
 // and ErrMalformed for one it cannot read.
 func ServerName(b []byte) (string, error) {
-	if len(b) < 5 {
-		if v := matchTLS(b); v == no {
-			return "", ErrNotClientHello
-		}
-		return "", ErrShort
-	}
-	if b[0] != 0x16 || b[1] != 0x03 {
-		return "", ErrNotClientHello
-	}
-	n := int(binary.BigEndian.Uint16(b[3:5]))
-	if n > maxRecord {
-		return "", ErrMalformed
-	}
-	if len(b) < 5+n {
-		if len(b) > 5 && b[5] != 0x01 {
-			return "", ErrNotClientHello
-		}
-		return "", ErrShort
-	}
-	rec := reader(b[5 : 5+n])
-	typ, ok := rec.u8()
-	if !ok || typ != 0x01 {
-		return "", ErrNotClientHello
-	}
-	hl, ok := rec.u24()
-	if !ok || hl > len(rec) {
-		return "", ErrMalformed // a ClientHello split over records is not read
-	}
-	h := reader(rec[:hl])
-	if !h.skip(2+32) || !h.skipVec8() || !h.skipVec16() || !h.skipVec8() {
-		return "", ErrMalformed
-	}
-	if len(h) == 0 {
-		return "", nil // no extensions
-	}
-	exts, ok := h.vec16()
-	if !ok {
-		return "", ErrMalformed
+	exts, err := helloExtensions(b)
+	if err != nil {
+		return "", err
 	}
 	for len(exts) > 0 {
 		typ, ok1 := exts.u16()
@@ -218,31 +183,159 @@ func ServerName(b []byte) (string, error) {
 		if !ok1 || !ok2 {
 			return "", ErrMalformed
 		}
-		if typ != 0 { // server_name
+		if typ != extServerName {
 			continue
 		}
-		list, ok := data.vec16()
+		return parseSNI(data)
+	}
+	return "", nil
+}
+
+// Hello is what ParseClientHello reads from a ClientHello.
+type Hello struct {
+	// ServerName is the SNI as ServerName returns it ("" when none).
+	ServerName string
+	// ALPN lists the application protocols the client offers, in order; nil
+	// when it sends no ALPN extension.
+	ALPN []string
+}
+
+// Offers reports whether the client offers the ALPN protocol proto.
+func (h Hello) Offers(proto string) bool {
+	for _, p := range h.ALPN {
+		if p == proto {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseClientHello reads the server name and the ALPN protocol list of the
+// TLS ClientHello at the start of b. It has ServerName's bounds and errors,
+// and additionally returns ErrMalformed for an ALPN extension whose lengths
+// do not add up, that is empty, or that holds an empty protocol name. On an
+// error the Hello is zero.
+func ParseClientHello(b []byte) (Hello, error) {
+	exts, err := helloExtensions(b)
+	if err != nil {
+		return Hello{}, err
+	}
+	var h Hello
+	seenSNI, seenALPN := false, false
+	for len(exts) > 0 {
+		typ, ok1 := exts.u16()
+		data, ok2 := exts.vec16()
+		if !ok1 || !ok2 {
+			return Hello{}, ErrMalformed
+		}
+		switch {
+		case typ == extServerName && !seenSNI:
+			seenSNI = true
+			if h.ServerName, err = parseSNI(data); err != nil {
+				return Hello{}, err
+			}
+		case typ == extALPN && !seenALPN:
+			seenALPN = true
+			if h.ALPN, err = parseALPN(data); err != nil {
+				return Hello{}, err
+			}
+		}
+	}
+	return h, nil
+}
+
+const (
+	extServerName = 0
+	extALPN       = 16
+)
+
+// helloExtensions checks the record and handshake framing of the ClientHello
+// at the start of b and returns its extensions block (empty when it has
+// none).
+func helloExtensions(b []byte) (reader, error) {
+	if len(b) < 5 {
+		if v := matchTLS(b); v == no {
+			return nil, ErrNotClientHello
+		}
+		return nil, ErrShort
+	}
+	if b[0] != 0x16 || b[1] != 0x03 {
+		return nil, ErrNotClientHello
+	}
+	n := int(binary.BigEndian.Uint16(b[3:5]))
+	if n > maxRecord {
+		return nil, ErrMalformed
+	}
+	if len(b) < 5+n {
+		if len(b) > 5 && b[5] != 0x01 {
+			return nil, ErrNotClientHello
+		}
+		return nil, ErrShort
+	}
+	rec := reader(b[5 : 5+n])
+	typ, ok := rec.u8()
+	if !ok || typ != 0x01 {
+		return nil, ErrNotClientHello
+	}
+	hl, ok := rec.u24()
+	if !ok || hl > len(rec) {
+		return nil, ErrMalformed // a ClientHello split over records is not read
+	}
+	h := reader(rec[:hl])
+	if !h.skip(2+32) || !h.skipVec8() || !h.skipVec16() || !h.skipVec8() {
+		return nil, ErrMalformed
+	}
+	if len(h) == 0 {
+		return nil, nil // no extensions
+	}
+	exts, ok := h.vec16()
+	if !ok {
+		return nil, ErrMalformed
+	}
+	return exts, nil
+}
+
+// parseSNI reads the body of a server_name extension.
+func parseSNI(data reader) (string, error) {
+	list, ok := data.vec16()
+	if !ok {
+		return "", ErrMalformed
+	}
+	for len(list) > 0 {
+		kind, ok1 := list.u8()
+		name, ok2 := list.vec16()
+		if !ok1 || !ok2 {
+			return "", ErrMalformed
+		}
+		if kind != 0 { // host_name
+			continue
+		}
+		s, ok := NormalizeHostname(string(name))
 		if !ok {
 			return "", ErrMalformed
 		}
-		for len(list) > 0 {
-			kind, ok1 := list.u8()
-			name, ok2 := list.vec16()
-			if !ok1 || !ok2 {
-				return "", ErrMalformed
-			}
-			if kind != 0 { // host_name
-				continue
-			}
-			s, ok := NormalizeHostname(string(name))
-			if !ok {
-				return "", ErrMalformed
-			}
-			return s, nil
-		}
-		return "", nil
+		return s, nil
 	}
 	return "", nil
+}
+
+// parseALPN reads the body of an application_layer_protocol_negotiation
+// extension: a non-empty list of non-empty protocol names, nothing after.
+func parseALPN(data reader) ([]string, error) {
+	list, ok := data.vec16()
+	if !ok || len(data) != 0 || len(list) == 0 {
+		return nil, ErrMalformed
+	}
+	var out []string
+	for len(list) > 0 {
+		n, ok := list.u8()
+		if !ok || n == 0 || len(list) < n {
+			return nil, ErrMalformed
+		}
+		out = append(out, string(list[:n]))
+		list = list[n:]
+	}
+	return out, nil
 }
 
 // NormalizeHostname is the form a host name is compared and stored in: lower
