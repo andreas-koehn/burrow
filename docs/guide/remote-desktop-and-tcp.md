@@ -394,7 +394,8 @@ the client finds the service by name and serves it in the stored mode.
 ## Reach it by host name (TLS passthrough)
 
 A service in mode `open` or `ip` can also be reached by a host name on one
-shared TLS port, next to its own public port. The relay reads the server name
+shared TLS port, next to its own public port, or instead of it (see
+[By port, by host name, or both](#by-port-by-host-name-or-both)). The relay reads the server name
 (SNI) from the first TLS record, picks the service with that name, and passes
 the connection on. It terminates no TLS: the target serves its own
 certificate for that name.
@@ -444,6 +445,34 @@ and PostgreSQL 17 with `sslnegotiation=direct`. **RDP does not work this
 way:** the client sends an X.224 request first and starts TLS afterwards, so
 there is no name in the first bytes. RDP and plain SSH stay on the port or on
 `burrow forward`.
+
+### By port, by host name, or both
+
+An `open` or `ip` service is reached **by its port and by host name** by
+default (the host name only while the listener runs and the service has a
+name). To reach it **by host name only**, turn on **Host name only** on the
+**Host name** card, or `PUT /api/v1/services/{id}/tcp-hostname` with
+`{"hostname_only": true}`. The relay then closes the service's public port
+and opens none: only a TLS client that names the host gets in. A service that
+needs no public port at all is `private` and reached with `burrow forward`.
+
+- It can be turned on only while the relay runs the passthrough listener
+  (`BURROW_TLS_PASSTHROUGH_LISTEN`) and the service has a name there: its
+  slug name under `BURROW_TCP_DOMAIN`, or a custom host name. Otherwise the
+  API answers 400 with the reason, and the only name of such a service
+  cannot be cleared while it is on.
+- The client registers again on its own when the setting changes (the
+  session that served the service is closed, as for a new mode). `burrow`
+  then says the service has no public port.
+- If the relay later has no name for the service (the listener or the tcp
+  domain was removed from its configuration), it opens the port again: a
+  service is never left with no way in.
+- A pinned port (`--remote`, or the port given on create) stays the
+  service's for when the port is on again; an automatic one goes back to the
+  pool.
+- `false` brings the port back. The change asks for a recent password
+  confirmation, is audited as `service.tcp_hostname_only.update`, and is not
+  an MCP tool.
 
 ### Behind a proxy: Coolify and Traefik
 
@@ -567,7 +596,8 @@ hours (`idle_timeout_s` 60 to 86400, or minutes in the dashboard) in
 **Connection settings**, or with `PUT /api/v1/services/{id}/tcp-settings`. A
 change applies to open connections too. The relay checks every 5 seconds, so a
 connection closes up to 5 seconds late. A connection that only moves data one
-way is not idle.
+way is not idle, and neither is one that waits for its share of the service's
+bandwidth limit: a throttled connection is never closed as `idle_timeout`.
 
 ---
 
@@ -637,12 +667,19 @@ closed, and the ban survives a restart. Only `open` and `ip` visitors can be
 banned: **forwards are never banned**, and a connection counts only when the
 **visitor ended it** within `short_s`. A connection the relay ended (idle,
 quota, dashboard), one that failed to pair, and one that the home client closed
-at once (a dead local target) never count.
+at once (a dead local target) never count. In `ip` mode, a source that a
+permanent allow entry or a grant that has not expired lets in is trusted: its
+short connections are not counted, so it is never banned automatically. A
+source let in by its country only is counted.
 
 Bans are listed on the **Bans** card and at `GET
 /api/v1/services/{id}/tcp-bans`. Add one by hand with `POST` (`source`,
 `ban_min`, optional `note`; at most 4096 active per service) and lift one with
-`DELETE ...?source=`, which asks for a recent password confirmation.
+`DELETE ...?source=`, which asks for a recent password confirmation. A `POST`
+for a source that is banned already extends or renews its ban, never shortens
+it: a ban that would end sooner is refused with 409, and the way to lift or
+shorten a ban is the `DELETE` (then ban again). `POST` is an MCP tool because
+a ban only narrows access; the `DELETE` is not.
 Turning auto-ban off keeps the existing bans until they expire or are lifted.
 An automatic ban sends the `tcp.banned` webhook (at most 30 per service per
 minute) and every ban is in the audit log as `tcp.ban.add`; lifting is
@@ -658,8 +695,11 @@ minute) and every ban is in the audit log as `tcp.ban.add`; lifting is
   ban would lock out all visitors. Fix the address first (see
   [Things that go wrong](#things-that-go-wrong)).
 - **Monitors** that connect, check the port and close (load balancer health
-  checks, uptime probes) look exactly like a scanner. Allow their address
-  with `ip` mode and a grant, keep the count high, or leave auto-ban off.
+  checks, uptime probes) look exactly like a scanner. In `ip` mode, give their
+  address a permanent allow entry or a grant: the relay then never counts
+  their short connections and never bans them automatically (a ban already
+  made, or one by hand, still holds until it is lifted). In `open` mode there
+  are no allow entries: keep the count high, or leave auto-ban off.
 
 ---
 
@@ -680,18 +720,21 @@ the limit both ways.
 
 **Daily volume.** At 80 % the relay sends the `tcp.quota.warning` webhook once per
 service and day (not again after a restart that day). At the limit every open
-connection is closed (reason `quota`), and new visitors and forwards are
-refused (a forward gets `rate_limited` with the time it opens again) until
-00:00 UTC. A limit raised or removed lets traffic in at once. The count may
-overshoot by one buffer (up to 32 KiB), the stored figure lags up to a minute,
+visitor is closed (reason `quota`), and new visitors are refused until
+00:00 UTC. **Forwards** are authorized (the owner, or a role the access policy
+names): their bytes count towards the volume, but the volume never refuses or
+closes them, so strangers on an `open` port cannot lock the owner out. A
+limit raised or removed lets traffic in at once. The count may overshoot by one buffer (up to 32 KiB), the stored figure lags up to a minute,
 and a crash can lose up to a minute of counted bytes. The card shows today's
 usage; `GET tcp-limits` returns `usage_today` and `quota_reached`.
 
-::: warning The limits apply to the owner too
+::: warning The bandwidth applies to the owner too
 Bandwidth and volume count every connection of the service, forwards included.
-On an `open` service a stranger can use up the day's volume, and then you cannot
-forward until 00:00 UTC. Prefer a volume you can live with, and use `ip` or
-`private` for services you rely on.
+The bandwidth bucket is shared: on an `open` service strangers can slow your
+forwards down. The daily volume does not stop forwards, but once strangers
+have used it up the service takes no new visitors until 00:00 UTC, and your own
+forwards can carry it past `daily_bytes`. Use `ip` or `private` for services
+you rely on.
 :::
 
 ---
@@ -845,6 +888,7 @@ Audit actions for TCP services (Settings → Audit log):
 | `service.tcp_port.reclaimed` | a port was taken from an offline service |
 | `service.tcp_settings.update` | PROXY protocol or idle timeout changed (`from`, `to`) |
 | `service.tcp_hostname.update` | the custom host name changed |
+| `service.tcp_hostname_only.update` | the service was set to host name only (no public port), or back (`from`, `to`) |
 | `service.tcp_limits.update` | bandwidth, daily volume or auto-ban settings changed |
 | `tcp.ban.add` | a source was banned, automatically or by hand (`by`) |
 | `tcp.ban.remove` | a ban was lifted |
@@ -858,16 +902,16 @@ The connection log has every connection:
   forwarder's address.
 - Refusals as `rejected` rows with a reason: `ip_geo`, `rate_limited`,
   `source_limit`, `tunnel_full`, `pending_full`, `no_address`, `forbidden` (a
-  forward the user may not make), `user_limit`, `banned`, `quota` and
-  `proxy_unsupported`. They are **sampled**: one
+  forward the user may not make), `user_limit`, `banned`, `quota` (visitors
+  only) and `proxy_unsupported`. They are **sampled**: one
   row per service, reason and address per minute, so a scan does not fill the
   log. The metric `burrow_connections_total` counts all of them.
 - A connection the relay ended says why in its reason: `closed_by_dashboard`
   (someone pressed Disconnect), `access_revoked` (a forward the user may no
   longer make, after a change of the access policy, the user's role or
   status), `session_closed` (the forwarder's or the home client's session
-  ended), `idle_timeout`, `quota` (the daily volume was reached) or `banned`
-  (its source was banned). A connection that one side closed has no reason.
+  ended), `idle_timeout`, `quota` (the daily volume was reached; visitors
+  only) or `banned` (its source was banned). A connection that one side closed has no reason.
 - Every row also has the `protocol` and the `sni` when they are known.
 
 The webhook event `access.denied` is sent for TCP refusals too, at most one

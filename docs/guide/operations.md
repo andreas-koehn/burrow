@@ -150,6 +150,39 @@ v0.13.0 makes TCP services first-class: access modes `open`, `ip` and
   `remote:` and no `access:` (a fixed public port is what it asks for), and
   `burrow connect --config`, which does not read `access:` at all. Use
   `burrow up` with `access:` for new services.
+- **HTTP country allow lists deny without a database.** Country rules of
+  HTTP services are enforced now (before, the lookup was missing). A service
+  with a country **allow** list refuses every visitor while no GeoIP database
+  is loaded (`BURROW_GEOIP_DB`), because an unknown country is not on the
+  list; a block list blocks nothing then. Load the database, or clear the
+  allow list, before you upgrade.
+- **Stored TCP country lists now apply.** Country lists saved for TCP
+  services before v0.13.0 were not enforced; they are now, at accept, in
+  modes `open` and `ip`. A service that has a list may start refusing
+  visitors (reason `ip_geo` in the connection log). Check the lists first.
+- **`:8443` trusts `X-Forwarded-For` from `BURROW_TRUSTED_PROXIES`.** With
+  trusted proxies set, the host-routed ingress takes the visitor's address
+  from `X-Forwarded-For` / `X-Real-IP` of a trusted peer, as `/svc/` always
+  did, so ip-geo rules, rate limits, logs and grants on `:8443` see the
+  forwarded client. The Coolify compose sets
+  `BURROW_TRUSTED_PROXIES=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16`: then
+  anything that reaches `:8443` from a private address (another container,
+  the LAN) can name any visitor address. Narrow the list to Traefik's
+  address, or do not publish `:8443` beyond Traefik.
+- **Upgrade clients before you use scoped tokens.** A client older than
+  v0.13.0 does not know `scope_denied`: with a `forward` token its tunnels,
+  or with a `publish` token its forwards, are refused, and it keeps retrying
+  instead of stopping. Update the clients before you hand out scoped tokens.
+- **Upgrade clients before you turn on `proxy_protocol`.** Only a v0.13.0
+  client writes the PROXY v2 header. A service with `proxy_protocol: v2`
+  served by an older client refuses its visitors and forwards
+  (`proxy_unsupported`); the dashboard warns while such a client serves it.
+- **New: by host name only.** A TCP service can be reached by its TLS
+  passthrough host name only, without a public port (**Host name only** on
+  the Host name card, `hostname_only` on `PUT
+  /api/v1/services/{id}/tcp-hostname`). It needs
+  `BURROW_TLS_PASSTHROUGH_LISTEN` and a host name for the service. See
+  [By port, by host name, or both](/guide/remote-desktop-and-tcp#by-port-by-host-name-or-both).
 - **Do not roll back** to an older image once a TCP service uses `ip` or
   `private`. An older relay does not know these modes and would serve those
   services `open`, on a public port. Set them to `open` first, or restore a

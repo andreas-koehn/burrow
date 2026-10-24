@@ -160,6 +160,7 @@ connection log and the audit log uses `audit:read`.
 
 **Audit actions.** `service.tcp_access.update`, `ipgeo.update`,
 `service.tcp_settings.update`, `service.tcp_hostname.update`,
+`service.tcp_hostname_only.update`,
 `service.tcp_limits.update`, `tcp.ban.add`, `tcp.ban.remove`,
 `service.ip_grant.add`, `service.ip_grant.revoke`,
 `service.max_connections.update`, `service.connection.close`,
