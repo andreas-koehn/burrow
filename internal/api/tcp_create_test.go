@@ -7,6 +7,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -116,6 +117,42 @@ func TestPostService_TCPRefusals(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A create that opens a port to the internet (open, ip) asks for the password
+// again, like the access-mode change does; a private one does not.
+func TestPostService_TCPOpeningModesNeedRecentAuth(t *testing.T) {
+	ss := &fakeServiceStore{}
+	d := newServiceDeps(ss, fakeLiveTunnels{}, "")
+	srv := httptest.NewServer(NewRouter(d))
+	t.Cleanup(srv.Close)
+	c := unconfirmedClient(t, srv)
+	for _, mode := range []string{"open", "ip"} {
+		r := c.post(t, "/api/v1/services", map[string]any{"type": "tcp", "name": "rdp-" + mode, "access_mode": mode})
+		if body := readBody(t, r); r.StatusCode != http.StatusForbidden || !strings.Contains(body, "reauth_required") {
+			t.Fatalf("%s: %d %s, want 403 reauth_required", mode, r.StatusCode, body)
+		}
+	}
+	if len(ss.createdSvcs) != 0 {
+		t.Fatalf("a refused create left a row: %+v", ss.createdSvcs)
+	}
+	for _, body := range []map[string]any{
+		{"type": "tcp", "name": "priv-default"},
+		{"type": "tcp", "name": "priv", "access_mode": "private"},
+		{"service_id": "web-one", "access_mode": "public"},
+	} {
+		r := c.post(t, "/api/v1/services", body)
+		if r.StatusCode != http.StatusCreated {
+			t.Fatalf("%v: %d %s", body, r.StatusCode, readBody(t, r))
+		}
+		r.Body.Close()
+	}
+	c.reauth(t, "password1")
+	r := c.post(t, "/api/v1/services", map[string]any{"type": "tcp", "name": "rdp-open", "access_mode": "open"})
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("after the confirmation: %d %s", r.StatusCode, readBody(t, r))
+	}
+	r.Body.Close()
 }
 
 func TestPostService_HTTPStillNeedsServiceID(t *testing.T) {

@@ -49,7 +49,16 @@ export function TcpBansPanel({ serviceId }: { serviceId: string }) {
       setLiftErr(null);
       await qc.invalidateQueries({ queryKey: key });
     },
-    onError: (e: unknown) => setLiftErr(e instanceof ApiError ? e.message : "Couldn't unban the source."),
+    onError: async (e: unknown) => {
+      // The ban ended or was lifted meanwhile: the list is stale, not the action wrong.
+      if (e instanceof ApiError && e.status === 404) {
+        setLifting(null);
+        setLiftErr(null);
+        await qc.invalidateQueries({ queryKey: key });
+        return;
+      }
+      setLiftErr(e instanceof ApiError ? e.message : "Couldn't unban the source.");
+    },
   });
 
   const rows = bans.data ?? [];

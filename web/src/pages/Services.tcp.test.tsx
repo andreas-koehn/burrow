@@ -6,6 +6,7 @@ import { http, HttpResponse } from "msw";
 import { server } from "@/mocks/server";
 import { db, type ServiceRow } from "@/mocks/db";
 import Services from "@/pages/Services";
+import { ReauthDialog } from "@/components/ReauthDialog";
 
 function addTcp(over: Partial<ServiceRow>): ServiceRow {
   const row: ServiceRow = {
@@ -195,5 +196,32 @@ describe("New service: a tcp service", () => {
     await userEvent.type(within(dialog).getByLabelText("Name"), "rdp");
     await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
     expect(await within(dialog).findByText(/already exists/)).toBeInTheDocument();
+  });
+
+  it("asks for the password before it opens a port, and not for a private service", async () => {
+    db.clientLoginPasswordRequired = true;
+    db.reauthConfirmed = false;
+    renderApp(<><Services /><ReauthDialog /></>, "/services");
+    await userEvent.click(await screen.findByRole("button", { name: "New service" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "New service" })).getByRole("button", { name: "Create a TCP service instead" }));
+    const dialog = await screen.findByRole("dialog", { name: "New TCP service" });
+    // Private: no prompt.
+    await userEvent.type(within(dialog).getByLabelText("Name"), "quiet-box");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await within(dialog).findByText(/burrow tcp/);
+    expect(db.services.some((s) => s.name === "quiet-box")).toBe(true);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+
+    await userEvent.click(await screen.findByRole("button", { name: "New service" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "New service" })).getByRole("button", { name: "Create a TCP service instead" }));
+    const second = await screen.findByRole("dialog", { name: "New TCP service" });
+    await userEvent.type(within(second).getByLabelText("Name"), "ssh-box");
+    await userEvent.click(within(second).getByRole("radio", { name: "Open" }));
+    await userEvent.click(within(second).getByRole("button", { name: "Create" }));
+    const prompt = await screen.findByRole("dialog", { name: "Confirm your password" });
+    expect(db.services.some((s) => s.name === "ssh-box")).toBe(false);
+    await userEvent.type(within(prompt).getByLabelText("Your password"), "password123");
+    await userEvent.click(within(prompt).getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(db.services.some((s) => s.name === "ssh-box" && s.access_mode === "open")).toBe(true));
   });
 });

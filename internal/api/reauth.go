@@ -96,12 +96,20 @@ func (d Deps) recentAuth(r *http.Request) bool {
 // checks of a route.
 func (d Deps) RequireRecentAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if d.ServicesDomain != "" || bearerTokenID(r.Context()) != "" || d.recentAuth(r) {
+		if d.reauthSatisfied(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		writeErr(w, http.StatusForbidden, reauthRequired)
 	})
+}
+
+// reauthSatisfied is the condition of RequireRecentAuth, for a handler that
+// asks for the confirmation only in some cases: the guard is off with a
+// services domain, a bearer request is exempt, otherwise the session must
+// have confirmed its password recently.
+func (d Deps) reauthSatisfied(r *http.Request) bool {
+	return d.ServicesDomain != "" || bearerTokenID(r.Context()) != "" || d.recentAuth(r)
 }
 
 type reauthReq struct {

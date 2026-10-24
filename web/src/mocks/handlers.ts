@@ -88,6 +88,12 @@ function canConfigure(svc: { user_id: string }): boolean {
   return svc.user_id === db.me.id;
 }
 
+// The routes behind RequireRecentAuth answer reauth_required until the password is confirmed,
+// on a relay without a services domain (db.clientLoginPasswordRequired).
+function needReauth(): Response | null {
+  return db.clientLoginPasswordRequired && !db.reauthConfirmed ? err(403, "reauth_required") : null;
+}
+
 // The tcp service a /services/{id}/tcp-* route is about, or the answer that says why not.
 function tcpService(id: string): ServiceRow | Response {
   const svc = db.services.find((s) => s.id === id);
@@ -878,6 +884,7 @@ export const handlers = [
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) return err(400, "name must be 1 to 64 characters: letters, digits, dot, underscore, hyphen");
       const mode = b.access_mode || "private";
       if (!["open", "ip", "private"].includes(mode)) return err(400, "access_mode of a tcp service must be one of: open, ip, private");
+      if (mode !== "private") { const r = needReauth(); if (r) return r; }
       if (b.tcp_port !== undefined && (b.tcp_port < 9000 || b.tcp_port > 9100)) return err(400, "tcp_port must be 9000 to 9100");
       if (b.proxy_protocol && b.proxy_protocol !== "v2") return err(400, 'proxy_protocol must be "" (none) or "v2"');
       if (b.idle_timeout_s !== undefined && b.idle_timeout_s !== 0 && (b.idle_timeout_s < 60 || b.idle_timeout_s > 86400)) return err(400, "idle_timeout_s must be 0 (never) or 60 to 86400");
@@ -1391,6 +1398,7 @@ export const handlers = [
   }),
   http.put("/api/v1/services/:id/ip-geo", async ({ request, params }) => {
     const g = gate(request); if (g) return g;
+    { const r = needReauth(); if (r) return r; }
     const svc = db.services.find((s) => s.id === params.id);
     if (!svc) return err(404, "service not found");
     if (!canConfigure(svc)) return err(403, "forbidden");
@@ -1504,6 +1512,7 @@ export const handlers = [
   }),
   http.put("/api/v1/services/:id/tcp-hostname", async ({ request, params }) => {
     const g = gate(request); if (g) return g;
+    { const r = needReauth(); if (r) return r; }
     const svc = tcpService(params.id as string); if (svc instanceof Response) return svc;
     const b = await body<{ tcp_hostname?: string }>(request);
     if (b?.tcp_hostname === undefined) return err(400, "tcp_hostname is required");
@@ -1521,6 +1530,7 @@ export const handlers = [
   }),
   http.put("/api/v1/services/:id/tcp-limits", async ({ request, params }) => {
     const g = gate(request); if (g) return g;
+    { const r = needReauth(); if (r) return r; }
     const svc = tcpService(params.id as string); if (svc instanceof Response) return svc;
     const b = await body<{ rate_limit_kbps?: number; daily_bytes?: number; autoban?: Partial<TcpLimits["autoban"]> }>(request);
     if (!b || (b.rate_limit_kbps === undefined && b.daily_bytes === undefined && b.autoban === undefined)) return err(400, "rate_limit_kbps, daily_bytes or autoban is required");
@@ -1553,6 +1563,7 @@ export const handlers = [
   }),
   http.delete("/api/v1/services/:id/tcp-bans", ({ request, params }) => {
     const g = gate(request); if (g) return g;
+    { const r = needReauth(); if (r) return r; }
     const svc = tcpService(params.id as string); if (svc instanceof Response) return svc;
     const source = new URL(request.url).searchParams.get("source");
     if (!source) return err(400, "source is required");

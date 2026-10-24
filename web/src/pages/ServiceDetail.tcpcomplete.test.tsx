@@ -7,6 +7,7 @@ import { renderApp } from "@/mocks/test-utils";
 import { server } from "@/mocks/server";
 import { db, type ServiceRow } from "@/mocks/db";
 import ServiceDetail from "@/pages/ServiceDetail";
+import { ReauthDialog } from "@/components/ReauthDialog";
 
 // tcp complete (E1-E8): every setting of a tcp service on its page.
 
@@ -397,5 +398,111 @@ describe("tcp service page: what a connection looked like", () => {
     expect(rows[1]).toHaveTextContent(/banned source/i);
     expect(rows[2]).toHaveTextContent(/idle timeout/i);
     expect(rows[2]).toHaveTextContent(/SSH/);
+  });
+});
+
+describe("tcp service page: the password is asked for where the relay asks", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function mountWithReauth() {
+    db.clientLoginPasswordRequired = true;
+    db.reauthConfirmed = false;
+    return renderApp(
+      <>
+        <Routes><Route path="/services/:id" element={<ServiceDetail />} /></Routes>
+        <ReauthDialog />
+      </>,
+      "/services/svc_rdp01",
+    );
+  }
+  async function confirm() {
+    const d = await screen.findByRole("dialog", { name: "Confirm your password" });
+    await userEvent.type(within(d).getByLabelText("Your password"), "password123");
+    await userEvent.click(within(d).getByRole("button", { name: "Confirm" }));
+  }
+
+  it("host name", async () => {
+    addTcp();
+    mountWithReauth();
+    const card = await region("Host name");
+    await userEvent.type(await within(card).findByLabelText("Custom host name"), "rdp.example.org");
+    await userEvent.click(within(card).getByRole("button", { name: "Save host name" }));
+    await confirm();
+    await waitFor(() => expect(db.tcpHostnames.svc_rdp01).toBe("rdp.example.org"));
+  });
+
+  it("limits", async () => {
+    addTcp();
+    mountWithReauth();
+    const card = await region("Limits");
+    await userEvent.type(await within(card).findByLabelText("Bandwidth limit (kbit/s)"), "2000");
+    await userEvent.click(within(card).getByRole("button", { name: "Save limits" }));
+    await confirm();
+    await waitFor(() => expect(db.tcpLimits.svc_rdp01?.rate_limit_kbps).toBe(2000));
+  });
+
+  it("unban", async () => {
+    addTcp();
+    db.tcpBans.svc_rdp01 = [{ source: "198.51.100.7", until: new Date(Date.now() + 3600_000).toISOString(), reason: "auto", auto: true, created_at: "2026-10-24T08:00:00Z" }];
+    mountWithReauth();
+    const card = await region("Bans");
+    await userEvent.click(await within(card).findByRole("button", { name: "Unban 198.51.100.7" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: /Unban/ })).getByRole("button", { name: "Unban" }));
+    await confirm();
+    await waitFor(() => expect(db.tcpBans.svc_rdp01).toHaveLength(0));
+  });
+
+  it("countries", async () => {
+    addTcp({ access_mode: "open" });
+    mountWithReauth();
+    const card = await region("Countries");
+    await userEvent.type(await within(card).findByLabelText("Country code"), "ru");
+    await userEvent.click(within(card).getByRole("button", { name: "Add country" }));
+    await confirm();
+    await waitFor(() => expect(db.tcpIpGeo.svc_rdp01?.block_countries).toEqual(["RU"]));
+  });
+});
+
+describe("tcp service page: small things", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("an unban of a ban that is gone closes the dialog and refreshes the list", async () => {
+    addTcp();
+    db.tcpBans.svc_rdp01 = [{ source: "198.51.100.7", until: new Date(Date.now() + 3600_000).toISOString(), reason: "auto", auto: true, created_at: "2026-10-24T08:00:00Z" }];
+    mount();
+    const card = await region("Bans");
+    await userEvent.click(await within(card).findByRole("button", { name: "Unban 198.51.100.7" }));
+    db.tcpBans.svc_rdp01 = []; // it ended meanwhile
+    await userEvent.click(within(await screen.findByRole("dialog", { name: /Unban/ })).getByRole("button", { name: "Unban" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await within(card).findByText(/no source is banned/i)).toBeInTheDocument();
+  });
+
+  it("Enter does not add a country while Add is disabled", async () => {
+    addTcp({ access_mode: "ip" });
+    db.geoDatabase = false;
+    const spy = vi.spyOn(globalThis, "fetch");
+    mount();
+    const card = await region("Countries");
+    await waitFor(() => expect(within(card).getByRole("button", { name: "Add country" })).toBeDisabled());
+    await userEvent.type(within(card).getByLabelText("Country code"), "de{Enter}");
+    expect(sent(spy, "/ip-geo", "PUT")).toEqual([]);
+  });
+
+  it("names the file or the setting, and does not ask for a restart when the file is configured", async () => {
+    addTcp({ access_mode: "ip" });
+    db.geoDatabase = false;
+    server.use(http.get("/api/v1/geo/status", () => HttpResponse.json({ enabled: false, configured: true, db_path: "/data/geo.mmdb", db_age_seconds: null, error: "bad file", rules_not_enforced: 0 })));
+    mount();
+    const card = await region("Countries");
+    expect(await within(card).findByText(/\/data\/geo\.mmdb is not loaded \(bad file\)/)).toBeInTheDocument();
+    expect(card).not.toHaveTextContent(/restart/i);
+  });
+
+  it("an open service without ipgeo:manage is told what the country rules need", async () => {
+    addTcp({ access_mode: "open" });
+    db.me = { id: db.me.id, email: "bob@acme.io", role: "operator", permissions: ["tunnels:read:own", "services:configure:own"] };
+    mount();
+    expect(await screen.findByText(/country rules needs the ipgeo:manage permission/i)).toBeInTheDocument();
   });
 });

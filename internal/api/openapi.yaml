@@ -3768,6 +3768,12 @@ paths:
         service id and `slug` its generated one. The owner is the caller. The
         audit payload also names the type, the port and the settings.
 
+        A tcp create in mode `open` or `ip` needs the password confirmed
+        recently (403 `reauth_required`); `private` does not. Only
+        `proxy_protocol` and `idle_timeout_s` can be given as initial
+        settings: everything else (host name, limits, countries, bans) goes
+        through its own guarded route afterwards.
+
         Not a tool of the management MCP server (`/mcp/burrow`): it sets the new service's access mode, and an agent steered by untrusted text must not widen access.
       requestBody:
         required: true
@@ -3802,8 +3808,12 @@ paths:
                   created_at: { type: string, format: date-time }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { description: service_id or slug already in use. }
+        '403':
+          description: >
+            Forbidden: the caller lacks `services:configure:any`, or a tcp
+            create in mode `open` or `ip` came without a recent password
+            confirmation (`reauth_required`, like `PUT .../access-mode`).
+        '409': { description: "http: service_id or slug already in use. tcp: the name is used by another service of the owner (or the generated slug was taken), or `tcp_port` is held by another service; the text names the name or the port." }
 
   /api/v1/services/slug-suggestion:
     get:

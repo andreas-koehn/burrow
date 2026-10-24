@@ -121,6 +121,9 @@ export function TcpAccessPanel({ service }: { service: Service }) {
       {saved === "ip" && !canAddresses && (
         <p className="muted small">Managing the allowed addresses and grants needs the ipgeo:manage permission.</p>
       )}
+      {saved === "open" && !canAddresses && (
+        <p className="muted small">Managing the country rules needs the ipgeo:manage permission.</p>
+      )}
 
       {canConfigure && (
         <section className="card col gap-2" aria-label="Who may forward">

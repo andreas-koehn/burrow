@@ -54,6 +54,8 @@ export function TcpCountriesPanel({ serviceId }: { serviceId: string }) {
   const noDatabase = status.data ? !status.data.enabled : data?.country_rules_enforced === false;
   const notEnforced = noDatabase || data?.country_rules_enforced === false;
 
+  const canAdd = !save.isPending && !!data && !noDatabase;
+
   function add() {
     const c = countryCode(code);
     if (!c) { setErr("Use a two-letter country code such as DE or US."); return; }
@@ -78,8 +80,10 @@ export function TcpCountriesPanel({ serviceId }: { serviceId: string }) {
       </p>
       {notEnforced && (
         <ErrorNotice variant="warn" role="status">
-          Country rules are not enforced: this relay has no GeoIP database loaded. Set BURROW_GEOIP_DB to a
-          GeoLite2-Country file and restart the relay.{" "}
+          Country rules are not enforced: this relay has no GeoIP database loaded.{" "}
+          {status.data?.configured
+            ? <>The file {status.data.db_path} is not loaded{status.data.error ? ` (${status.data.error})` : ""}: fix it, and the relay picks it up within a minute.</>
+            : <>Set BURROW_GEOIP_DB to a GeoLite2-Country file and restart the relay once; after that it loads the file again whenever it changes.</>}{" "}
           {(allow.length > 0 || block.length > 0) && "The countries below do nothing until then; you can remove them."}
         </ErrorNotice>
       )}
@@ -120,10 +124,10 @@ export function TcpCountriesPanel({ serviceId }: { serviceId: string }) {
             autoComplete="off"
             invalid={err !== null}
             onChange={(e) => { setCode(e.target.value); setErr(null); }}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); if (canAdd) add(); } }}
           />
         </FormField>
-        <Button type="button" variant="secondary" size="sm" disabled={save.isPending || !data || noDatabase} onClick={add}>
+        <Button type="button" variant="secondary" size="sm" disabled={!canAdd} onClick={add}>
           Add country
         </Button>
       </div>

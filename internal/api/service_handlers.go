@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -788,6 +789,12 @@ func (d Deps) postTCPService(w http.ResponseWriter, r *http.Request, in postServ
 		writeErr(w, http.StatusBadRequest, "access_mode of a tcp service must be one of: open, ip, private")
 		return
 	}
+	// open and ip put a port on the internet: like the access-mode change,
+	// they need the password confirmed (private does not).
+	if mode != "private" && !d.reauthSatisfied(r) {
+		writeErr(w, http.StatusForbidden, reauthRequired)
+		return
+	}
 	row := db.Service{
 		ID: uuid.NewString(), UserID: userID(r.Context()), Name: in.Name, Type: "tcp", AccessMode: mode,
 		APIKeyHeader: "Authorization", ProxyProtocol: in.ProxyProtocol,
@@ -830,9 +837,9 @@ func (d Deps) postTCPService(w http.ResponseWriter, r *http.Request, in postServ
 	if err := d.Services.CreateService(r.Context(), row); err != nil {
 		switch {
 		case errors.Is(err, db.ErrTCPPortReserved):
-			writeErr(w, http.StatusConflict, "tcp_port is held by another service")
+			writeErr(w, http.StatusConflict, fmt.Sprintf("tcp_port %d is held by another service", row.TCPPort))
 		case errors.Is(err, db.ErrDuplicateService):
-			writeErr(w, http.StatusConflict, "a tcp service of that name already exists")
+			writeErr(w, http.StatusConflict, "a service named "+strconv.Quote(in.Name)+" exists already (tcp and http services share names per owner), or the generated slug was taken: choose another name")
 		default:
 			writeErr(w, http.StatusInternalServerError, "internal error")
 		}

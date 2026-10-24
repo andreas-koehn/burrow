@@ -20,7 +20,7 @@ const LIST_OPTIONS = [
 
 /**
  * `tcp` turns it into the permanent list of a tcp service in IP allowlist mode: addresses and
- * ranges only (a bare address is allowed), with no countries, which the relay does not enforce for tcp.
+ * ranges only (a bare address is allowed). The country rules of a tcp service are TcpCountriesPanel's.
  */
 export function IPGeoPanel({ serviceId, tcp = false }: { serviceId: string; tcp?: boolean }) {
   const qc = useQueryClient();
