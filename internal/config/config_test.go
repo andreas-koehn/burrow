@@ -648,6 +648,27 @@ func TestGeoDBPathEnvOverride(t *testing.T) {
 	}
 }
 
+// TestGeoIPDBEnvWins asserts BURROW_GEOIP_DB wins over the older
+// BURROW_GEO_DB_PATH, and that an explicit override wins over both.
+func TestGeoIPDBEnvWins(t *testing.T) {
+	t.Setenv("BURROW_GEO_DB_PATH", "/old.mmdb")
+	t.Setenv("BURROW_GEOIP_DB", "/new.mmdb")
+	c, err := LoadServer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.GeoDBPath != "/new.mmdb" {
+		t.Fatalf("geo_db_path = %q, want /new.mmdb", c.GeoDBPath)
+	}
+	c, err = LoadServer(map[string]any{"geo_db_path": "/forced.mmdb"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.GeoDBPath != "/forced.mmdb" {
+		t.Fatalf("override: geo_db_path = %q", c.GeoDBPath)
+	}
+}
+
 // TestPricingPathEnvOverride asserts BURROW_PRICING_PATH takes effect.
 func TestPricingPathEnvOverride(t *testing.T) {
 	t.Setenv("BURROW_PRICING_PATH", "/etc/burrow/pricing.yaml")

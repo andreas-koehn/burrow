@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -26,6 +27,9 @@ import (
 type IPGeoStore interface {
 	GetServiceIPGeo(ctx context.Context, serviceID string) (db.ServiceIPGeoConfig, error)
 	SetServiceIPGeo(ctx context.Context, cfg db.ServiceIPGeoConfig) error
+	// CountCountryRules counts the services whose country rules apply, of
+	// one owner or ("") of all.
+	CountCountryRules(ctx context.Context, ownerID string) (int, error)
 }
 
 // ServiceOwnerLookup is the narrow ownership surface. *db.DB satisfies it via
@@ -54,6 +58,32 @@ type ipGeoView struct {
 	AllowCountries       []string `json:"allow_countries"`
 	BlockCountries       []string `json:"block_countries"`
 	CountryRulesEnforced bool     `json:"country_rules_enforced"`
+}
+
+// addsCountry reports whether next has a country that cur has not.
+func addsCountry(cur, next []string) bool {
+	have := map[string]bool{}
+	for _, c := range cur {
+		have[strings.ToUpper(strings.TrimSpace(c))] = true
+	}
+	for _, c := range next {
+		if !have[strings.ToUpper(strings.TrimSpace(c))] {
+			return true
+		}
+	}
+	return false
+}
+
+// noGeoDBMessage is the 400 text of a country rule without a database.
+func (d Deps) noGeoDBMessage() string {
+	if d.GeoLookup != nil && d.GeoLookup.DBPath() != "" {
+		msg := "country rules need a GeoIP database: the file " + d.GeoLookup.DBPath() + " is not loaded"
+		if e, ok := d.GeoLookup.(interface{ LastError() string }); ok && e.LastError() != "" {
+			msg += " (" + e.LastError() + ")"
+		}
+		return msg + "; fix the file (it is picked up within a minute) or save the rules without new countries"
+	}
+	return "country rules need a GeoIP database: no GeoLite2-Country .mmdb is configured; set BURROW_GEOIP_DB to its path and restart, or save the rules without new countries"
 }
 
 // geoEnabled reports whether a GeoIP database is loaded.
@@ -218,13 +248,6 @@ func (d Deps) PutServiceIPGeo(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Country rules cannot be enforced without a database, and a rule that is
-	// not enforced is worse than none: a deny that lets everyone in. Clearing
-	// the country lists is always possible.
-	if len(in.AllowCountries)+len(in.BlockCountries) > 0 && !d.geoEnabled() {
-		writeErr(w, http.StatusBadRequest, "country rules need a GeoIP database: no GeoLite2-Country .mmdb is loaded; set BURROW_GEOIP_DB to its path and restart, or save the rules without countries")
-		return
-	}
 	if d.IPGeo == nil {
 		writeErr(w, http.StatusInternalServerError, "ip-geo store unavailable")
 		return
@@ -249,6 +272,15 @@ func (d Deps) PutServiceIPGeo(w http.ResponseWriter, r *http.Request) {
 	before, err := d.IPGeo.GetServiceIPGeo(r.Context(), serviceID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "load ip-geo failed")
+		return
+	}
+	// Country rules cannot be enforced without a database, and a rule that
+	// is not enforced is worse than none: a deny that lets everyone in. So
+	// a request that adds a country is refused; the lists the service has
+	// already, and a smaller list, are not (a legacy rule must not block
+	// saving the rest), and clearing is always possible.
+	if !d.geoEnabled() && (addsCountry(before.AllowCountries, in.AllowCountries) || addsCountry(before.BlockCountries, in.BlockCountries)) {
+		writeErr(w, http.StatusBadRequest, d.noGeoDBMessage())
 		return
 	}
 	if err := d.IPGeo.SetServiceIPGeo(r.Context(), db.ServiceIPGeoConfig{
@@ -289,17 +321,23 @@ func (d Deps) GetGeoStatus(w http.ResponseWriter, r *http.Request) {
 	if e, ok := g.(interface{ LastError() string }); ok {
 		resp.Error = e.LastError()
 	}
-	if !g.Enabled() {
-		if c, ok := d.IPGeo.(interface {
-			CountCountryRules(ctx context.Context) (int, error)
-		}); ok {
-			n, err := c.CountCountryRules(r.Context())
-			if err != nil {
-				writeErr(w, http.StatusInternalServerError, "count country rules failed")
-				return
-			}
-			resp.RulesNotEnforced = n
+	if !g.Enabled() && d.IPGeo != nil {
+		// A caller who manages only their own services sees only their count.
+		owner := ""
+		role, err := d.callerRole(r)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return
 		}
+		if !effectivePerms(r.Context(), role, authz.PermIPGeoManageAny) {
+			owner = userID(r.Context())
+		}
+		n, err := d.IPGeo.CountCountryRules(r.Context(), owner)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "count country rules failed")
+			return
+		}
+		resp.RulesNotEnforced = n
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

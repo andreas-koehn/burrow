@@ -827,6 +827,10 @@ func (*fullDepsStub) SetServiceIPGeo(context.Context, db.ServiceIPGeoConfig) err
 	stubPanic("SetServiceIPGeo")
 	return nil
 }
+func (*fullDepsStub) CountCountryRules(context.Context, string) (int, error) {
+	stubPanic("CountCountryRules")
+	return 0, nil
+}
 
 // GeoLookupSurface.
 func (*fullDepsStub) Enabled() bool {

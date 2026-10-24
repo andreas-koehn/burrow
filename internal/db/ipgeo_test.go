@@ -188,26 +188,59 @@ func TestIPGeoDecodeMalformedJSON(t *testing.T) {
 	}
 }
 
-// CountCountryRules counts the services that have a country list, and only
-// those.
+// CountCountryRules counts the services whose country rules apply: an http
+// service with the rules enabled, a tcp service in mode ip or open; of one
+// owner or of all.
 func TestCountCountryRules(t *testing.T) {
 	x := testDB(t)
+	checkCountCountryRules(t, x)
+}
+
+func checkCountCountryRules(t *testing.T, x *DB) {
+	t.Helper()
 	ctx := context.Background()
-	mustUser(t, x, "u1")
-	a, b, c := seedSvc(t, x, "u1", "svc-a"), seedSvc(t, x, "u1", "svc-b"), seedSvc(t, x, "u1", "svc-c")
-	if n, err := x.CountCountryRules(ctx); err != nil || n != 0 {
+	// A database that outlives the run (Postgres) is left as it was.
+	mustUser(t, x, "cc-u1")
+	mustUser(t, x, "cc-u2")
+	httpOn, httpOff, noCountries := seedSvc(t, x, "cc-u1", "svc-a"), seedSvc(t, x, "cc-u1", "svc-b"), seedSvc(t, x, "cc-u2", "svc-c")
+	tcpIP, tcpPrivate := seedTCPSvc(t, x, "cc-u2", "tcp-a", "ip"), seedTCPSvc(t, x, "cc-u2", "tcp-b", "private")
+	t.Cleanup(func() {
+		for _, id := range []string{httpOn, httpOff, noCountries, tcpIP, tcpPrivate} {
+			_, _ = x.sqlDB.ExecContext(context.Background(), `DELETE FROM service_ip_geo WHERE service_id=?`, id)
+			_, _ = x.sqlDB.ExecContext(context.Background(), `DELETE FROM services WHERE id=?`, id)
+		}
+		_, _ = x.sqlDB.ExecContext(context.Background(), `DELETE FROM users WHERE id IN ('cc-u1','cc-u2')`)
+	})
+	if n, err := x.CountCountryRules(ctx, ""); err != nil || n != 0 {
 		t.Fatalf("empty: %d, %v", n, err)
 	}
 	for _, cfg := range []ServiceIPGeoConfig{
-		{ServiceID: a, AllowCIDRs: []string{"10.0.0.0/8"}},
-		{ServiceID: b, BlockCountries: []string{"KP"}},
-		{ServiceID: c, AllowCountries: []string{"DE"}, BlockCountries: []string{"KP"}},
+		{ServiceID: httpOn, Enabled: true, BlockCountries: []string{"KP"}},
+		{ServiceID: httpOff, Enabled: false, AllowCountries: []string{"DE"}},
+		{ServiceID: noCountries, Enabled: true, AllowCIDRs: []string{"10.0.0.0/8"}},
+		{ServiceID: tcpIP, AllowCountries: []string{"DE"}, BlockCountries: []string{"KP"}},
+		{ServiceID: tcpPrivate, AllowCountries: []string{"DE"}},
 	} {
 		if err := x.SetServiceIPGeo(ctx, cfg); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if n, err := x.CountCountryRules(ctx); err != nil || n != 2 {
-		t.Fatalf("count: %d, %v, want 2", n, err)
+	for owner, want := range map[string]int{"": 2, "cc-u1": 1, "cc-u2": 1, "nobody": 0} {
+		if n, err := x.CountCountryRules(ctx, owner); err != nil || n != want {
+			t.Errorf("owner %q: %d, %v, want %d", owner, n, err, want)
+		}
 	}
+}
+
+// seedTCPSvc creates a tcp service with the given access mode.
+func seedTCPSvc(t *testing.T, x *DB, userID, name, mode string) string {
+	t.Helper()
+	s, err := x.GetOrCreateService(context.Background(), userID, name, "tcp")
+	if err != nil {
+		t.Fatalf("seed tcp service: %v", err)
+	}
+	if _, err := x.sqlDB.ExecContext(context.Background(), `UPDATE services SET access_mode=? WHERE id=?`, mode, s.ID); err != nil {
+		t.Fatalf("set access mode: %v", err)
+	}
+	return s.ID
 }

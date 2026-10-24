@@ -3986,7 +3986,19 @@ paths:
         GeoLite2-Country `.mmdb`, reloaded when the file changes): without one
         a request with a country list is a 400 (empty country lists can
         always be saved). An unknown country (no record, no database) follows
-        the list: an allow list denies it, a block list lets it through. An allow entry of a tcp service is at most a
+        the list: an allow list denies it, a block list lets it through.
+
+        The allow lists differ between the two kinds of service. For http
+        every rule must hold: the address must match the allow CIDRs (when
+        there are some) and the country must be on the allow countries (when
+        there are some). For a tcp service in mode `ip` an allow country is one
+        more way in, next to an allow CIDR or a grant (any one lets the
+        visitor in). Stored country lists of a tcp service in mode `ip` or
+        `open` apply from this version on.
+
+        A request that only keeps or shortens the stored country lists is
+        accepted without a database (a legacy rule does not block saving the
+        rest); one that adds a country is a 400. An allow entry of a tcp service is at most a
         /8 of IPv4 or a /32 of IPv6 (a 400 otherwise). The relay applies a
         change to the next visitor. Audited as `ipgeo.update` with the lists
         before and after.
@@ -4016,6 +4028,11 @@ paths:
         service in access mode `ip` lets a visitor in when its address is in
         the permanent allow list (`/ip-geo`, CIDRs only) or in a grant, and
         in no block entry.
+
+        Precedence of a tcp service in mode `ip`: a block CIDR refuses first,
+        then a block country; then an allow CIDR, a grant or an allow country
+        lets the visitor in. A grant never overrides a block entry or a block
+        country. Country rules need a GeoIP database (see `/ip-geo`).
 
         Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]

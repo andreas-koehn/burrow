@@ -2,9 +2,8 @@ package proxy
 
 // ipgeo.go — per-service IP allow/block + country-code gating middleware.
 //
-// Task 16 implements the IP-CIDR matcher and the GeoLookup interface. The
-// country lookup itself ships as a no-op in the default build; Task 17 will
-// provide an MMDB-backed implementation behind the `geo` build tag.
+// The IP-CIDR matcher and the GeoLookup interface. The country lookup is the
+// MMDB reader of geo.go (BURROW_GEOIP_DB); without a database it is a no-op.
 //
 // The chain wiring (internal/aigw/chain.go) currently exposes a stub IPGeo
 // field — Task 25 wires this engine into the chain. Task 16's job is to
@@ -17,10 +16,10 @@ package proxy
 //   - allow_cidrs empty → allow by default (no allowlist).
 //   - block_countries match → deny.
 //   - allow_countries non-empty AND no match → deny.
-//   - country lookup returning ("", nil) is treated as "unknown" → deny when
-//     allow_countries is non-empty, allow otherwise (so the no-op default
-//     build never blocks on country, matching spec Part J's "geo build tag
-//     off → country filters noop").
+//   - a country that is unknown (no record, a failed lookup, no database) → deny
+//     when allow_countries is non-empty, allow otherwise. Without a database a
+//     block list is therefore not enforced; the API refuses to save one and
+//     /geo/status reports it.
 
 import (
 	"errors"
@@ -35,11 +34,9 @@ import (
 // GeoLookup resolves a visitor IP to an ISO-3166-1 alpha-2 country code.
 //
 // Implementations:
-//   - noopGeoLookup (default build): always returns ("", nil); the engine
-//     treats this as "country unknown" — which is then a no-op when no
-//     allow_countries list is configured. Spec Part J behaviour for the
-//     geo-tag-OFF build.
-//   - MMDBGeoLookup (geo build tag, Task 17): wraps oschwald/maxminddb-golang.
+//   - noopGeoLookup (no database configured): always returns ("", nil); the
+//     engine treats this as "country unknown".
+//   - MMDBGeoLookup: wraps oschwald/maxminddb-golang.
 type GeoLookup interface {
 	Country(ip net.IP) (string, error)
 	Enabled() bool
@@ -47,7 +44,7 @@ type GeoLookup interface {
 	DBAgeSeconds() int64
 }
 
-// noopGeoLookup is the default-build GeoLookup: it reports Enabled()=false
+// noopGeoLookup is the GeoLookup of a relay with no database: it reports Enabled()=false
 // and returns ("", nil) for every IP. The middleware treats "" as "unknown"
 // and skips country enforcement (so the country lists are accepted at the
 // API for forward-compat but never used in the default build).
@@ -113,8 +110,8 @@ type IPGeoEngine struct {
 }
 
 // NewIPGeoEngine wraps a compiled policy + a GeoLookup. A nil GeoLookup
-// is auto-replaced with NoopGeoLookup() so callers can pass nil for the
-// default build.
+// is auto-replaced with NoopGeoLookup() so callers can pass nil for no
+// database.
 func NewIPGeoEngine(policy IPGeoPolicy, geo GeoLookup) *IPGeoEngine {
 	if geo == nil {
 		geo = noopGeoLookup{}

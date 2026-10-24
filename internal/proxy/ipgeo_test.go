@@ -150,8 +150,7 @@ func TestIPGeo_CountryNoDatabase(t *testing.T) {
 }
 
 // TestIPGeo_CountryGeoEnabled verifies that with an enabled GeoLookup, the
-// engine enforces allow_countries + block_countries. This guards the path
-// Task 17 will light up under the geo build tag.
+// engine enforces allow_countries + block_countries.
 func TestIPGeo_CountryGeoEnabled(t *testing.T) {
 	p, _ := proxy.CompileIPGeoPolicy(nil, nil, []string{"us", " de "}, []string{"KP"})
 	// Confirm normaliseCountries upper-cases + trims.

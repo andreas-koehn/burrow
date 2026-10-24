@@ -746,8 +746,8 @@ func newRootCmd() *cobra.Command {
 
 			// v0.4.0 Task 25: compose every Task 3–23 engine into a single
 			// stack. The constructor honours cfg.PricingPath, auto-generates
-			// the audit signing key on first boot, and ships a no-op geo
-			// lookup in the default build (real MMDB under -tags geo).
+			// the audit signing key on first boot, and opens the
+			// GeoIP database named by BURROW_GEOIP_DB, if any.
 			v04, err := buildV04Stack(ctx, cfg, database, st, log)
 			if err != nil {
 				return err

@@ -115,15 +115,22 @@ func (x *DB) SetServiceIPGeo(ctx context.Context, cfg ServiceIPGeoConfig) error 
 	return nil
 }
 
-// CountCountryRules counts the services that have a country allow or block
-// list. Lists are stored as JSON arrays, so an empty one is "[]".
-func (x *DB) CountCountryRules(ctx context.Context) (int, error) {
+// CountCountryRules counts the services whose country rules apply: a country
+// allow or block list, and (http) the rules are enabled or (tcp) the access
+// mode is ip or open. ownerID limits the count to one user's services; ""
+// counts all. The lists are JSON arrays (JSONB on Postgres), compared as text
+// so both dialects take the same statement: an empty one is "[]".
+func (x *DB) CountCountryRules(ctx context.Context, ownerID string) (int, error) {
+	q := `SELECT COUNT(*) FROM service_ip_geo g JOIN services s ON s.id = g.service_id
+		  WHERE (CAST(g.allow_countries AS TEXT) NOT IN ('[]', '') OR CAST(g.block_countries AS TEXT) NOT IN ('[]', ''))
+		    AND ((s.type <> 'tcp' AND g.enabled) OR (s.type = 'tcp' AND s.access_mode IN ('ip', 'open')))`
+	var args []any
+	if ownerID != "" {
+		q += ` AND s.user_id = ?`
+		args = append(args, ownerID)
+	}
 	var n int
-	err := x.sqlDB.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM service_ip_geo
-		  WHERE (allow_countries <> '[]' AND allow_countries <> '')
-		     OR (block_countries <> '[]' AND block_countries <> '')`).Scan(&n)
-	if err != nil {
+	if err := x.sqlDB.QueryRowContext(ctx, q, args...).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count country rules: %w", err)
 	}
 	return n, nil

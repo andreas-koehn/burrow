@@ -17,6 +17,8 @@ import (
 type fakeIPGeoStore struct {
 	mu   sync.Mutex
 	rows map[string]db.ServiceIPGeoConfig
+	// lastOwner is the owner CountCountryRules was last asked for.
+	lastOwner string
 }
 
 func newFakeIPGeoStore() *fakeIPGeoStore {
@@ -359,7 +361,10 @@ func TestIPGeo_Status_Enabled(t *testing.T) {
 }
 
 // CountCountryRules counts the stored rows that have a country list.
-func (f *fakeIPGeoStore) CountCountryRules(context.Context) (int, error) {
+func (f *fakeIPGeoStore) CountCountryRules(_ context.Context, owner string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastOwner = owner
 	n := 0
 	for _, c := range f.rows {
 		if len(c.AllowCountries)+len(c.BlockCountries) > 0 {
@@ -385,7 +390,7 @@ func TestIPGeo_NoDatabase_CountryRulesRefused(t *testing.T) {
 	} {
 		r := c.put(t, "/api/v1/services/svc-1/ip-geo", body)
 		txt := readBody(t, r)
-		if r.StatusCode != http.StatusBadRequest || !strings.Contains(txt, "BURROW_GEOIP_DB") {
+		if r.StatusCode != http.StatusBadRequest || !strings.Contains(txt, "BURROW_GEOIP_DB") || !strings.Contains(txt, "restart") {
 			t.Fatalf("want 400 naming BURROW_GEOIP_DB, got %d %s", r.StatusCode, txt)
 		}
 	}
@@ -448,5 +453,68 @@ func TestIPGeo_WithDatabase_CountryRulesSaved(t *testing.T) {
 	_ = json.NewDecoder(r.Body).Decode(&view)
 	if !view.Enforced {
 		t.Error("rules with a database must be enforced")
+	}
+}
+
+// Country lists a service already has (saved while a database was there) do
+// not block saving the rest; adding a country still does, removing one and
+// clearing do not.
+func TestIPGeo_NoDatabase_LegacyCountryRulesDoNotBlockSaves(t *testing.T) {
+	d, store := makeIPGeoDeps(t, "user", "u-self")
+	store.rows["svc-1"] = db.ServiceIPGeoConfig{ServiceID: "svc-1", Enabled: true,
+		AllowCountries: []string{"DE", "AT"}, BlockCountries: []string{"KP"}}
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+	put := func(b ipGeoReq) int { return c.put(t, "/api/v1/services/svc-1/ip-geo", b).StatusCode }
+
+	if got := put(ipGeoReq{Enabled: true, BlockCIDRs: []string{"10.0.0.0/8"}, AllowCountries: []string{"de", "AT"}, BlockCountries: []string{"KP"}}); got != http.StatusNoContent {
+		t.Fatalf("same lists plus a CIDR: %d", got)
+	}
+	if got := put(ipGeoReq{AllowCountries: []string{"DE", "AT", "FR"}, BlockCountries: []string{"KP"}}); got != http.StatusBadRequest {
+		t.Fatalf("an added country: %d", got)
+	}
+	if got := put(ipGeoReq{AllowCountries: []string{"DE"}}); got != http.StatusNoContent {
+		t.Fatalf("a smaller list: %d", got)
+	}
+	if got := put(ipGeoReq{BlockCountries: []string{"RU"}}); got != http.StatusBadRequest {
+		t.Fatalf("a changed block list: %d", got)
+	}
+	if got := put(ipGeoReq{}); got != http.StatusNoContent {
+		t.Fatalf("clearing: %d", got)
+	}
+}
+
+// The 400 does not tell to restart when a path is set (the file is picked
+// up by itself).
+func TestIPGeo_NoDatabase_MessageWithPath(t *testing.T) {
+	d, _ := makeIPGeoDeps(t, "user", "u-self")
+	d.GeoLookup = fakeGeoLookupSurface{enabled: false, dbPath: "/data/geo.mmdb"}
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+	r := c.put(t, "/api/v1/services/svc-1/ip-geo", ipGeoReq{BlockCountries: []string{"KP"}})
+	txt := readBody(t, r)
+	if r.StatusCode != http.StatusBadRequest || !strings.Contains(txt, "/data/geo.mmdb") || strings.Contains(txt, "restart") {
+		t.Fatalf("%d %s", r.StatusCode, txt)
+	}
+}
+
+// The count of rules that are not enforced is scoped to the caller: a user
+// who manages only their own services is counted for their own.
+func TestIPGeo_Status_CountScopedToCaller(t *testing.T) {
+	d, store := makeIPGeoDeps(t, "user", "u-self")
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	authedClient(t, srv).get(t, "/api/v1/geo/status")
+	if store.lastOwner != "u-self" {
+		t.Errorf("count asked for owner %q, want u-self", store.lastOwner)
+	}
+	d2, store2 := makeIPGeoDeps(t, "admin", "u-self")
+	srv2 := httptest.NewServer(NewRouter(d2))
+	defer srv2.Close()
+	authedClient(t, srv2).get(t, "/api/v1/geo/status")
+	if store2.lastOwner != "" {
+		t.Errorf("an admin's count asked for owner %q, want all", store2.lastOwner)
 	}
 }

@@ -1,9 +1,8 @@
 package main
 
-// e2e_ipgeo_geo_test.go — Task 9 of the v0.4.0 integration plan (geo
-// build-tag half). Smoke test that proves block_countries enforcement
-// engages end-to-end when the binary is built with -tags geo and the
-// MMDB-backed lookup is wired.
+// e2e_ipgeo_geo_test.go — Task 9 of the v0.4.0 integration plan (real
+// database half). Smoke test that proves block_countries enforcement
+// engages end-to-end when the MMDB-backed lookup is wired.
 //
 // The bundled MaxMind test database under internal/proxy/testdata/ is
 // extremely sparse — it only covers a handful of networks (GB / SE / PH
@@ -38,7 +37,7 @@ import (
 )
 
 // TestE2EIPGeo_CountriesGated proves block_countries enforcement engages
-// when the geo build tag is on and the MMDB lookup is wired. SKIPs when
+// when the MMDB lookup is wired. SKIPs when
 // the bundled test mmdb is missing — the country path is smoke-only by
 // design (the heavy lifting is covered by the proxy package's own
 // geo_test.go fixture probes).
@@ -57,7 +56,7 @@ func TestE2EIPGeo_CountriesGated(t *testing.T) {
 		t.Fatalf("OpenGeoDB(%s): %v", mmdbPath, err)
 	}
 	if !geoLookup.Enabled() {
-		t.Fatal("OpenGeoDB returned disabled lookup despite -tags geo build")
+		t.Fatal("OpenGeoDB returned disabled lookup despite a database path")
 	}
 
 	s := bootE2EStack(t)
@@ -192,8 +191,7 @@ func startGeoListener(t *testing.T, s *e2eStack, trustedProxies []*net.IPNet, ge
 }
 
 // geoVisitorClient builds an *http.Client wired to the geo listener.
-// Same shape as the default-build helper; lives in this file so the
-// non-geo build never compiles it.
+// Same shape as the helper of the no-database test.
 func geoVisitorClient(t *testing.T, l *ipGeoListener, hostname string) *http.Client {
 	t.Helper()
 	jar, err := cookiejar.New(nil)

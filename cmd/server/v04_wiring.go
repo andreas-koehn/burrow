@@ -262,6 +262,7 @@ func buildV04Stack(
 		// it) and the watcher picks the file up when it becomes readable.
 		log.Warn("geoip database not loaded; country rules are not enforced", "path", cfg.GeoDBPath, "err", err)
 	}
+	warnUnenforcedCountryRules(ctx, log, geoLookup, wrapped, cfg.GeoDBPath)
 	if w, ok := geoLookup.(*proxy.MMDBGeoLookup); ok {
 		go w.Watch(ctx, proxy.GeoReloadInterval, func(reloaded bool, err error) {
 			if err != nil {
@@ -500,4 +501,27 @@ func (a inspectorReplayerAdapter) Replay(ctx context.Context, serviceID string, 
 		w.WriteHeader(http.StatusOK)
 	})
 	return a.chain.Replay(ctx, svc, r, noUpstream)
+}
+
+// countryRuleCounter counts the services whose country rules apply.
+type countryRuleCounter interface {
+	CountCountryRules(ctx context.Context, ownerID string) (int, error)
+}
+
+// warnUnenforcedCountryRules logs, at start, that services have country rules
+// while no database is loaded: nothing enforces a block list, and an allow
+// list lets nobody in by country.
+func warnUnenforcedCountryRules(ctx context.Context, log *slog.Logger, geo proxy.GeoLookup, c countryRuleCounter, path string) {
+	if geo != nil && geo.Enabled() {
+		return
+	}
+	n, err := c.CountCountryRules(ctx, "")
+	if err != nil {
+		log.Warn("could not count the country rules", "err", err)
+		return
+	}
+	if n > 0 {
+		log.Warn("services have country rules but no GeoIP database is loaded: block lists are not enforced and allow lists admit nobody by country; set BURROW_GEOIP_DB to a GeoLite2-Country .mmdb",
+			"services", n, "BURROW_GEOIP_DB", path)
+	}
 }

@@ -17,7 +17,7 @@ package main
 //
 // The country-code path is checked in TestE2EIPGeo_CountriesGated
 // (//go:build geo, separate file e2e_ipgeo_geo_test.go), which uses the
-// bundled MaxMind test mmdb to assert real lookups. The default build's
+// bundled MaxMind test mmdb to assert real lookups. The no-database
 // noopGeoLookup makes country lists a no-op even when set on the service
 // config — this file verifies that "geo OFF + CIDR-only" continues to
 // enforce the CIDR allowlist.
@@ -191,7 +191,7 @@ func (l *ipGeoListener) visitorClient(t *testing.T, hostname string) *http.Clien
 	}
 }
 
-// TestE2EIPGeo_CIDRAllowBlock verifies the default-build CIDR allow/block
+// TestE2EIPGeo_CIDRAllowBlock verifies the no-database CIDR allow/block
 // enforcement and the geo-OFF behaviour of the global /geo/status surface.
 //
 // Steps mirror the v0.4.0 integration plan, Task 9:
@@ -289,7 +289,7 @@ func TestE2EIPGeo_CIDRAllowBlock(t *testing.T) {
 		BlockCountries: []string{},
 	}), "SetServiceIPGeo(+allow_countries)")
 
-	// GET /api/v1/geo/status → enabled:false (default build).
+	// GET /api/v1/geo/status → enabled:false (no database).
 	apiSrv, apiClient := startAPIForIPGeoTest(t, s)
 	defer apiSrv.Close()
 
@@ -305,7 +305,7 @@ func TestE2EIPGeo_CIDRAllowBlock(t *testing.T) {
 		t.Fatalf("decode /geo/status: %v body=%s", err, statusBody)
 	}
 	if got, _ := status["enabled"].(bool); got {
-		t.Errorf("/geo/status.enabled: want false in default build, got %v body=%s", got, statusBody)
+		t.Errorf("/geo/status.enabled: want false without a database, got %v body=%s", got, statusBody)
 	}
 
 	// An allow list of countries with no database fails closed.
@@ -408,7 +408,7 @@ type ipgeoAPIClient struct {
 
 // startAPIForIPGeoTest mounts api.NewRouter against the same store the
 // e2e stack uses, with GeoLookup=NoopGeoLookup() so /geo/status reports
-// the default-build enabled=false. Returns a logged-in client whose
+// enabled=false. Returns a logged-in client whose
 // Jar carries burrow_session.
 func startAPIForIPGeoTest(t *testing.T, s *e2eStack) (*httptest.Server, *ipgeoAPIClient) {
 	t.Helper()

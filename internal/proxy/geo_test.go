@@ -1,8 +1,6 @@
 package proxy_test
 
-// geo_test.go — exercises the mmdb-backed GeoLookup (Task 17). Built
-// only with `-tags geo`. The default build path never compiles this
-// file (so the gate `go test ./...` stays free of the mmdb dep).
+// geo_test.go — exercises the mmdb-backed GeoLookup.
 //
 // Fixture: internal/proxy/testdata/GeoLite2-Country-Test.mmdb is the
 // upstream MaxMind test database (Apache-2.0-equivalent license,
@@ -157,7 +155,7 @@ func TestGeoMMDBLookup_OpenGeoDBFactory(t *testing.T) {
 		t.Errorf("Country(81.2.69.142) = %q; want %q", got, "GB")
 	}
 	if !proxy.GeoBuildTagEnabled() {
-		t.Error("GeoBuildTagEnabled() = false in -tags geo build; want true")
+		t.Error("GeoBuildTagEnabled() = false in build; want true")
 	}
 }
 
@@ -320,5 +318,49 @@ func TestProxy_IPGeoDenied_RealDatabase(t *testing.T) {
 	}
 	if bare.IPGeoDenied(block, req) {
 		t.Error("a block list of countries denied a request with no database")
+	}
+}
+
+// Lookups during reloads: run with -race. Every lookup sees a database (the
+// old reader or the new), never a closed one.
+func TestGeoMMDB_LookupsDuringReload(t *testing.T) {
+	dir := t.TempDir()
+	path := copyFixture(t, dir, "geo.mmdb")
+	m, err := proxy.OpenMMDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	for i := 0; i < 4; i++ {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			ip := net.ParseIP("89.160.20.112")
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if cc, err := m.Country(ip); err != nil || cc != "SE" {
+					t.Errorf("lookup during reload: %q, %v", cc, err)
+					return
+				}
+				m.Enabled()
+			}
+		}()
+	}
+	for i := 0; i < 20; i++ {
+		copyFixture(t, dir, "geo.mmdb")
+		ft := time.Now().Add(time.Duration(i+1) * time.Minute)
+		_ = os.Chtimes(path, ft, ft)
+		if _, err := m.Reload(); err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+	}
+	close(stop)
+	for i := 0; i < 4; i++ {
+		<-done
 	}
 }
