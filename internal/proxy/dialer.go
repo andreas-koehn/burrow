@@ -8,10 +8,11 @@
 // Forwarded headers from visitors are stripped and replaced with authoritative
 // values set by this proxy.
 //
-// h2c is explicitly not supported. Any request carrying "Upgrade: h2c" is
-// answered with HTTP 505 (HTTP Version Not Supported). This is documented and
-// permanent: Burrow's ingress is HTTP/1.1 over TLS; h2c (cleartext HTTP/2
-// upgrade) has no place in this stack.
+// Visitors may speak HTTP/1.1 or HTTP/2. Over TLS, HTTP/2 is negotiated by
+// ALPN. On a plain listener, prior-knowledge h2c is accepted (unless
+// BURROW_HTTP_H2C is off), as a TLS-terminating proxy in front sends it. The
+// "Upgrade: h2c" flavour is refused: any request carrying it is answered with
+// HTTP 505 (HTTP Version Not Supported), against request smuggling.
 //
 // WebSocket upgrades are handled transparently by httputil.ReverseProxy (Go
 // ≥ 1.20). No extra code is required; the Upgrade and Connection headers pass

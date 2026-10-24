@@ -1113,3 +1113,33 @@ func TestLoadServer_OAuthGrantRPM(t *testing.T) {
 		t.Fatal("a negative oauth_grant_rpm is accepted")
 	}
 }
+
+func TestServerHTTPH2CDefaultAndValues(t *testing.T) {
+	c, err := LoadServer(nil)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if !c.HTTPH2C {
+		t.Fatalf("default http_h2c must be true")
+	}
+	for value, want := range map[string]bool{"1": true, "TRUE": true, "true": true, "": true, "0": false, "false": false, "FALSE": false} {
+		t.Run("value="+value, func(t *testing.T) {
+			t.Setenv("BURROW_HTTP_H2C", value)
+			c, err := LoadServer(nil)
+			if err != nil {
+				t.Fatalf("LoadServer: %v", err)
+			}
+			if c.HTTPH2C != want {
+				t.Fatalf("http_h2c = %v, want %v", c.HTTPH2C, want)
+			}
+		})
+	}
+	for _, value := range []string{"yes", "on", "2", "enabled"} {
+		t.Run("invalid="+value, func(t *testing.T) {
+			t.Setenv("BURROW_HTTP_H2C", value)
+			if c, err := LoadServer(nil); err == nil {
+				t.Fatalf("LoadServer accepted %q (parsed as %v)", value, c.HTTPH2C)
+			}
+		})
+	}
+}

@@ -980,6 +980,9 @@ func newRootCmd() *cobra.Command {
 				} else {
 					proxyTLSCfg.GetCertificate = customGet
 				}
+				// Explicit ALPN list (H1): h2, http/1.1, and acme-tls/1 under
+				// ACME. The mTLS per-vhost clones inherit it.
+				ensureIngressNextProtos(proxyTLSCfg)
 				proxyOpts = append(proxyOpts, proxy.WithTLSBase(proxyTLSCfg))
 			}
 			// The proxy's doors do not know a gateway-only service, by slug
@@ -1242,6 +1245,10 @@ func newRootCmd() *cobra.Command {
 			} else if httpsEnabled {
 				apiSrv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 			}
+			if apiSrv.TLSConfig != nil {
+				ensureIngressNextProtos(apiSrv.TLSConfig)
+			}
+			applyIngressProtocols(apiSrv, apiSrv.TLSConfig != nil, cfg.HTTPH2C)
 
 			// senderCount tracks how many goroutines send on errc; capacity must
 			// equal senderCount so that no sender ever blocks after shutdown.
@@ -1304,6 +1311,7 @@ func newRootCmd() *cobra.Command {
 					// vhosts use the base config (no client cert required).
 					proxySrv.TLSConfig = proxyTLSCfg
 				}
+				applyIngressProtocols(proxySrv, proxyTLSCfg != nil, cfg.HTTPH2C)
 			}
 
 			errc := make(chan error, senderCount)

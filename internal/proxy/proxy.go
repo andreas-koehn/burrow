@@ -345,9 +345,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		host = h
 	}
 
-	// h2c upgrade: not supported.
-	// Respond 505 HTTP Version Not Supported. h2c (cleartext HTTP/2 upgrade)
-	// is out of scope for Burrow's ingress (see package-level doc).
+	// h2c upgrade: not supported. Prior-knowledge h2c is served by the
+	// listener, but the Upgrade: h2c flavour stays refused with 505 HTTP
+	// Version Not Supported (request smuggling; see package-level doc).
 	if strings.EqualFold(r.Header.Get("Upgrade"), "h2c") {
 		http.Error(w, "h2c not supported", http.StatusHTTPVersionNotSupported)
 		return

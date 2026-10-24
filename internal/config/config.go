@@ -111,6 +111,14 @@ type ServerConfig struct {
 	// service is reached by its own host name only (tcp_hostname).
 	// Env: BURROW_TCP_DOMAIN.
 	TCPDomain string `koanf:"tcp_domain"`
+	// HTTPH2C lets the plain-text public HTTP listeners (the dashboard/API
+	// listener and the host-routed ingress, when they run without TLS) accept
+	// prior-knowledge HTTP/2 (h2c), as a TLS-terminating proxy such as Traefik
+	// with scheme=h2c speaks it. The Upgrade: h2c flavour stays refused.
+	// Default true. A value that is not a boolean stops the server; an empty
+	// value keeps the default.
+	// Env: BURROW_HTTP_H2C.
+	HTTPH2C bool `koanf:"http_h2c"`
 	// TLSPassthroughTrustedProxies are the proxies in front of the TLS
 	// passthrough listener (CIDRs or addresses, e.g. Traefik's address on the
 	// Docker network). Each connection from one must start with a PROXY
@@ -255,6 +263,10 @@ func envProvider(prefix string) *env.Env {
 func burrowEnvProvider() *env.Env {
 	return env.ProviderWithValue("BURROW_", ".", func(rawKey, rawVal string) (string, interface{}) {
 		key := strings.ReplaceAll(strings.ToLower(strings.TrimPrefix(rawKey, "BURROW_")), "__", ".")
+		if key == "http_h2c" && strings.TrimSpace(rawVal) == "" {
+			// An empty value is "not set": the default (true) stays.
+			return "", nil
+		}
 		if key == "trusted_proxies" || key == "tls_passthrough_trusted_proxies" {
 			if rawVal == "" {
 				return key, []string{}
@@ -433,6 +445,8 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 		"http_proxy_listen": "", "http_proxy_tls_cert": "", "http_proxy_tls_key": "", "auth_domain": "",
 		// services_domain defaults to empty: /svc/ is served on the dashboard's host.
 		"services_domain": "",
+		// http_h2c defaults to true: plain listeners accept prior-knowledge h2c.
+		"http_h2c": true,
 		// v0.4.0 (Task 24) defaults. The empty-string defaults disable the
 		// associated feature (geo lookup, pricing override); mcp_listen is
 		// read and ignored.
