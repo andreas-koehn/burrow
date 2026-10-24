@@ -346,14 +346,17 @@ func TestTCPSettings_TheCapabilityIsKept(t *testing.T) {
 	}
 }
 
-// Bytes in one direction only keep a connection alive.
+// Bytes in one direction only keep a connection alive. The timeout is ten
+// times the write interval, so a loaded machine (the whole suite under -race)
+// that stretches a sleep or the pairing does not look like silence; the read
+// still spans three timeouts, so a sweeper counting one direction fails it.
 func TestTCPIdle_OneWayTrafficKeepsAConnection(t *testing.T) {
 	res, access, log := newTCPResolver(), newFakeTCPAccess(), &recConnLog{}
-	res.idle["svc-feed"] = 300 * time.Millisecond
+	res.idle["svc-feed"] = time.Second
 	r := tcpRelay(t, 19537, 19537, res, func(o *Options) { o.TCPAccess, o.ConnLog = access, log })
 	r.srv.idleTick = 20 * time.Millisecond
 	home := r.client(func(st *yamux.Stream) {
-		for i := 0; i < 20; i++ {
+		for i := 0; i < 40; i++ {
 			if _, err := st.Write([]byte("t")); err != nil {
 				return
 			}
@@ -368,8 +371,8 @@ func TestTCPIdle_OneWayTrafficKeepsAConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	buf := make([]byte, 12) // 1.2 s of ticks, four times the timeout
+	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	buf := make([]byte, 30) // 3 s of writes, three times the timeout
 	if _, err := io.ReadFull(conn, buf); err != nil {
 		t.Fatalf("the feed was cut: %v", err)
 	}

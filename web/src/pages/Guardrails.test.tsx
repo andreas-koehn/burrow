@@ -516,8 +516,12 @@ describe("Guardrails: answers, custom patterns and the judge (G07)", () => {
       // Another admin changes the judge.
       db.guardrailSettings.global.judge = { ...SEEDED.judge, policy: "No medical advice.", timeout_ms: 5000 };
       await refetch(qc);
-      await waitFor(() => expect(screen.getByLabelText("Policy")).toHaveValue("No medical advice."));
-      expect(screen.getByLabelText("Time limit (ms)")).toHaveValue(5000);
+      // The policy shows the draft directly; the time limit's text follows it in an effect one commit later,
+      // so a waitFor that returns on the policy alone can still see the old limit.
+      await waitFor(() => {
+        expect(screen.getByLabelText("Policy")).toHaveValue("No medical advice.");
+        expect(screen.getByLabelText("Time limit (ms)")).toHaveValue(5000);
+      });
     });
 
     it("a judge draft being edited is kept when the stored settings change", async () => {
