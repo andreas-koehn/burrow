@@ -533,6 +533,11 @@ type Deps struct {
 	// (BURROW_TLS_PASSTHROUGH_ON_HTTPS): the relay's own names then shadow
 	// a tcp service's name there (shadowed_by "relay").
 	TLSPassthroughMux bool
+	// TLSPassthroughListen is BURROW_TLS_PASSTHROUGH_LISTEN: the dedicated
+	// listener, which does not consult custom domains. With TLSPassthrough
+	// set and neither this nor TLSPassthroughMux, the dedicated listener is
+	// assumed (the address is then unknown).
+	TLSPassthroughListen string
 	// TCPPortMin and TCPPortMax are the range of public tcp ports
 	// (BURROW_PORT_MIN, BURROW_PORT_MAX): POST /services refuses a fixed port
 	// outside it. 0 for both: no range check.

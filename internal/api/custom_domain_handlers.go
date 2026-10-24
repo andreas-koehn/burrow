@@ -438,9 +438,15 @@ func (d Deps) PostCustomDomain(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	in.Hostname = strings.ToLower(strings.TrimSpace(in.Hostname))
-	if in.Hostname == "" {
+	if strings.TrimSpace(in.Hostname) == "" {
 		writeErr(w, http.StatusBadRequest, "hostname is required")
+		return
+	}
+	// Normalised before any check, so a trailing dot or a wildcard cannot
+	// slip past the ownership refusals (H12).
+	var nameOK bool
+	if in.Hostname, nameOK = db.NormalizeDomainName(in.Hostname); !nameOK {
+		writeErr(w, http.StatusBadRequest, "hostname must be a DNS name such as app.example.com (letters, digits and '-', an international name in punycode, at most one leading \"*.\")")
 		return
 	}
 	if why := d.customDomainRefusal(in.Hostname); why != "" {
@@ -474,6 +480,10 @@ func (d Deps) PostCustomDomain(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, db.ErrHostIsTCPName) {
 			writeErr(w, http.StatusConflict, "hostname is a tcp host name")
+			return
+		}
+		if errors.Is(err, db.ErrInvalidHostname) {
+			writeErr(w, http.StatusBadRequest, "hostname must be a DNS name such as app.example.com")
 			return
 		}
 		if errors.Is(err, db.ErrDuplicateHostname) {
@@ -568,9 +578,15 @@ func (d Deps) PutCustomDomain(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	in.Hostname = strings.ToLower(strings.TrimSpace(in.Hostname))
-	if in.Hostname == "" {
+	if strings.TrimSpace(in.Hostname) == "" {
 		writeErr(w, http.StatusBadRequest, "hostname is required")
+		return
+	}
+	// Normalised before any check, so a trailing dot or a wildcard cannot
+	// slip past the ownership refusals (H12).
+	var nameOK bool
+	if in.Hostname, nameOK = db.NormalizeDomainName(in.Hostname); !nameOK {
+		writeErr(w, http.StatusBadRequest, "hostname must be a DNS name such as app.example.com (letters, digits and '-', an international name in punycode, at most one leading \"*.\")")
 		return
 	}
 	if why := d.customDomainRefusal(in.Hostname); why != "" {
@@ -611,6 +627,10 @@ func (d Deps) PutCustomDomain(w http.ResponseWriter, r *http.Request) {
 		}
 		if errors.Is(err, db.ErrHostIsTCPName) {
 			writeErr(w, http.StatusConflict, "hostname is a tcp host name")
+			return
+		}
+		if errors.Is(err, db.ErrInvalidHostname) {
+			writeErr(w, http.StatusBadRequest, "hostname must be a DNS name such as app.example.com")
 			return
 		}
 		if errors.Is(err, db.ErrDuplicateHostname) {

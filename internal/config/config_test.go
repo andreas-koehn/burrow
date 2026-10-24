@@ -1203,6 +1203,8 @@ func TestLoadServer_TCPDomainIsDisjoint(t *testing.T) {
 	for _, tc := range []struct{ acme, services, tcp string }{
 		{"burrow.example.com", "", "burrow.example.com"},              // an ACME name
 		{"burrow.example.com,other.example.org", "", "example.org"},   // a parent of an ACME name
+		{"Burrow.Example.com.", "", "burrow.example.com"},             // a trailing dot does not hide it
+		{"burrow.example.com,other.example.org.", "", "example.org"},  // nor does it on a parent
 		{"burrow.example.com", "", "example.com"},                     // a parent of the dashboard's
 		{"burrow.example.com,x.other.example.org", "", "example.org"}, // a parent, second name
 		{"burrow.example.com", "a.apps.example.net", "example.net"},   // a parent of the services host

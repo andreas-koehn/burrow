@@ -38,8 +38,15 @@ type tcpHostnameResp struct {
 	// serves instead (H12): "custom_domain" when a custom domain covers it,
 	// "relay" when the relay serves it itself on its HTTPS port (only while
 	// the 443 mux runs). Absent when no name is shadowed. A shadowed name
-	// reaches no tcp service; reachable is false when every name is.
+	// reaches no tcp service on the mux; the first owner found is reported.
+	// Only while the 443 mux runs: the dedicated listener does not consult
+	// custom domains.
 	ShadowedBy string `json:"shadowed_by,omitempty"`
+	// ReachableOn says where a client naming the service reaches it now:
+	// "https" (the 443 mux, with at least one name not shadowed and the
+	// lookup healthy) and the dedicated listener's address. Reachable is
+	// true when it is not empty.
+	ReachableOn []string `json:"reachable_on"`
 }
 
 // tcpHostnameReq sets the host name ("" clears it), whether the service is
@@ -67,19 +74,31 @@ func (d Deps) tcpHostnames(h store.TCPHostname) []string {
 }
 
 func (d Deps) tcpHostnameView(ctx context.Context, h store.TCPHostname) tcpHostnameResp {
-	out := tcpHostnameResp{TCPHostname: h.Hostname, Hostnames: d.tcpHostnames(h), Passthrough: d.TLSPassthrough, HostnameOnly: h.HostnameOnly}
+	out := tcpHostnameResp{TCPHostname: h.Hostname, Hostnames: d.tcpHostnames(h), Passthrough: d.TLSPassthrough, HostnameOnly: h.HostnameOnly, ReachableOn: []string{}}
 	open := h.AccessMode == "" || h.AccessMode == "open" || h.AccessMode == "ip"
+	// The http side wins a name only on the 443 mux; the dedicated listener
+	// does not consult custom domains or the relay's names.
 	free := 0
 	for _, n := range out.Hostnames {
-		if by := d.shadowedBy(ctx, n); by != "" {
-			if out.ShadowedBy == "" {
-				out.ShadowedBy = by
-			}
-			continue
+		by, unknown := d.shadowedBy(ctx, n)
+		if by != "" && out.ShadowedBy == "" {
+			out.ShadowedBy = by
 		}
-		free++
+		if by == "" && !unknown {
+			free++
+		}
 	}
-	out.Reachable = d.TLSPassthrough && open && free > 0
+	if open && len(out.Hostnames) > 0 {
+		if d.TLSPassthroughMux && free > 0 {
+			out.ReachableOn = append(out.ReachableOn, "https")
+		}
+		if d.TLSPassthroughListen != "" {
+			out.ReachableOn = append(out.ReachableOn, d.TLSPassthroughListen)
+		} else if d.TLSPassthrough && !d.TLSPassthroughMux {
+			out.ReachableOn = append(out.ReachableOn, "passthrough_listener")
+		}
+	}
+	out.Reachable = len(out.ReachableOn) > 0
 	return out
 }
 
@@ -89,23 +108,28 @@ type domainCoverer interface {
 	CustomDomainCovers(ctx context.Context, name string) (bool, error)
 }
 
-// shadowedBy says which owner the http side wins a tcp name with, in the
-// mux's order (H11 2-3): "relay", then "custom_domain"; "" for none. The
-// relay's own names shadow only while the 443 mux runs, since the dedicated
-// listener does not terminate. A failing lookup shadows nothing here.
-func (d Deps) shadowedBy(ctx context.Context, name string) string {
-	if !d.TLSPassthrough {
-		return ""
+// shadowedBy says which owner the http side wins a tcp name with on the
+// 443 mux, in the mux's order (H11 2-3): "relay", then "custom_domain"; ""
+// for none. Without the mux nothing shadows. unknown is true when the
+// lookup failed: the mux terminates then, so the name does not count as
+// reachable there, and no owner is claimed.
+func (d Deps) shadowedBy(ctx context.Context, name string) (by string, unknown bool) {
+	if !d.TLSPassthroughMux {
+		return "", false
 	}
-	if d.TLSPassthroughMux && d.RelayNames.Owns(name) {
-		return "relay"
+	if d.RelayNames.Owns(name) {
+		return "relay", false
 	}
 	if c, ok := d.CustomDomains.(domainCoverer); ok {
-		if covers, err := c.CustomDomainCovers(ctx, name); err == nil && covers {
-			return "custom_domain"
+		covers, err := c.CustomDomainCovers(ctx, name)
+		if err != nil {
+			return "", true
+		}
+		if covers {
+			return "custom_domain", false
 		}
 	}
-	return ""
+	return "", false
 }
 
 // underName reports whether name is dom or lies under it.

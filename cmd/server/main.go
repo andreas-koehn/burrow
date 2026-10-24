@@ -1159,7 +1159,8 @@ func newRootCmd() *cobra.Command {
 				ACMENames:      acmeCertNames(cfg, acmeMgr),
 				TLSPassthrough: passthroughOn(cfg),
 				// The relay's own names shadow a tcp name on the mux only.
-				TLSPassthroughMux: cfg.TLSPassthroughOnHTTPS,
+				TLSPassthroughMux:    cfg.TLSPassthroughOnHTTPS,
+				TLSPassthroughListen: cfg.TLSPassthroughListen,
 				Ingress: api.IngressInfo{
 					H2C: cfg.HTTPH2C, HTTPSPassthrough: cfg.TLSPassthroughOnHTTPS,
 					PassthroughListen: cfg.TLSPassthroughListen, ACME: acmeMgr != nil,

@@ -1265,7 +1265,7 @@ components:
     TcpHostname:
       type: object
       description: The TLS passthrough host names of a tcp service.
-      required: [tcp_hostname, hostnames, passthrough, reachable, hostname_only]
+      required: [tcp_hostname, hostnames, passthrough, reachable, reachable_on, hostname_only]
       properties:
         tcp_hostname:
           type: string
@@ -1285,21 +1285,31 @@ components:
           description: >
             A TLS client that names one of hostnames reaches the service now:
             the listener runs, the service has a name, and it is in mode open
-            or ip (a private service is never reached by name), and at least
-            one of the names is not shadowed (see shadowed_by).
+            or ip (a private service is never reached by name), on at least
+            one listener (see reachable_on).
+        reachable_on:
+          type: array
+          items: { type: string }
+          description: >
+            Where a client naming the service reaches it now: `https` (the
+            443 mux, while at least one name is not shadowed and the custom
+            domain lookup works) and the address of the dedicated listener
+            (BURROW_TLS_PASSTHROUGH_LISTEN; `passthrough_listener` when the
+            relay does not tell it). Empty when reachable is false.
         shadowed_by:
           type: string
           enum: [custom_domain, relay]
           description: >
-            Present when the http side owns a name of the service and wins it
-            (one owner per host name, rows from before the write-time checks):
-            `custom_domain` when a custom domain of an http service covers it,
-            `relay` when the relay serves it itself on its HTTPS port (its
-            certificate or ACME names, the dashboard's host and the names under
-            it; only while BURROW_TLS_PASSTHROUGH_ON_HTTPS is on). The relay
-            terminates TLS for a shadowed name and logs a warning once; it never
-            hands the bytes to the tcp service. reachable is false when every
-            name is shadowed.
+            Present only while the 443 mux runs (the dedicated listener does
+            not consult custom domains), when the http side owns a name of the
+            service and wins it (one owner per host name; rows from before the
+            write-time checks). Reports the first owner found, in the mux's
+            order: `custom_domain` when a custom domain of an http service
+            covers a name, `relay` when the relay serves it itself on its HTTPS
+            port (its certificate or ACME names, the dashboard's host and the
+            names under it). The mux terminates TLS for a shadowed name and
+            logs a warning once; it never hands the bytes to the tcp service.
+            A shadowed name can still be reached on the dedicated listener.
         hostname_only:
           type: boolean
           description: >

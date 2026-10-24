@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -39,10 +40,24 @@ func checkHostOwnership(t *testing.T, x *DB, userID string) {
 			t.Errorf("insert %s: %v, want ErrHostIsTCPName", h, err)
 		}
 	}
+	// A trailing dot or upper case is the same name; a name that is none is
+	// refused and stored nowhere.
+	for _, h := range []string{"rdp.hostown.example.", "RDP.HostOwn.example.", "*.hostown.example."} {
+		if _, err := x.InsertCustomDomain(ctx, hostOwnDomain(web, h)); !errors.Is(err, ErrHostIsTCPName) {
+			t.Errorf("insert %s: %v, want ErrHostIsTCPName", h, err)
+		}
+	}
+	for _, h := range []string{"a..hostown.example", "*.*.hostown.example", "b\u00fccher.example", "-a.example", ""} {
+		if _, err := x.InsertCustomDomain(ctx, hostOwnDomain(web, h)); !errors.Is(err, ErrInvalidHostname) {
+			t.Errorf("insert %q: %v, want ErrInvalidHostname", h, err)
+		}
+	}
 	// Neighbours are free.
-	for _, h := range []string{"xrdp.hostown.example", "web.hostown.example", "*.rdp.hostown.example", "other.example"} {
-		if _, err := x.InsertCustomDomain(ctx, hostOwnDomain(web, h)); err != nil {
+	for _, h := range []string{"xrdp.hostown.example", "Web.hostown.example.", "*.rdp.hostown.example", "other.example"} {
+		if got, err := x.InsertCustomDomain(ctx, hostOwnDomain(web, h)); err != nil {
 			t.Errorf("insert %s: %v", h, err)
+		} else if got.Hostname != strings.ToLower(strings.TrimSuffix(h, ".")) {
+			t.Errorf("insert %s stored as %q", h, got.Hostname)
 		}
 	}
 	// An update to a tcp name is refused as well; the row stays as it was.
@@ -77,8 +92,26 @@ func checkHostOwnership(t *testing.T, x *DB, userID string) {
 	}
 }
 
+func TestNormalizeDomainName(t *testing.T) {
+	for in, want := range map[string]string{"A.Example.com.": "a.example.com", " *.Example.com ": "*.example.com", "xn--bcher-kva.example": "xn--bcher-kva.example"} {
+		if got, ok := NormalizeDomainName(in); !ok || got != want {
+			t.Errorf("%q: %q %v, want %q", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"", ".", "example", "*.com", "a..b.com", "*.*.b.com", "b\u00fccher.com", "a.b.com..", "-a.b.com", "a_b.com", "1.2.3.4"} {
+		if got, ok := NormalizeDomainName(in); ok {
+			t.Errorf("%q accepted as %q", in, got)
+		}
+	}
+}
+
 // Two writers on one name: a custom domain and a tcp_hostname at the same
 // time never both succeed, and one of them does.
+//
+// SQLite has one connection, so its transactions are serialised anyway: on
+// SQLite this proves the outcome, not the lock. The lock (hostOwnerMu) is
+// what the Postgres run proves: without it both transactions read the other's
+// state before either commits (READ COMMITTED).
 func TestHostOwnershipRace(t *testing.T) { checkHostOwnershipRace(t, testDB(t), "u-hostrace") }
 
 func checkHostOwnershipRace(t *testing.T, x *DB, userID string) {

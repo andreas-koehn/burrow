@@ -647,7 +647,7 @@ func cleanTCPDomain(c *ServerConfig) error {
 	// domain's names may not be a name above one.
 	acme := []string{c.ServicesDomain}
 	for _, n := range strings.Split(c.ACMEDomain, ",") {
-		acme = append(acme, strings.ToLower(strings.TrimSpace(n)))
+		acme = append(acme, strings.TrimSuffix(strings.ToLower(strings.TrimSpace(n)), "."))
 	}
 	for _, n := range acme {
 		if n == "" {

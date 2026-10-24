@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +18,10 @@ import (
 // when the hostname is already bound to another service.
 func (x *DB) InsertCustomDomain(ctx context.Context, d ServiceCustomDomain) (ServiceCustomDomain, error) {
 	d.ID = uuid.NewString()
-	d.Hostname = strings.ToLower(d.Hostname)
+	var ok bool
+	if d.Hostname, ok = NormalizeDomainName(d.Hostname); !ok {
+		return ServiceCustomDomain{}, ErrInvalidHostname
+	}
 	if d.CertSource == "" {
 		d.CertSource = CertSourceUploaded
 	}
@@ -61,7 +65,10 @@ func (x *DB) InsertCustomDomain(ctx context.Context, d ServiceCustomDomain) (Ser
 // for an existing row. Returns ErrNotFound when no row matches (id, service_id).
 // Returns ErrDuplicateHostname when the new hostname conflicts.
 func (x *DB) UpdateCustomDomain(ctx context.Context, d ServiceCustomDomain) error {
-	d.Hostname = strings.ToLower(d.Hostname)
+	var ok bool
+	if d.Hostname, ok = NormalizeDomainName(d.Hostname); !ok {
+		return ErrInvalidHostname
+	}
 	if d.CertSource == "" {
 		d.CertSource = CertSourceUploaded
 	}
@@ -288,12 +295,49 @@ var ErrInvalidCertSource = errors.New("db: cert_source must be uploaded or auto"
 // existing row (UNIQUE constraint on service_custom_domains.hostname).
 var ErrDuplicateHostname = fmt.Errorf("hostname already bound")
 
+// ErrInvalidHostname is what InsertCustomDomain and UpdateCustomDomain
+// return for a host name NormalizeDomainName refuses.
+var ErrInvalidHostname = errors.New("db: hostname is not a DNS name")
+
+var domainLabelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// NormalizeDomainName is the form a custom domain is stored and compared
+// in: trimmed, lower case, one trailing dot dropped. It must be a DNS name
+// of at least two labels of ASCII letters, digits and '-' (an international
+// name in its punycode form), whose last label is not all digits (no
+// address), with at most one leading "*." for a wildcard. ok is false for
+// anything else.
+func NormalizeDomainName(s string) (string, bool) {
+	n := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s)), ".")
+	base := strings.TrimPrefix(n, "*.")
+	if len(base) > 253 {
+		return "", false
+	}
+	labels := strings.Split(base, ".")
+	if len(labels) < 2 {
+		return "", false
+	}
+	for _, l := range labels {
+		if !domainLabelRE.MatchString(l) {
+			return "", false
+		}
+	}
+	if strings.Trim(labels[len(labels)-1], "0123456789") == "" {
+		return "", false
+	}
+	return n, true
+}
+
 // hostOwnerMu serialises every write that gives a host name an owner: a
 // custom domain (InsertCustomDomain, UpdateCustomDomain) and a tcp
 // service's host name (SetServiceTCPHostname). Each runs its check and its
 // write in one transaction under it, so a custom domain and a tcp_hostname
 // for one name never both win (H12). The relay is one process; the lock is
-// per process like ipGrantMu.
+// per process like ipGrantMu. It is what keeps two writers apart on
+// Postgres (READ COMMITTED: each would read the other's state before either
+// commits); SQLite has one connection and serialises anyway. A relay run
+// as several instances on one Postgres would need
+// pg_advisory_xact_lock(<key>) at the start of each transaction instead.
 var hostOwnerMu sync.Mutex
 
 // ErrHostIsTCPName is what InsertCustomDomain and UpdateCustomDomain return
