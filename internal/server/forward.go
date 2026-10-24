@@ -392,6 +392,11 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 		refuse(proto.CodeOffline, fmt.Sprintf("the client that serves %q cannot write the PROXY protocol header the service asks for; it needs an update", target.Name))
 		return
 	}
+	if g := tn.guard; g != nil && !g.admitQuota(s.now()) {
+		s.refuseForward(cs, target.ServiceID, TCPRefusedQuota)
+		refuse(proto.CodeRateLimited, fmt.Sprintf("the service %q has carried its daily volume; it takes connections again at 00:00 UTC", target.Name))
+		return
+	}
 	if tn.limits != nil {
 		if reason := tn.limits.admitForward(cs.UserID, target.Owner); reason != "" {
 			s.refuseForward(cs, target.ServiceID, reason)
@@ -434,7 +439,14 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 		return
 	}
 	_ = st.SetWriteDeadline(time.Time{})
-	c.closeFn = func() { endStream(st); endStream(home) }
+	pipeHome, gs := guarded(home, tn.guard, c)
+	c.closeFn = func() {
+		if gs != nil {
+			gs.interrupt()
+		}
+		endStream(st)
+		endStream(home)
+	}
 	s.addLiveConn(tn, c)
 	cs.addForward(c)
 	// A recheck that ran since the authorization above did not see this
@@ -454,9 +466,12 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 	// service's tunnel counts it, and so does the connection.
 	var in, out atomic.Uint64
 	bridge.Pipe(c.watched(st), &countingStream{
-		Conn: &countingStream{Conn: home, in: &tn.BytesIn, out: &tn.BytesOut},
+		Conn: &countingStream{Conn: pipeHome, in: &tn.BytesIn, out: &tn.BytesOut},
 		in:   &c.in, out: &c.out,
 	}, &in, &out)
+	if gs != nil {
+		gs.release()
+	}
 	tn.dropConn(c.id)
 	cs.dropForward(c.id)
 	s.forwardTraffic(tn, c, observe.OutcomeClean, c.endReason(cs, tn.sess))

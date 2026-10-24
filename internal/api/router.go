@@ -644,6 +644,15 @@ func newRouter(d Deps) http.Handler {
 			// widens who can reach it, so it asks for a recent confirmation.
 			r.Get("/services/{serviceID}/tcp-hostname", d.GetServiceTCPHostname)
 			r.With(recent).Put("/services/{serviceID}/tcp-hostname", d.PutServiceTCPHostname)
+			// The bandwidth, daily volume and automatic bans of a tcp
+			// service: a write may loosen them, so it asks for a recent
+			// confirmation. A ban narrows who may connect; lifting one
+			// lets a source in again and asks for the confirmation.
+			r.Get("/services/{serviceID}/tcp-limits", d.GetServiceTCPLimits)
+			r.With(recent).Put("/services/{serviceID}/tcp-limits", d.PutServiceTCPLimits)
+			r.Get("/services/{serviceID}/tcp-bans", d.ListServiceTCPBans)
+			r.Post("/services/{serviceID}/tcp-bans", d.PostServiceTCPBan)
+			r.With(recent).Delete("/services/{serviceID}/tcp-bans", d.DeleteServiceTCPBan)
 			// The live connections of a tcp service (visitors and forwards).
 			// Closing one cuts someone off: it asks for a recent confirmation.
 			r.Get("/services/{serviceID}/connections", d.ListServiceConnections)

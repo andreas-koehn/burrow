@@ -280,6 +280,7 @@ func TestFields(t *testing.T) {
 		"quota.exceeded", "budget.exceeded", "redaction.applied", "guardrail.refused", "cert.expiring",
 		"audit.exported", "backup.completed", "ai.upstream_error", "ai.cache_promotion", "audit.policy_change",
 		"service.created", "service.deleted", "connection.session_summary", "custom_domain.cert.expiring",
+		"tcp.banned", "tcp.quota.warning",
 	} {
 		if len(wt.Fields(event)) == 0 {
 			t.Errorf("event %s has no documented fields", event)

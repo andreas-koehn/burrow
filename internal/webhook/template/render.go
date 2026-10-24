@@ -128,6 +128,8 @@ var knownEventFields = map[string]map[string]any{
 	"service.deleted":             {"service_id": "", "name": ""},
 	"connection.session_summary":  {"service_id": "", "kind": "", "window_start": "", "window_end": "", "sessions": 0, "bytes_in": 0, "bytes_out": 0, "avg_duration_ms": 0, "p95_duration_ms": 0, "top_source_ips": []map[string]any{}},
 	"custom_domain.cert.expiring": {"id": "", "hostname": "", "service_id": "", "not_after": ""},
+	"tcp.banned":                  {"service_id": "", "source": "", "until": "", "reason": "", "ban_min": 0},
+	"tcp.quota.warning":           {"service_id": "", "day": "", "bytes": 0, "limit": 0, "percent": 0},
 }
 
 // Fields returns the documented payload fields of event, sorted; nil for an

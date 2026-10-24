@@ -672,6 +672,9 @@ func newRootCmd() *cobra.Command {
 				// protocol header, and nobody else may.
 				TCPDomain:      cfg.TCPDomain,
 				TrustedProxies: trustedPrefixes(cfg.TLSPassthroughTrustedProxies),
+				// tcp complete (E6, E7): bans and daily usage of tcp services
+				// survive a restart.
+				TCPGuards: tcpGuardStore{db: db.Wrap(database)},
 			})
 			if err != nil {
 				return err
@@ -1437,6 +1440,10 @@ func newRootCmd() *cobra.Command {
 				_ = challengeSrv.Shutdown(shutCtx)
 			}
 			srv.Wait()
+			// What the tcp services carried since the last minute's write.
+			flushCtx, flushDone := context.WithTimeout(context.Background(), 5*time.Second)
+			srv.FlushTCPUsage(flushCtx)
+			flushDone()
 			// One value already consumed iff the select took the errc branch;
 			// drain the remaining senders so no goroutine leaks.
 			remaining := senderCount

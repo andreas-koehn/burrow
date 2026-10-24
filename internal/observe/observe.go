@@ -41,6 +41,14 @@ const (
 	// one who forwards) opened a forward stream to the tcp service ServiceID,
 	// whose tunnel TunnelID belongs to OwnerID.
 	ForwardOpened = "forward_opened"
+	// TCPBanned: the relay banned the source SourceIP (an IPv4 address or
+	// an IPv6 /64) from the tcp service ServiceID, whose owner is OwnerID,
+	// until Until, because its connections kept ending at once (Reason).
+	TCPBanned = "tcp_banned"
+	// TCPQuotaWarning: the tcp service ServiceID (owner OwnerID) carried
+	// Bytes of its daily volume Limit on the UTC day Day: 80 % or more. It
+	// is told once per service and day.
+	TCPQuotaWarning = "tcp_quota_warning"
 )
 
 // The reasons of TCPPortReclaimed.
@@ -86,6 +94,10 @@ type Session struct {
 	TokenName string
 	SourceIP  string
 	OwnerID   string
+	// Until describes a TCPBanned; Day, Bytes and Limit a TCPQuotaWarning.
+	Until        time.Time
+	Day          string
+	Bytes, Limit int64
 }
 
 // The kinds of Traffic; they are the kinds of the connection log.

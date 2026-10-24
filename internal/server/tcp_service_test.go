@@ -47,12 +47,15 @@ type tcpResolver struct {
 	// hosts is the TLS passthrough host name of each service id that has
 	// one (tcp complete, E1).
 	hosts map[string]string
+	// limits are the bandwidth, volume and ban settings of each service id
+	// that has some (tcp complete, E6/E7).
+	limits map[string]TCPLimits
 }
 
 func newTCPResolver() *tcpResolver {
 	return &tcpResolver{ids: map[string]string{}, holds: map[int]TCPPortHold{}, seen: map[string]time.Time{}, httpName: map[string]bool{},
 		modes: map[string]string{}, maxConns: map[string]int{}, proxy: map[string]string{}, idle: map[string]time.Duration{},
-		hosts: map[string]string{}}
+		hosts: map[string]string{}, limits: map[string]TCPLimits{}}
 }
 
 func (r *tcpResolver) Resolve(context.Context, string, string, string) (string, string, error) {
@@ -90,7 +93,7 @@ func (r *tcpResolver) ResolveTCP(_ context.Context, userID, name string, o Resol
 		mode = m
 	}
 	res := Resolved{ServiceID: id, Slug: "s-" + name, AccessMode: mode, Created: !served, TCPPortLimit: r.limit, MaxConnections: r.maxConns[id],
-		ProxyProtocol: r.proxy[id], IdleTimeout: r.idle[id], TCPHostname: r.hosts[id]}
+		ProxyProtocol: r.proxy[id], IdleTimeout: r.idle[id], TCPHostname: r.hosts[id], Limits: r.limits[id]}
 	for p, h := range r.holds {
 		if h.ServiceID == id {
 			res.TCPPort, res.TCPPortPinned = p, h.Pinned

@@ -888,6 +888,8 @@ var webhookEventProof = map[string]struct{ how, why string }{
 	"custom_domain.cert.expiring": {proofSource, "fires on the daily status tick: internal/proxy/customdomain/tick_test.go"},
 	"ai.cache_promotion":          {proofSource, "needs -tags semantic_cache: cmd/server TestObserver_ModelRequest"},
 	"connection.session_summary":  {proofSource, "fires on the daily rollup: cmd/server TestConnLogRoller"},
+	"tcp.banned":                  {proofSource, "needs a tcp service with automatic bans and short visits: cmd/server TestServe_TCPLimits"},
+	"tcp.quota.warning":           {proofSource, "needs a tcp service with a daily volume and traffic: cmd/server TestServe_TCPLimits"},
 	// Nothing publishes it.
 	"service.deleted": {proofNone, "no code path deletes a service (db.DeleteService has no caller)"},
 }

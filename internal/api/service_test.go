@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -81,6 +82,19 @@ type fakeServiceStore struct {
 	tcpHostname     store.TCPHostname
 	tcpHostnameErr  error
 	lastTCPHostname string
+
+	// ServiceTCPLimits / SetServiceTCPLimits
+	tcpLimits     store.TCPLimits
+	tcpUsage      store.TCPUsage
+	tcpLimitsErr  error
+	lastTCPLimits store.TCPLimitsUpdate
+
+	// ListTCPBans / AddTCPBan / RemoveTCPBan
+	tcpBans     []db.TCPBan
+	tcpBanErr   error
+	lastBan     string // "<source> <ban_min> <note>"
+	lastUnban   string
+	unbanSource string // the source RemoveTCPBan answers; "" the one asked for
 
 	// last args captured for inspection
 	lastMode   string
@@ -164,6 +178,55 @@ func (f *fakeServiceStore) SetServiceTCPHostname(_ context.Context, _, _, _, h s
 	before := f.tcpHostname
 	f.tcpHostname.Hostname, _ = store.NormalizeTCPHostname(h)
 	return before, f.tcpHostname, nil
+}
+func (f *fakeServiceStore) ServiceTCPLimits(_ context.Context, _, _, _ string) (store.TCPLimits, store.TCPUsage, error) {
+	return f.tcpLimits, f.tcpUsage, f.tcpLimitsErr
+}
+func (f *fakeServiceStore) SetServiceTCPLimits(_ context.Context, _, _, _ string, u store.TCPLimitsUpdate) (store.TCPLimits, store.TCPLimits, error) {
+	if f.tcpLimitsErr != nil {
+		return store.TCPLimits{}, store.TCPLimits{}, f.tcpLimitsErr
+	}
+	f.lastTCPLimits = u
+	before := f.tcpLimits
+	if u.RateLimitKbps != nil {
+		f.tcpLimits.RateLimitKbps = *u.RateLimitKbps
+	}
+	if u.DailyBytes != nil {
+		f.tcpLimits.DailyBytes = *u.DailyBytes
+	}
+	if a := u.AutoBan; a != nil {
+		ab := &f.tcpLimits.AutoBan
+		if a.Enabled != nil {
+			ab.Enabled = *a.Enabled
+		}
+		for _, p := range []struct{ dst, v *int }{{&ab.ShortS, a.ShortS}, {&ab.Count, a.Count}, {&ab.WindowMin, a.WindowMin}, {&ab.BanMin, a.BanMin}} {
+			if p.v != nil {
+				*p.dst = *p.v
+			}
+		}
+	}
+	return before, f.tcpLimits, nil
+}
+func (f *fakeServiceStore) ListTCPBans(_ context.Context, _, _, _ string) ([]db.TCPBan, error) {
+	return f.tcpBans, f.tcpBanErr
+}
+func (f *fakeServiceStore) AddTCPBan(_ context.Context, _, _, id, source string, banMin int, note string) (db.TCPBan, error) {
+	if f.tcpBanErr != nil {
+		return db.TCPBan{}, f.tcpBanErr
+	}
+	f.lastBan = fmt.Sprintf("%s %d %s", source, banMin, note)
+	now := time.Now().UTC().Truncate(time.Second)
+	return db.TCPBan{ServiceID: id, Source: source, Until: now.Add(time.Duration(banMin) * time.Minute), Reason: "manual: " + note, CreatedAt: now}, nil
+}
+func (f *fakeServiceStore) RemoveTCPBan(_ context.Context, _, _, id, source string) (db.TCPBan, error) {
+	if f.tcpBanErr != nil {
+		return db.TCPBan{}, f.tcpBanErr
+	}
+	f.lastUnban = source
+	if f.unbanSource != "" {
+		source = f.unbanSource
+	}
+	return db.TCPBan{ServiceID: id, Source: source}, nil
 }
 func (f *fakeServiceStore) DeleteService(_ context.Context, _, _, _ string) (string, error) {
 	return "", nil

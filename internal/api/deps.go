@@ -51,6 +51,16 @@ type ServiceStore interface {
 	// passthrough host name of a tcp service (store.TCPHostname).
 	ServiceTCPHostname(ctx context.Context, callerID, callerRole, serviceID string) (store.TCPHostname, error)
 	SetServiceTCPHostname(ctx context.Context, callerID, callerRole, serviceID, hostname string) (before, after store.TCPHostname, err error)
+	// ServiceTCPLimits and SetServiceTCPLimits read and change the
+	// bandwidth, daily volume and automatic bans of a tcp service; the read
+	// also gives the usage of today as stored.
+	ServiceTCPLimits(ctx context.Context, callerID, callerRole, serviceID string) (store.TCPLimits, store.TCPUsage, error)
+	SetServiceTCPLimits(ctx context.Context, callerID, callerRole, serviceID string, u store.TCPLimitsUpdate) (before, after store.TCPLimits, err error)
+	// ListTCPBans, AddTCPBan and RemoveTCPBan keep the banned sources of a
+	// tcp service.
+	ListTCPBans(ctx context.Context, callerID, callerRole, serviceID string) ([]db.TCPBan, error)
+	AddTCPBan(ctx context.Context, callerID, callerRole, serviceID, source string, banMin int, note string) (db.TCPBan, error)
+	RemoveTCPBan(ctx context.Context, callerID, callerRole, serviceID, source string) (db.TCPBan, error)
 	// DeleteService removes the service and returns its name. Owner or a
 	// holder of services:configure:any; store.ErrForbidden otherwise.
 	// store.ErrServiceHasProvider and store.ErrProviderInUse refuse it.

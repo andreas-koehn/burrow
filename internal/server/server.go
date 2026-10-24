@@ -89,6 +89,9 @@ type Resolved struct {
 	// TCPHostname is the tcp service's own TLS passthrough host name
 	// (services.tcp_hostname), "" for none.
 	TCPHostname string
+	// Limits are the tcp service's bandwidth, daily volume and automatic
+	// bans (tcp complete, E6 and E7).
+	Limits TCPLimits
 }
 
 // TCPPortHold is a service's hold on a public port.
@@ -331,6 +334,14 @@ type Options struct {
 	// one must start with a PROXY protocol v2 header naming the visitor, and
 	// anyone else who sends one is closed. Empty: no header is believed.
 	TrustedProxies []netip.Prefix
+	// TCPGuards keeps the bans and the daily usage of tcp services so that
+	// they survive a restart (tcp_guard.go). nil: they live in memory only.
+	TCPGuards TCPGuardStore
+
+	// clock and usageFlush replace time.Now and defaultUsageFlush for the
+	// tcp guards (tests).
+	clock      func() time.Time
+	usageFlush time.Duration
 }
 
 // Server is the burrowd relay control server.
@@ -379,6 +390,15 @@ type Server struct {
 	peekMu                         sync.Mutex
 	peekTotal, peekTrusted         int
 	peekBy                         map[string]int
+	// guards are the bans, bandwidth and daily volume of the tcp services
+	// (tcp_guard.go), under guardMu; guardFlushing: the flushGuards
+	// goroutine runs. usageFlush is how often it writes, and clock the time
+	// the guards go by (tests change both).
+	guardMu       sync.Mutex
+	guards        map[string]*tcpGuard
+	guardFlushing bool
+	usageFlush    time.Duration
+	clock         func() time.Time
 }
 
 // New validates options and loads the TLS keypair.
@@ -428,12 +448,23 @@ func New(o Options) (*Server, error) {
 		authFails: newAuthFailures(),
 		idleTick:  defaultIdleTick,
 
+		usageFlush: defaultUsageFlush, clock: time.Now,
+
 		helloTimeout: defaultHelloTimeout, helloTimeoutBusy: defaultHelloTimeoutBusy,
 		peekMax: defaultPeekMax, peekPerPeer: defaultPeekPerPeer, peekTrustedMax: defaultPeekTrusted,
+	}
+	if o.clock != nil {
+		s.clock = o.clock
+	}
+	if o.usageFlush > 0 {
+		s.usageFlush = o.usageFlush
 	}
 	s.ports = newPortAllocator(o.PortMin, o.PortMax)
 	return s, nil
 }
+
+// now is the time the tcp guards go by.
+func (s *Server) now() time.Time { return s.clock() }
 
 // ControlCertSHA256 returns the SHA-256 of the leaf certificate the control
 // port presents to a client that asks for serverName, as lower-case hex. A

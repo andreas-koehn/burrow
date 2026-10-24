@@ -278,6 +278,8 @@ func TestRegistry_CredentialRoutingAndInspectionWritesAreNotTools(t *testing.T) 
 		"serviceTcpSettingsUpdate",
 		// A TLS passthrough host name gives a tcp service a way in.
 		"serviceTcpHostnameUpdate",
+		// Lifting a tcp service's limits or a ban lets more in.
+		"serviceTcpLimitsUpdate", "serviceTcpBanDelete",
 	} {
 		if _, ok := r.Lookup(id); ok {
 			t.Errorf("%s is a management tool", id)
@@ -289,6 +291,7 @@ func TestRegistry_CredentialRoutingAndInspectionWritesAreNotTools(t *testing.T) 
 		"guardrailSettingsGet", "redactionSettingsGet", "redactionRulesList", "serviceAiConfigGet",
 		"retentionSettingsGet", "redactionPreview", "guardrailPreview", "webhookPreview",
 		"serviceIpGeoGet", "serviceAccessPolicyGet", "automationTokenCreate", "serviceTcpSettingsGet", "serviceTcpHostnameGet",
+		"serviceTcpLimitsGet", "serviceTcpBansList",
 		"aiModelsList", "gatewayKeysList", "usersList", "rolesList",
 	} {
 		if _, ok := r.Lookup(id); !ok {
@@ -339,6 +342,7 @@ var mcpExposedWrites = map[string]bool{
 	"serviceDomainDelete":           true,
 	"serviceMaxConnectionsUpdate":   true, // a cap of 1 to 256 visitors; widens nobody's access
 	"serviceSlugUpdate":             true,
+	"serviceTcpBanCreate":           true, // bans one source of a tcp service for at most 30 days; narrows access, never a forward
 	"sessionDelete":                 true,
 	"sessionsRevokeAll":             true,
 	"settingsTestEmail":             true,

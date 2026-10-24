@@ -439,6 +439,20 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 		ServiceID: serviceID, accessMode: mode, created: svc.res.Created,
 	}
 	tn.setTCPSettings(svc.res.ProxyProtocol, svc.res.IdleTimeout)
+	if serviceID != "" {
+		// The service's bans and the usage of its day, read when the relay
+		// does not hold them yet: a ban that could not be read would let its
+		// source in, so the registration is refused and the client retries.
+		g, gerr := s.guardFor(serviceID)
+		if gerr != nil {
+			s.log.Warn("read tcp bans and usage failed", "session_id", cs.SessionID, "service_id", serviceID, "err", gerr)
+			s.releaseTCPService(serviceID)
+			refuseWith(proto.CodeInternal, errTCPLookup)
+			return
+		}
+		g.apply(svc.res.Limits, s.now())
+		tn.guard = g
+	}
 	tn.slug = svc.res.Slug
 	tn.setHostname(svc.res.TCPHostname)
 	if tr.ProxyProtocol == proto.ProxyProtocolV2 {
@@ -645,6 +659,9 @@ func (s *Server) reconcileTCP(ctx context.Context, tn *Tunnel) error {
 	}
 	tn.setTCPSettings(acc.ProxyProtocol, acc.IdleTimeout)
 	tn.setHostname(acc.Hostname)
+	if tn.guard != nil {
+		tn.guard.apply(acc.Limits, s.now())
+	}
 	if mode == TCPAccessIP || mode == TCPAccessOpen {
 		acc.Mode = mode
 		p, err := compileTCPPolicy(acc)

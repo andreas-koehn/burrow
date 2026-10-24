@@ -59,6 +59,11 @@ var openAPIOperationIDs = map[string]string{
 	"PUT /api/v1/services/{serviceID}/tcp-settings":                             "serviceTcpSettingsUpdate",
 	"GET /api/v1/services/{serviceID}/tcp-hostname":                             "serviceTcpHostnameGet",
 	"PUT /api/v1/services/{serviceID}/tcp-hostname":                             "serviceTcpHostnameUpdate",
+	"GET /api/v1/services/{serviceID}/tcp-limits":                               "serviceTcpLimitsGet",
+	"PUT /api/v1/services/{serviceID}/tcp-limits":                               "serviceTcpLimitsUpdate",
+	"GET /api/v1/services/{serviceID}/tcp-bans":                                 "serviceTcpBansList",
+	"POST /api/v1/services/{serviceID}/tcp-bans":                                "serviceTcpBanCreate",
+	"DELETE /api/v1/services/{serviceID}/tcp-bans":                              "serviceTcpBanDelete",
 	"GET /api/v1/services/{serviceID}/connections":                              "serviceConnectionsList",
 	"DELETE /api/v1/services/{serviceID}/connections/{connID}":                  "serviceConnectionDelete",
 	"DELETE /api/v1/services/{serviceID}/cache/entries":                         "serviceCacheEntriesDelete",
@@ -287,6 +292,10 @@ var openAPIMCPDisabled = map[string]string{
 	// Nor give a tcp service a name it is reached by on the TLS passthrough
 	// listener.
 	"serviceTcpHostnameUpdate": "PUT /api/v1/services/{serviceID}/tcp-hostname",
+	// Nor lift the limits that protect a tcp service (its bandwidth, daily
+	// volume and automatic bans), nor a ban: both let more in.
+	"serviceTcpLimitsUpdate": "PUT /api/v1/services/{serviceID}/tcp-limits",
+	"serviceTcpBanDelete":    "DELETE /api/v1/services/{serviceID}/tcp-bans",
 	// Nor change who may reach a service: its ip rules and its role list.
 	"serviceIpGeoUpdate":        "PUT /api/v1/services/{serviceID}/ip-geo",
 	"serviceAccessPolicyUpdate": "PUT /api/v1/services/{serviceID}/access-policy",
@@ -385,6 +394,8 @@ var openAPIRequestBodies = map[string]openAPIRequestBody{
 	"serviceMaxConnectionsUpdate":     {typ: oaType[maxConnectionsReq]()},
 	"serviceTcpSettingsUpdate":        {typ: oaType[tcpSettingsReq]()},
 	"serviceTcpHostnameUpdate":        {typ: oaType[tcpHostnameReq]()},
+	"serviceTcpLimitsUpdate":          {typ: oaType[tcpLimitsReq]()},
+	"serviceTcpBanCreate":             {typ: oaType[tcpBanReq]()},
 	"serviceUpstreamCredentialUpdate": {typ: oaType[putCredReq]()},
 	"serviceDomainCreate":             {typ: oaType[postDomainReq]()},
 	"serviceDomainUpdate":             {typ: oaType[putDomainReq]()},
@@ -514,6 +525,10 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"serviceTcpSettingsUpdate": {status: "200", typ: oaType[tcpSettingsResp]()},
 	"serviceTcpHostnameGet":    {status: "200", typ: oaType[tcpHostnameResp]()},
 	"serviceTcpHostnameUpdate": {status: "200", typ: oaType[tcpHostnameResp]()},
+	"serviceTcpLimitsGet":      {status: "200", typ: oaType[tcpLimitsResp]()},
+	"serviceTcpLimitsUpdate":   {status: "200", typ: oaType[tcpLimitsResp]()},
+	"serviceTcpBansList":       {status: "200", typ: oaType[tcpBanResp](), list: true},
+	"serviceTcpBanCreate":      {status: "201", typ: oaType[tcpBanResp]()},
 	"serviceIpGrantCreate":     {status: "201", typ: oaType[ipGrantCreatedResp]()},
 	// The one answer that stays an exception: the handler writes the stored
 	// blob, a JSON object with no closed key set and no type to name. The nine

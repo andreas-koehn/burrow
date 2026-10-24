@@ -636,10 +636,16 @@ func TestIsClosedEvent(t *testing.T) {
 		t.Error("free-form event must not pass IsClosedEvent")
 	}
 	// v0.5.0 Task 10 extended the vocabulary from 12 → 18; v0.5.2 Task 10
-	// added custom_domain.cert.expiring → 19.
-	if len(ClosedEvents) != 19 {
-		t.Errorf("ClosedEvents length = %d want 19 (12 original + 6 v0.5.0 + 1 v0.5.2)",
+	// added custom_domain.cert.expiring → 19; v0.13.0 tcp.banned and
+	// tcp.quota.warning → 21.
+	if len(ClosedEvents) != 21 {
+		t.Errorf("ClosedEvents length = %d want 21 (12 original + 6 v0.5.0 + 1 v0.5.2 + 2 v0.13.0)",
 			len(ClosedEvents))
+	}
+	for _, ev := range []string{"tcp.banned", "tcp.quota.warning"} {
+		if !IsClosedEvent(ev) {
+			t.Errorf("%s must be in ClosedEvents (v0.13.0)", ev)
+		}
 	}
 	if !IsClosedEvent("custom_domain.cert.expiring") {
 		t.Error("custom_domain.cert.expiring must be in ClosedEvents (v0.5.2 Task 10)")

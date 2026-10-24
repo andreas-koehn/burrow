@@ -519,6 +519,26 @@ func (*fullDepsStub) SetServiceTCPHostname(context.Context, string, string, stri
 	stubPanic("SetServiceTCPHostname")
 	return store.TCPHostname{}, store.TCPHostname{}, nil
 }
+func (*fullDepsStub) ServiceTCPLimits(context.Context, string, string, string) (store.TCPLimits, store.TCPUsage, error) {
+	stubPanic("ServiceTCPLimits")
+	return store.TCPLimits{}, store.TCPUsage{}, nil
+}
+func (*fullDepsStub) SetServiceTCPLimits(context.Context, string, string, string, store.TCPLimitsUpdate) (store.TCPLimits, store.TCPLimits, error) {
+	stubPanic("SetServiceTCPLimits")
+	return store.TCPLimits{}, store.TCPLimits{}, nil
+}
+func (*fullDepsStub) ListTCPBans(context.Context, string, string, string) ([]db.TCPBan, error) {
+	stubPanic("ListTCPBans")
+	return nil, nil
+}
+func (*fullDepsStub) AddTCPBan(context.Context, string, string, string, string, int, string) (db.TCPBan, error) {
+	stubPanic("AddTCPBan")
+	return db.TCPBan{}, nil
+}
+func (*fullDepsStub) RemoveTCPBan(context.Context, string, string, string, string) (db.TCPBan, error) {
+	stubPanic("RemoveTCPBan")
+	return db.TCPBan{}, nil
+}
 func (*fullDepsStub) SetServiceMaxConnections(context.Context, string, string, string, int) (int, error) {
 	stubPanic("SetServiceMaxConnections")
 	return 0, nil

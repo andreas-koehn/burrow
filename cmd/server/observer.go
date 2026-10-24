@@ -79,6 +79,10 @@ const (
 	// tunnelEventsPerMinute is how many tunnel events one user's clients may
 	// cause per minute; beyond it they are dropped (and logged).
 	tunnelEventsPerMinute = 60
+	// tcpBanEventsPerMinute is how many tcp.banned events one service may
+	// cause per minute (an attack from many sources bans many); the audit
+	// keeps every ban.
+	tcpBanEventsPerMinute = 30
 )
 
 // observer implements server.Observer, proxy.Observer,
@@ -98,6 +102,7 @@ type observer struct {
 	perHour   *eventThrottle // one per key per hour
 	full      *eventThrottle // the "queue full" warning
 	budget    *eventBudget   // tunnel events per user
+	bans      *eventBudget   // tcp.banned events per service
 
 	mu       sync.Mutex
 	sessions map[string]int      // user id → live control sessions
@@ -137,6 +142,7 @@ func newObserver(p observerParts) *observer {
 		perHour:       &eventThrottle{now: time.Now, every: time.Hour, name: "observer_per_hour", log: log},
 		full:          &eventThrottle{now: time.Now, every: time.Minute, name: "observer_warnings", log: log},
 		budget:        &eventBudget{now: time.Now, every: time.Minute, max: tunnelEventsPerMinute},
+		bans:          &eventBudget{now: time.Now, every: time.Minute, max: tcpBanEventsPerMinute},
 		sessions:      map[string]int{},
 		tokens:        map[string]struct{}{},
 	}
@@ -210,6 +216,10 @@ func (o *observer) ObserveSession(e observe.Session) {
 		o.tcpPortReclaimed(e)
 	case observe.ForwardOpened:
 		o.forwardOpened(e)
+	case observe.TCPBanned:
+		o.tcpBanned(e)
+	case observe.TCPQuotaWarning:
+		o.tcpQuotaWarning(e)
 	case observe.TunnelRefused:
 		// One per user and reason per minute: a client that keeps asking for
 		// a taken port must not fill the queue.
@@ -261,6 +271,47 @@ func (o *observer) forwardOpened(e observe.Session) {
 		if err := o.Audit.Append(ctx, ev); err != nil {
 			o.log.Warn("observer: audit write failed", "action", audit.ActionTCPForwardOpen, "err", err)
 		}
+	})
+}
+
+// tcpBanned announces a source the relay banned from a tcp service and
+// writes its audit entry. The actor is the relay (none); the subject is the
+// service. The webhook is limited per service and minute, the audit is not.
+func (o *observer) tcpBanned(e observe.Session) {
+	banMin := int(time.Until(e.Until).Round(time.Minute) / time.Minute)
+	if o.events() != nil && o.bans.allow(e.ServiceID) {
+		o.publish("tcp.banned", map[string]any{
+			"service_id": e.ServiceID, "source": e.SourceIP, "until": e.Until.UTC().Format(time.RFC3339),
+			"reason": e.Reason, "ban_min": banMin,
+		})
+	}
+	if o.Audit == nil {
+		return
+	}
+	ev := audit.Event{
+		Action: audit.ActionTCPBanAdd, SubjectID: e.ServiceID, Result: "ok",
+		Payload: audit.MustJSON(map[string]any{
+			"source": e.SourceIP, "until": e.Until.UTC().Format(time.RFC3339), "ban_min": banMin,
+			"reason": e.Reason, "by": "auto", "owner_id": e.OwnerID,
+		}),
+	}
+	o.enqueue(func(ctx context.Context) {
+		o.name(ctx, &ev)
+		if err := o.Audit.Append(ctx, ev); err != nil {
+			o.log.Warn("observer: audit write failed", "action", audit.ActionTCPBanAdd, "err", err)
+		}
+	})
+}
+
+// tcpQuotaWarning announces that a tcp service carried 80 % of its daily
+// volume; the relay tells it once per service and day.
+func (o *observer) tcpQuotaWarning(e observe.Session) {
+	percent := 0
+	if e.Limit > 0 {
+		percent = int(e.Bytes * 100 / e.Limit)
+	}
+	o.publish("tcp.quota.warning", map[string]any{
+		"service_id": e.ServiceID, "day": e.Day, "bytes": e.Bytes, "limit": e.Limit, "percent": percent,
 	})
 }
 

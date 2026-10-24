@@ -52,6 +52,9 @@ var reauthGuarded = []apiRoute{
 	{http.MethodDelete, "/api/v1/services/{serviceID}/connections/{connID}"},
 	// tcp complete: a TLS passthrough host name widens who reaches a service.
 	{http.MethodPut, "/api/v1/services/{serviceID}/tcp-hostname"},
+	// tcp complete: limits may be loosened, and a lifted ban lets a source in.
+	{http.MethodPut, "/api/v1/services/{serviceID}/tcp-limits"},
+	{http.MethodDelete, "/api/v1/services/{serviceID}/tcp-bans"},
 	{http.MethodPut, "/api/v1/services/{serviceID}/gateway-only"},
 	{http.MethodPut, "/api/v1/redaction/settings"},
 	{http.MethodPost, "/api/v1/redaction/rules"},

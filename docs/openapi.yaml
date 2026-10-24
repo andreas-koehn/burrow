@@ -1230,6 +1230,110 @@ components:
         tcp_hostname:
           type: string
           description: A host name such as rdp.example.com; "" clears it.
+    TcpAutoBan:
+      type: object
+      description: >
+        The automatic bans of a tcp service: a source (an IPv4 address or an
+        IPv6 /64) whose visitor connections end within short_s seconds at
+        least count times in window_min minutes is banned for ban_min
+        minutes. A banned source is closed at accept with no byte, on the
+        port and on the TLS passthrough listener, before the home client is
+        told (connection-log reason banned, sampled). Forwards are never
+        banned.
+      required: [enabled, short_s, count, window_min, ban_min]
+      properties:
+        enabled: { type: boolean }
+        short_s: { type: integer, minimum: 1, maximum: 300, description: Default 3. }
+        count: { type: integer, minimum: 2, maximum: 100, description: Default 10. }
+        window_min: { type: integer, minimum: 1, maximum: 1440, description: Default 10. }
+        ban_min: { type: integer, minimum: 1, maximum: 43200, description: Default 60. }
+    TcpAutoBanInput:
+      type: object
+      description: The ban settings to change; at least one. A field left out is kept.
+      additionalProperties: false
+      properties:
+        enabled: { type: boolean }
+        short_s: { type: integer, description: 1 to 300. }
+        count: { type: integer, description: 2 to 100. }
+        window_min: { type: integer, description: 1 to 1440. }
+        ban_min: { type: integer, description: 1 to 43200. }
+    TcpUsage:
+      type: object
+      description: What a tcp service carried on one UTC day, in and out.
+      required: [day, bytes_in, bytes_out, bytes]
+      properties:
+        day: { type: string, description: 'The UTC day, YYYY-MM-DD.' }
+        bytes_in: { type: integer, format: int64, description: From visitors and forwarders to the service. }
+        bytes_out: { type: integer, format: int64, description: From the service back. }
+        bytes: { type: integer, format: int64, description: bytes_in plus bytes_out; what daily_bytes counts. }
+    TcpLimits:
+      type: object
+      description: The bandwidth, daily volume and automatic bans of a tcp service.
+      required: [rate_limit_kbps, daily_bytes, autoban, usage_today, quota_reached]
+      properties:
+        rate_limit_kbps:
+          type: integer
+          minimum: 0
+          maximum: 10000000
+          description: >
+            The bandwidth of each direction in kbit/s (1000 bits a second),
+            shared by every connection of the service, visitors and forwards
+            alike; 0 is none, otherwise 64 to 10000000.
+        daily_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            The bytes in and out the service may carry in a UTC day; 0 is
+            none, otherwise 1048576 (1 MiB) to 1125899906842624 (1 PiB). Over
+            it new connections are refused and the open ones closed
+            (connection-log reason quota) until the next UTC day; at 80 % the
+            webhook tcp.quota.warning is sent once a day.
+        autoban: { $ref: '#/components/schemas/TcpAutoBan' }
+        usage_today:
+          $ref: '#/components/schemas/TcpUsage'
+        quota_reached:
+          type: boolean
+          description: The relay refuses the service's new connections now because the day carried daily_bytes.
+    TcpLimitsInput:
+      type: object
+      description: The limits to change; at least one. A field left out is kept.
+      additionalProperties: false
+      properties:
+        rate_limit_kbps:
+          type: integer
+          description: 0 (none) or 64 to 10000000.
+        daily_bytes:
+          type: integer
+          format: int64
+          description: 0 (none) or 1048576 to 1125899906842624.
+        autoban: { $ref: '#/components/schemas/TcpAutoBanInput' }
+    TcpBan:
+      type: object
+      description: A source banned from a tcp service.
+      required: [source, until, reason, auto, created_at]
+      properties:
+        source: { type: string, description: 'An IPv4 address, or an IPv6 /64 such as 2001:db8:1:2::/64.' }
+        until: { type: string, format: date-time }
+        reason:
+          type: string
+          description: '"auto: …" for a ban the relay made, "manual" or "manual: <note>" for one by hand.'
+        auto: { type: boolean, description: The relay made the ban. }
+        created_at: { type: string, format: date-time }
+    TcpBanInput:
+      type: object
+      description: A ban by hand.
+      additionalProperties: false
+      required: [source, ban_min]
+      properties:
+        source:
+          type: string
+          description: >
+            An IP address, or an IPv6 address or prefix of 64 bits or more:
+            an IPv6 address bans its /64, as the relay counts sources. A wider
+            range is refused.
+        ban_min: { type: integer, description: 1 to 43200 minutes. }
+        note: { type: string, description: At most 200 bytes; kept in the reason. }
     Tunnel:
       type: object
       description: One live tunnel of the caller.
@@ -2455,6 +2559,8 @@ components:
         - service.deleted
         - connection.session_summary
         - custom_domain.cert.expiring
+        - tcp.banned
+        - tcp.quota.warning
     WebhookInput:
       type: object
       required: [name, url, events]
@@ -4243,6 +4349,134 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { description: The service is not a tcp service, another service has the host name, or a custom domain covers it. }
+
+  /api/v1/services/{serviceID}/tcp-limits:
+    get:
+      tags: [services]
+      operationId: serviceTcpLimitsGet
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      summary: Read the bandwidth, daily volume and automatic bans of a tcp service
+      description: |
+        The limits, with what the service carried today (UTC): the relay's
+        count while a client serves the service, written once a minute, and
+        what is stored otherwise.
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      responses:
+        '200':
+          description: The limits.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TcpLimits' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not a tcp service. }
+    put:
+      tags: [services]
+      operationId: serviceTcpLimitsUpdate
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      x-burrow-mcp: false
+      summary: Set the bandwidth, daily volume or automatic bans of a tcp service
+      description: |
+        Changes the limits named in the body and keeps the others; the ban
+        settings likewise field by field. The relay applies them at once,
+        to the open connections as well: a daily volume below what the day
+        carried closes them. A change may loosen protection (a limit raised
+        or removed, the automatic bans turned off), so the route asks for a
+        recent confirmation whichever way it goes. Audited as
+        `service.tcp_limits.update` with the limits before and after.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not lift the limits that protect a service.
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TcpLimitsInput' }
+      responses:
+        '200':
+          description: The limits after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TcpLimits' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not a tcp service. }
+
+  /api/v1/services/{serviceID}/tcp-bans:
+    get:
+      tags: [services]
+      operationId: serviceTcpBansList
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      summary: List the active bans of a tcp service
+      description: The bans that have not expired, the first to expire first; automatic and by hand.
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      responses:
+        '200':
+          description: The bans.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TcpBan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not a tcp service. }
+    post:
+      tags: [services]
+      operationId: serviceTcpBanCreate
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      summary: Ban a source from a tcp service
+      description: |
+        Bans `source` for `ban_min` minutes; a ban of the same source is
+        replaced. The relay closes the source's live visitors at once and
+        closes its new ones at accept with no byte. Forwards are never
+        banned. A ban narrows who may connect, so it needs no recent
+        confirmation. At most 4096 bans are active per service. Audited as
+        `tcp.ban.add`.
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TcpBanInput' }
+      responses:
+        '201':
+          description: The ban.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TcpBan' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not a tcp service, or has 4096 active bans. }
+    delete:
+      tags: [services]
+      operationId: serviceTcpBanDelete
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      x-burrow-mcp: false
+      summary: Lift a ban of a tcp service
+      description: |
+        Ends the ban of `source` now (an address of a banned IPv6 /64 lifts
+        the /64), on the relay too, and forgets the source's short
+        connections. Lifting a ban lets a source in again, so the route asks
+        for a recent confirmation. Audited as `tcp.ban.remove`.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
+      parameters:
+        - { $ref: '#/components/parameters/PathServiceID' }
+        - { name: source, in: query, required: true, schema: { type: string }, description: The banned source, or an address of it. }
+      responses:
+        '204': { description: The ban is lifted. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
+        '404': { description: The service has no ban of that source, or there is no such service. }
+        '409': { description: The service is not a tcp service. }
 
   /api/v1/services/{serviceID}/connections:
     get:

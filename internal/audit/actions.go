@@ -43,6 +43,9 @@ const (
 	ActionServiceTCPHostnameUpdate    = "service.tcp_hostname.update"    // the TLS passthrough host name of a tcp service
 	ActionServiceConnectionClose      = "service.connection.close"       // a live connection of a tcp service was closed from the dashboard
 	ActionTCPForwardOpen              = "tcp.forward.open"               // a forward stream to a tcp service was opened (one per user and service a minute)
+	ActionServiceTCPLimitsUpdate      = "service.tcp_limits.update"      // the bandwidth, daily volume or automatic bans of a tcp service
+	ActionTCPBanAdd                   = "tcp.ban.add"                    // a source was banned from a tcp service (by the relay or by hand)
+	ActionTCPBanRemove                = "tcp.ban.remove"                 // a ban of a tcp service was lifted by hand
 	ActionServiceAccessPolicyUpdate   = "service.access_policy.update"
 	ActionServiceAPIKeyCreate         = "service.api_key.create"
 	ActionServiceAPIKeyRevoke         = "service.api_key.revoke"
@@ -206,6 +209,7 @@ var AllActions = []string{
 	ActionServiceAccessModeUpdate, ActionServiceSlugChange, ActionServiceGatewayOnlyUpdate, ActionServiceAccessPolicyUpdate,
 	ActionServiceTCPPortReclaimed, ActionServiceTCPAccessUpdate, ActionServiceIPGrantAdd, ActionServiceIPGrantRevoke,
 	ActionServiceMaxConnectionsUpdate, ActionServiceTCPSettingsUpdate, ActionServiceTCPHostnameUpdate, ActionServiceConnectionClose, ActionTCPForwardOpen,
+	ActionServiceTCPLimitsUpdate, ActionTCPBanAdd, ActionTCPBanRemove,
 	ActionServiceAPIKeyCreate, ActionServiceAPIKeyRevoke,
 	ActionServiceAIConfigUpdate,
 	ActionAIProviderCreate, ActionAIProviderUpdate, ActionAIProviderDelete,

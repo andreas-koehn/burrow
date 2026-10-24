@@ -132,6 +132,13 @@ type Service struct {
 	// through the relay's TLS passthrough listener (SNI), lower case; ""
 	// for none (NULL). Unique among services (migration 0042).
 	TCPHostname string
+	// RateLimitKbps is the bandwidth of each direction of a tcp service,
+	// shared by its connections, in kbit/s; DailyBytes the bytes in and out
+	// a UTC day may carry; TCPAutoBan the automatic ban settings as JSON, ""
+	// for none (NULL). 0 is "none" for the numbers (migration 0042).
+	RateLimitKbps int
+	DailyBytes    int64
+	TCPAutoBan    string
 }
 
 // ServiceAPIKey is a row of the service_api_keys table.

@@ -81,6 +81,9 @@ type Tunnel struct {
 	// with RefreshTCPService.
 	slug    string
 	sniName atomic.Pointer[string]
+	// guard is the tcp service's bans, bandwidth and daily volume
+	// (tcp_guard.go); nil for a tunnel without a service.
+	guard *tcpGuard
 }
 
 // ClientSession is one authenticated client connection.

@@ -142,7 +142,9 @@ func (s *Server) tcpTraffic(tun *Tunnel, visitor net.Conn, c *liveConn, started 
 // written to the connection log as a rejected row (see refusalSampler). ip is
 // the address the relay saw, "" when it could read none.
 func (s *Server) refuseVisitor(tun *Tunnel, visitor net.Conn, ip, reason string) {
-	_ = visitor.Close()
+	// Counted before the close: a visitor that sees the close also sees the
+	// refusal counted (as refusePassthrough does).
+	defer visitor.Close()
 	now := time.Now()
 	s.reg.observer().ObserveTraffic(observe.Traffic{
 		Kind: observe.TrafficTCP, ServiceID: tun.ServiceID, TunnelID: tun.ID,

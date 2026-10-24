@@ -110,6 +110,10 @@ var ClosedEvents = []string{
 	// admin uploads a cert already inside the 14-day window); subscribers can
 	// pick whichever trigger path they care about.
 	"custom_domain.cert.expiring",
+	// v0.13.0 tcp complete: the relay banned a source of a tcp service, and a
+	// tcp service carried 80 % of its daily volume (once a day).
+	"tcp.banned",
+	"tcp.quota.warning",
 }
 
 // IsClosedEvent reports whether s is one of the spec-closed event names.

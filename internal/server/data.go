@@ -307,15 +307,24 @@ func (s *Server) admitVisitor(tun *Tunnel, visitor net.Conn) (string, bool) {
 		s.refuseVisitor(tun, visitor, "", TCPRefusedNoAddress)
 		return "", false
 	}
+	source := sourceKey(ip)
+	now := s.now()
+	if g := tun.guard; g != nil && g.banned(source, now) {
+		s.refuseVisitor(tun, visitor, ip.String(), TCPRefusedBanned)
+		return "", false
+	}
 	if pol := tun.policy.Load(); (tun.accessMode == TCPAccessIP || pol != nil) && !pol.allows(ip, time.Now(), s.geoLookup(), &s.geoCache) {
 		s.refuseVisitor(tun, visitor, ip.String(), observe.RejectedIPGeo)
+		return "", false
+	}
+	if g := tun.guard; g != nil && !g.admitQuota(now) {
+		s.refuseVisitor(tun, visitor, ip.String(), TCPRefusedQuota)
 		return "", false
 	}
 	if !tun.canServeProxy() {
 		s.refuseVisitor(tun, visitor, ip.String(), TCPRefusedProxyUnsupported)
 		return "", false
 	}
-	source := sourceKey(ip)
 	if tun.limits != nil {
 		if reason := tun.limits.admit(source); reason != "" {
 			s.refuseVisitor(tun, visitor, ip.String(), reason)
@@ -354,15 +363,40 @@ func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn, source string) {
 		id: uuid.NewString(), kind: ConnKindVisitor, sourceIP: hostOf(visitor.RemoteAddr().String()),
 		serviceID: tun.ServiceID, started: started,
 	}
-	c.closeFn = func() { _ = visitor.Close(); endStream(stream) }
+	home, gs := guarded(stream, tun.guard, c)
+	c.closeFn = func() {
+		if gs != nil {
+			gs.interrupt()
+		}
+		_ = visitor.Close()
+		endStream(stream)
+	}
 	s.addLiveConn(tun, c)
 	var in, out atomic.Uint64
 	bridge.Pipe(c.watched(visitor), &countingStream{
-		Conn: &countingStream{Conn: stream, in: &tun.BytesIn, out: &tun.BytesOut},
+		Conn: &countingStream{Conn: home, in: &tun.BytesIn, out: &tun.BytesOut},
 		in:   &c.in, out: &c.out,
 	}, &in, &out)
+	if gs != nil {
+		gs.release()
+	}
 	tun.dropConn(c.id)
-	s.tcpTraffic(tun, visitor, c, started, c.in.Load(), c.out.Load(), observe.OutcomeClean, c.endReason(tun.sess))
+	reason := c.endReason(tun.sess)
+	if reason == "" {
+		// It ended by itself: a short one counts towards a ban.
+		s.shortVisit(tun, source, time.Since(started))
+	}
+	s.tcpTraffic(tun, visitor, c, started, c.in.Load(), c.out.Load(), observe.OutcomeClean, reason)
+}
+
+// guarded is the home side of a connection as the pipe uses it: under the
+// service's guard (bandwidth and daily volume) when it has one.
+func guarded(home net.Conn, g *tcpGuard, c *liveConn) (net.Conn, *guardStream) {
+	if g == nil {
+		return home, nil
+	}
+	gs := newGuardStream(home, g, c)
+	return gs, gs
 }
 
 // The first frame of a client-opened stream (stream_open or forward_open) is

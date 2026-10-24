@@ -114,6 +114,9 @@ type TCPAccess struct {
 	// Hostname is the service's own TLS passthrough host name
 	// (Resolved.TCPHostname), "" for none.
 	Hostname string
+	// Limits are the service's bandwidth, daily volume and automatic bans
+	// (Resolved.Limits).
+	Limits TCPLimits
 }
 
 // TCPAccessLoader reads the access of a tcp service. The relay reads it when
@@ -292,6 +295,10 @@ func sourceKey(a netip.Addr) string {
 	}
 	return a.Unmap().String()
 }
+
+// TCPSourceKey is the source a visitor from a is counted, limited and
+// banned as (sourceKey): the store writes a ban by hand in the same form.
+func TCPSourceKey(a netip.Addr) string { return sourceKey(a.Unmap().WithZone("")) }
 
 // tcpLimits are the limits of one tcp tunnel's visitors. admit and done are
 // the only ways in and out; one mutex keeps the counts consistent.
