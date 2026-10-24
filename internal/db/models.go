@@ -143,6 +143,19 @@ type Service struct {
 	// while a host name reaches it on the TLS passthrough listener
 	// (migration 0044).
 	TCPHostnameOnly bool
+	// UpstreamProtocol is how the relay speaks to the local service of an
+	// http service: http1 (the default), https, h2c or h2 (migration 0045;
+	// the values are checked by the store). UpstreamTLSVerify turns on
+	// verification of the local certificate (https and h2),
+	// UpstreamTLSServerName is the name to verify and send ("" takes it
+	// from the local host header), UpstreamTLSCAPEM the CA to verify
+	// against ("" for none; NULL in the table). GRPCMaxDurationS caps every
+	// gRPC call of the service in seconds, 0 for no cap.
+	UpstreamProtocol      string
+	UpstreamTLSVerify     bool
+	UpstreamTLSServerName string
+	UpstreamTLSCAPEM      string
+	GRPCMaxDurationS      int
 }
 
 // ServiceAPIKey is a row of the service_api_keys table.
@@ -389,7 +402,18 @@ type ServiceCustomDomain struct {
 	// cert-bearing rows and persists transitions via UpdateCustomDomainStatus.
 	Status          string
 	StatusUpdatedAt time.Time
+	// CertSource is CertSourceUploaded (the certificate and key are stored
+	// in this row) or CertSourceAuto (the relay obtains the certificate;
+	// CertPEM, KeyPEM and CertSHA256 are "" and NotBefore and NotAfter the
+	// zero time). "" on insert means CertSourceUploaded (migration 0045).
+	CertSource string
 }
+
+// The certificate sources of a custom domain.
+const (
+	CertSourceUploaded = "uploaded"
+	CertSourceAuto     = "auto"
+)
 
 // ConnectionLog is a row of the connection_logs table.
 type ConnectionLog struct {
@@ -415,6 +439,11 @@ type ConnectionLog struct {
 	// Protocol and SNI: what the first bytes of a tcp connection were and
 	// the server name of its TLS ClientHello; empty otherwise.
 	Protocol, SNI string
+	// GRPCMethod is the method of a gRPC call (/pkg.Service/Method) and
+	// GRPCStatus its grpc-status; "" and nil for any other row (migration
+	// 0045).
+	GRPCMethod string
+	GRPCStatus *int
 }
 
 // ConnectionLogRollup is a row of the connection_log_rollups table.

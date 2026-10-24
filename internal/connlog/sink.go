@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -75,6 +76,25 @@ type Entry struct {
 	// rdp, http, unknown) and SNI the server name of its TLS ClientHello;
 	// empty (NULL) otherwise.
 	Protocol, SNI string
+	// GRPCMethod is the method of a gRPC call (/pkg.Service/Method), cut to
+	// MaxGRPCMethodBytes, and GRPCStatus its grpc-status (0 is OK); empty
+	// and nil (NULL) for any other row.
+	GRPCMethod string
+	GRPCStatus *int
+}
+
+// MaxGRPCMethodBytes is the longest GRPCMethod that is stored.
+const MaxGRPCMethodBytes = 256
+
+// truncateUTF8 cuts s to at most n bytes without splitting a rune.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // Sink is the connection-log recording surface.
@@ -157,8 +177,8 @@ func (s *SQLSink) Record(ctx context.Context, e Entry) error {
 			`INSERT INTO connection_logs
 			  (id, kind, service_id, tunnel_id, user_id, client_session_id,
 			   source_ip, user_agent, started_at, ended_at, duration_ms,
-			   bytes_in, bytes_out, status, reason, token_name, protocol, sni)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			   bytes_in, bytes_out, status, reason, token_name, protocol, sni, grpc_method, grpc_status)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			e.ID,
 			string(e.Kind),
 			nullableStr(e.ServiceID),
@@ -177,6 +197,8 @@ func (s *SQLSink) Record(ctx context.Context, e Entry) error {
 			nullableStr(e.TokenName),
 			nullableStr(e.Protocol),
 			nullableStr(e.SNI),
+			nullableStr(truncateUTF8(e.GRPCMethod, MaxGRPCMethodBytes)),
+			e.GRPCStatus,
 		)
 		if err != nil {
 			s.log.Warn("connlog: insert failed",
@@ -276,7 +298,8 @@ func ListConnectionLogs(ctx context.Context, x *db.DB, q ConnLogQuery) ([]db.Con
 		source_ip, COALESCE(user_agent,''),
 		started_at, ended_at, duration_ms,
 		bytes_in, bytes_out, status, COALESCE(reason,''), created_at,
-		COALESCE(token_name,''), COALESCE(protocol,''), COALESCE(sni,'')
+		COALESCE(token_name,''), COALESCE(protocol,''), COALESCE(sni,''),
+		COALESCE(grpc_method,''), grpc_status
 		FROM connection_logs`
 	if len(where) > 0 {
 		sql += " WHERE " + strings.Join(where, " AND ")
@@ -300,6 +323,7 @@ func ListConnectionLogs(ctx context.Context, x *db.DB, q ConnLogQuery) ([]db.Con
 			&r.StartedAt, &r.EndedAt, &r.DurationMs,
 			&r.BytesIn, &r.BytesOut, &r.Status, &r.Reason, &r.CreatedAt,
 			&r.TokenName, &r.Protocol, &r.SNI,
+			&r.GRPCMethod, &r.GRPCStatus,
 		); err != nil {
 			return nil, fmt.Errorf("scan connection_log: %w", err)
 		}

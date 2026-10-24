@@ -38,6 +38,12 @@ func TestTCPServices_Postgres(t *testing.T) {
 	t.Run("tcp bans and usage", func(t *testing.T) { checkTCPBansAndUsage(t, x, "u-tcpban-pg") })
 	t.Run("tcp usage prune", func(t *testing.T) { checkPruneTCPDailyUsage(t, x, "u-tcpprune-pg") })
 	t.Run("tcp hostname only", func(t *testing.T) { checkServiceTCPHostnameOnly(t, x, "u-hostonly-pg") })
+	t.Run("http settings", func(t *testing.T) { checkServiceHTTPSettings(t, x, "u-httpset-pg") })
+	t.Run("custom domain cert source", func(t *testing.T) { checkCustomDomainCertSource(t, x, "u-certsrc-pg") })
+	t.Run("connection log grpc columns", func(t *testing.T) { checkConnectionLogGRPCColumns(t, x) })
+	t.Run("migration 0045 down and up", func(t *testing.T) {
+		checkMigration0029DownAndUp(t, x, "0045_v0.13.0_http2_grpc.postgres.sql")
+	})
 	t.Run("migration 0044 down and up", func(t *testing.T) {
 		checkMigration0029DownAndUp(t, x, "0044_v0.13.0_tcp_hostname_only.postgres.sql")
 	})

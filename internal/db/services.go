@@ -82,7 +82,7 @@ func (x *DB) CreateService(ctx context.Context, s Service) error {
 // mtls_ca_pem (migration 0009) is included so the proxy layer can populate
 // proxy.Resolved.MTLSCAPEM without a second round-trip; non-mtls services
 // store it as NULL, which COALESCE rewrites to ”.
-const selectServiceCols = `id, user_id, name, type, COALESCE(subdomain,''), access_mode, api_key_header, created_at, COALESCE(mtls_ca_pem,''), gateway_only, last_seen, last_client, COALESCE(tcp_port,0), tcp_port_pinned, COALESCE(max_connections,0), proxy_protocol, idle_timeout_s, COALESCE(tcp_hostname,''), rate_limit_kbps, daily_bytes, COALESCE(tcp_autoban,''), tcp_hostname_only`
+const selectServiceCols = `id, user_id, name, type, COALESCE(subdomain,''), access_mode, api_key_header, created_at, COALESCE(mtls_ca_pem,''), gateway_only, last_seen, last_client, COALESCE(tcp_port,0), tcp_port_pinned, COALESCE(max_connections,0), proxy_protocol, idle_timeout_s, COALESCE(tcp_hostname,''), rate_limit_kbps, daily_bytes, COALESCE(tcp_autoban,''), tcp_hostname_only, upstream_protocol, upstream_tls_verify, COALESCE(upstream_tls_server_name,''), COALESCE(upstream_tls_ca_pem,''), grpc_max_duration_s`
 
 // scanService reads one row of selectServiceCols.
 func scanService(row interface{ Scan(...any) error }) (Service, error) {
@@ -91,7 +91,8 @@ func scanService(row interface{ Scan(...any) error }) (Service, error) {
 	if err := row.Scan(&s.ID, &s.UserID, &s.Name, &s.Type, &s.Subdomain, &s.AccessMode, &s.APIKeyHeader, &s.CreatedAt,
 		&s.MTLSCAPEM, (*intBool)(&s.GatewayOnly), &lastSeen, &s.LastClient,
 		&s.TCPPort, (*intBool)(&s.TCPPortPinned), &s.MaxConnections, &s.ProxyProtocol, &s.IdleTimeoutS, &s.TCPHostname,
-		&s.RateLimitKbps, &s.DailyBytes, &s.TCPAutoBan, (*intBool)(&s.TCPHostnameOnly)); err != nil {
+		&s.RateLimitKbps, &s.DailyBytes, &s.TCPAutoBan, (*intBool)(&s.TCPHostnameOnly),
+		&s.UpstreamProtocol, (*intBool)(&s.UpstreamTLSVerify), &s.UpstreamTLSServerName, &s.UpstreamTLSCAPEM, &s.GRPCMaxDurationS); err != nil {
 		return Service{}, err
 	}
 	if lastSeen.Valid {
@@ -490,4 +491,65 @@ func (x *DB) SetServiceGatewayOnly(ctx context.Context, id string, on bool) erro
 		return fmt.Errorf("set service gateway only: %w", err)
 	}
 	return notFoundIfNoRows(res, "set service gateway only")
+}
+
+// HTTPSettingsUpdate names the http settings of a service to change; a nil
+// field is kept. "" for UpstreamTLSServerName or UpstreamTLSCAPEM clears it
+// (NULL). The caller validates the values.
+type HTTPSettingsUpdate struct {
+	UpstreamProtocol      *string
+	UpstreamTLSVerify     *bool
+	UpstreamTLSServerName *string
+	UpstreamTLSCAPEM      *string
+	GRPCMaxDurationS      *int
+}
+
+// SetServiceHTTPSettings sets the fields of u that are not nil, in one
+// statement, so that two writes of different settings never undo each
+// other. An empty u writes nothing and still reports a missing service.
+// ErrNotFound when there is no such service.
+func (x *DB) SetServiceHTTPSettings(ctx context.Context, id string, u HTTPSettingsUpdate) error {
+	var sets []string
+	var args []any
+	add := func(col string, v any) {
+		sets = append(sets, col+"=?")
+		args = append(args, v)
+	}
+	nullable := func(p *string) any {
+		if *p == "" {
+			return nil
+		}
+		return *p
+	}
+	if u.UpstreamProtocol != nil {
+		add("upstream_protocol", *u.UpstreamProtocol)
+	}
+	if u.UpstreamTLSVerify != nil {
+		add("upstream_tls_verify", boolToInt(*u.UpstreamTLSVerify))
+	}
+	if u.UpstreamTLSServerName != nil {
+		add("upstream_tls_server_name", nullable(u.UpstreamTLSServerName))
+	}
+	if u.UpstreamTLSCAPEM != nil {
+		add("upstream_tls_ca_pem", nullable(u.UpstreamTLSCAPEM))
+	}
+	if u.GRPCMaxDurationS != nil {
+		add("grpc_max_duration_s", *u.GRPCMaxDurationS)
+	}
+	if len(sets) == 0 {
+		var n int
+		if err := x.sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM services WHERE id=?`, id).Scan(&n); err != nil {
+			return fmt.Errorf("set service http settings: %w", err)
+		}
+		if n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	}
+	args = append(args, id)
+	res, err := x.sqlDB.ExecContext(ctx, `UPDATE services SET `+strings.Join(sets, ", ")+` WHERE id=?`, args...)
+	if err != nil {
+		return fmt.Errorf("set service http settings: %w", err)
+	}
+	return notFoundIfNoRows(res, "set service http settings")
 }

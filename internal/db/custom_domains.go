@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -16,16 +17,22 @@ import (
 func (x *DB) InsertCustomDomain(ctx context.Context, d ServiceCustomDomain) (ServiceCustomDomain, error) {
 	d.ID = uuid.NewString()
 	d.Hostname = strings.ToLower(d.Hostname)
+	if d.CertSource == "" {
+		d.CertSource = CertSourceUploaded
+	}
+	if d.CertSource != CertSourceUploaded && d.CertSource != CertSourceAuto {
+		return ServiceCustomDomain{}, ErrInvalidCertSource
+	}
 	now := time.Now().UTC()
 	d.CreatedAt = now
 	d.UpdatedAt = now
 
 	_, err := x.sqlDB.ExecContext(ctx,
 		`INSERT INTO service_custom_domains
-		   (id, service_id, hostname, cert_pem, key_pem, cert_sha256, not_before, not_after, created_at, updated_at)
-		   VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		   (id, service_id, hostname, cert_pem, key_pem, cert_sha256, not_before, not_after, created_at, updated_at, cert_source)
+		   VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		d.ID, d.ServiceID, d.Hostname, d.CertPEM, d.KeyPEM, d.CertSHA256,
-		d.NotBefore, d.NotAfter, d.CreatedAt, d.UpdatedAt,
+		d.NotBefore, d.NotAfter, d.CreatedAt, d.UpdatedAt, d.CertSource,
 	)
 	if err != nil {
 		if isDuplicateError(err) {
@@ -41,15 +48,21 @@ func (x *DB) InsertCustomDomain(ctx context.Context, d ServiceCustomDomain) (Ser
 // Returns ErrDuplicateHostname when the new hostname conflicts.
 func (x *DB) UpdateCustomDomain(ctx context.Context, d ServiceCustomDomain) error {
 	d.Hostname = strings.ToLower(d.Hostname)
+	if d.CertSource == "" {
+		d.CertSource = CertSourceUploaded
+	}
+	if d.CertSource != CertSourceUploaded && d.CertSource != CertSourceAuto {
+		return ErrInvalidCertSource
+	}
 	now := time.Now().UTC()
 
 	res, err := x.sqlDB.ExecContext(ctx,
 		`UPDATE service_custom_domains
 		    SET hostname=?, cert_pem=?, key_pem=?, cert_sha256=?,
-		        not_before=?, not_after=?, updated_at=?
+		        not_before=?, not_after=?, updated_at=?, cert_source=?
 		  WHERE id=? AND service_id=?`,
 		d.Hostname, d.CertPEM, d.KeyPEM, d.CertSHA256,
-		d.NotBefore, d.NotAfter, now,
+		d.NotBefore, d.NotAfter, now, d.CertSource,
 		d.ID, d.ServiceID,
 	)
 	if err != nil {
@@ -72,12 +85,12 @@ func (x *DB) GetCustomDomain(ctx context.Context, serviceID, id string) (Service
 	err := x.sqlDB.QueryRowContext(ctx,
 		`SELECT id, service_id, hostname, cert_pem, key_pem, cert_sha256,
 		        not_before, not_after, created_at, updated_at,
-		        status, status_updated_at
+		        status, status_updated_at, cert_source
 		   FROM service_custom_domains WHERE id=? AND service_id=?`,
 		id, serviceID,
 	).Scan(&d.ID, &d.ServiceID, &d.Hostname, &d.CertPEM, &d.KeyPEM, &d.CertSHA256,
 		&d.NotBefore, &d.NotAfter, &d.CreatedAt, &d.UpdatedAt,
-		&d.Status, &d.StatusUpdatedAt)
+		&d.Status, &d.StatusUpdatedAt, &d.CertSource)
 	if err == sql.ErrNoRows {
 		return ServiceCustomDomain{}, ErrNotFound
 	}
@@ -92,7 +105,7 @@ func (x *DB) ListCustomDomains(ctx context.Context, serviceID string) ([]Service
 	rows, err := x.sqlDB.QueryContext(ctx,
 		`SELECT id, service_id, hostname, cert_pem, key_pem, cert_sha256,
 		        not_before, not_after, created_at, updated_at,
-		        status, status_updated_at
+		        status, status_updated_at, cert_source
 		   FROM service_custom_domains WHERE service_id=?
 		   ORDER BY created_at`,
 		serviceID,
@@ -107,7 +120,7 @@ func (x *DB) ListCustomDomains(ctx context.Context, serviceID string) ([]Service
 		var d ServiceCustomDomain
 		if err := rows.Scan(&d.ID, &d.ServiceID, &d.Hostname, &d.CertPEM, &d.KeyPEM, &d.CertSHA256,
 			&d.NotBefore, &d.NotAfter, &d.CreatedAt, &d.UpdatedAt,
-			&d.Status, &d.StatusUpdatedAt); err != nil {
+			&d.Status, &d.StatusUpdatedAt, &d.CertSource); err != nil {
 			return nil, fmt.Errorf("scan custom domain: %w", err)
 		}
 		out = append(out, d)
@@ -136,12 +149,12 @@ func (x *DB) LookupCustomDomainByHostname(ctx context.Context, hostname string) 
 	err := x.sqlDB.QueryRowContext(ctx,
 		`SELECT id, service_id, hostname, cert_pem, key_pem, cert_sha256,
 		        not_before, not_after, created_at, updated_at,
-		        status, status_updated_at
+		        status, status_updated_at, cert_source
 		   FROM service_custom_domains WHERE hostname=?`,
 		hostname,
 	).Scan(&d.ID, &d.ServiceID, &d.Hostname, &d.CertPEM, &d.KeyPEM, &d.CertSHA256,
 		&d.NotBefore, &d.NotAfter, &d.CreatedAt, &d.UpdatedAt,
-		&d.Status, &d.StatusUpdatedAt)
+		&d.Status, &d.StatusUpdatedAt, &d.CertSource)
 	if err == sql.ErrNoRows {
 		return ServiceCustomDomain{}, ErrNotFound
 	}
@@ -157,7 +170,7 @@ func (x *DB) ListExpiringCustomDomains(ctx context.Context, cutoff time.Time) ([
 	rows, err := x.sqlDB.QueryContext(ctx,
 		`SELECT id, service_id, hostname, cert_pem, key_pem, cert_sha256,
 		        not_before, not_after, created_at, updated_at,
-		        status, status_updated_at
+		        status, status_updated_at, cert_source
 		   FROM service_custom_domains WHERE not_after < ?
 		   ORDER BY not_after`,
 		cutoff,
@@ -172,7 +185,7 @@ func (x *DB) ListExpiringCustomDomains(ctx context.Context, cutoff time.Time) ([
 		var d ServiceCustomDomain
 		if err := rows.Scan(&d.ID, &d.ServiceID, &d.Hostname, &d.CertPEM, &d.KeyPEM, &d.CertSHA256,
 			&d.NotBefore, &d.NotAfter, &d.CreatedAt, &d.UpdatedAt,
-			&d.Status, &d.StatusUpdatedAt); err != nil {
+			&d.Status, &d.StatusUpdatedAt, &d.CertSource); err != nil {
 			return nil, fmt.Errorf("scan expiring custom domain: %w", err)
 		}
 		out = append(out, d)
@@ -186,7 +199,7 @@ func (x *DB) ListAllCustomDomains(ctx context.Context) ([]ServiceCustomDomain, e
 	rows, err := x.sqlDB.QueryContext(ctx,
 		`SELECT id, service_id, hostname, cert_pem, key_pem, cert_sha256,
 		        not_before, not_after, created_at, updated_at,
-		        status, status_updated_at
+		        status, status_updated_at, cert_source
 		   FROM service_custom_domains ORDER BY hostname`,
 	)
 	if err != nil {
@@ -199,7 +212,7 @@ func (x *DB) ListAllCustomDomains(ctx context.Context) ([]ServiceCustomDomain, e
 		var d ServiceCustomDomain
 		if err := rows.Scan(&d.ID, &d.ServiceID, &d.Hostname, &d.CertPEM, &d.KeyPEM, &d.CertSHA256,
 			&d.NotBefore, &d.NotAfter, &d.CreatedAt, &d.UpdatedAt,
-			&d.Status, &d.StatusUpdatedAt); err != nil {
+			&d.Status, &d.StatusUpdatedAt, &d.CertSource); err != nil {
 			return nil, fmt.Errorf("scan custom domain: %w", err)
 		}
 		out = append(out, d)
@@ -238,6 +251,11 @@ func isDuplicateError(err error) bool {
 	return strings.Contains(msg, "UNIQUE constraint failed") ||
 		strings.Contains(msg, "unique constraint")
 }
+
+// ErrInvalidCertSource is returned by InsertCustomDomain and
+// UpdateCustomDomain for a cert_source other than CertSourceUploaded and
+// CertSourceAuto.
+var ErrInvalidCertSource = errors.New("db: cert_source must be uploaded or auto")
 
 // ErrDuplicateHostname is returned when a hostname INSERT conflicts with an
 // existing row (UNIQUE constraint on service_custom_domains.hostname).

@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ankoehn/burrow/internal/db"
 )
@@ -703,5 +705,38 @@ func TestConnLogSinkKeepsProtocolAndSNI(t *testing.T) {
 	_ = x.DB().QueryRow(`SELECT COUNT(*) FROM connection_logs WHERE sni IS NULL AND protocol IS NULL`).Scan(&nulls)
 	if nulls != 1 {
 		t.Fatalf("an http row stores sni/protocol: %d NULL rows", nulls)
+	}
+}
+
+// A gRPC row keeps the method and the grpc-status (a 0 included); other rows
+// read "" and nil, and a method over 256 bytes is cut at a rune boundary.
+func TestConnLogSinkKeepsGRPCMethodAndStatus(t *testing.T) {
+	x := testDB(t)
+	sink := NewSQLSink(x, nil)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	long := "/" + strings.Repeat("é", 200) + "/M" // 2 bytes per rune: over 256 bytes
+	st0, st14 := 0, 14
+	_ = sink.Record(ctx, Entry{Kind: KindHTTPProxy, SourceIP: "10.0.0.1", StartedAt: now, EndedAt: now,
+		Status: StatusClosedClean, Protocol: "grpc", GRPCMethod: "/pkg.Svc/Ok", GRPCStatus: &st0})
+	_ = sink.Record(ctx, Entry{Kind: KindHTTPProxy, SourceIP: "10.0.0.2", StartedAt: now.Add(-time.Second), EndedAt: now,
+		Status: StatusClosedError, Protocol: "grpc", GRPCMethod: long, GRPCStatus: &st14})
+	_ = sink.Record(ctx, Entry{Kind: KindHTTPProxy, SourceIP: "10.0.0.3", StartedAt: now.Add(-2 * time.Second), EndedAt: now,
+		Status: StatusClosedClean})
+	waitForRows(t, x, 3)
+	rows, err := ListConnectionLogs(ctx, x, ConnLogQuery{Limit: 10})
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("rows %+v %v", rows, err)
+	}
+	if rows[0].GRPCMethod != "/pkg.Svc/Ok" || rows[0].GRPCStatus == nil || *rows[0].GRPCStatus != 0 {
+		t.Fatalf("ok row %+v", rows[0])
+	}
+	if len(rows[1].GRPCMethod) > MaxGRPCMethodBytes || !utf8.ValidString(rows[1].GRPCMethod) ||
+		!strings.HasPrefix(long, rows[1].GRPCMethod) || len(rows[1].GRPCMethod) < MaxGRPCMethodBytes-1 ||
+		rows[1].GRPCStatus == nil || *rows[1].GRPCStatus != 14 {
+		t.Fatalf("long row: %d bytes, status %v", len(rows[1].GRPCMethod), rows[1].GRPCStatus)
+	}
+	if rows[2].GRPCMethod != "" || rows[2].GRPCStatus != nil {
+		t.Fatalf("plain row %+v", rows[2])
 	}
 }
