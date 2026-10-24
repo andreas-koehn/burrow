@@ -89,7 +89,7 @@ test.describe("tcp service page", () => {
     await expect(modes.getByRole("radio", { name: /IP allowlist/ })).toHaveAttribute("aria-checked", "true");
     await modes.getByRole("radio", { name: /^Open/ }).click();
     await expect(page.getByText(/Anyone on the internet can connect to this port/)).toBeVisible();
-    await expect(page.getByText(/needs the client to be restarted with --access open/)).toBeVisible();
+    await expect(page.getByText(/Clients started without --access serve open when they reconnect/)).toBeVisible();
     await modes.getByRole("radio", { name: /IP allowlist/ }).click();
     await expect(page.getByRole("button", { name: "Save mode" })).toBeDisabled();
 

@@ -137,6 +137,8 @@ test.describe("signed in", () => {
     await page.keyboard.press("Tab");
     await expect(page.getByLabel("Token name")).toBeFocused();
     await page.keyboard.press("Tab");
+    await expect(page.getByRole("combobox", { name: "Scope" })).toBeFocused();
+    await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name: "Deny" })).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name: "Approve" })).toBeFocused();

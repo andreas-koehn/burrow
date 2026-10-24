@@ -446,7 +446,7 @@ services:
   - name: ssh
     local: 127.0.0.1:22
     type: tcp
-    access: ip                    # open | ip | private; without it: the stored mode (new: open)
+    access: ip                    # open | ip | private; without it: the stored mode (new: private, open with remote)
     remote: 9001                  # fixed port with open or ip; 0 = auto-assigned
 forwards:                         # optional; a file may hold forwards alone
   - target: rdp                   # slug, own service name or id
