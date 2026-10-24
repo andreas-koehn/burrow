@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ankoehn/burrow/internal/authz"
+	"github.com/ankoehn/burrow/internal/proto"
 	"github.com/ankoehn/burrow/internal/store"
 )
 
@@ -77,14 +78,7 @@ func (d Deps) httpSettingsView(serviceID string, s store.HTTPSettings) httpSetti
 	if l, ok := d.Connections.(ClientUpstreamReader); ok {
 		out.ClientUpstreamProtocol = l.ClientUpstreamProtocol(serviceID)
 	}
-	switch {
-	case out.ClientUpstreamProtocol != "":
-		out.EffectiveUpstreamProtocol = out.ClientUpstreamProtocol
-	case s.UpstreamProtocol != "":
-		out.EffectiveUpstreamProtocol = s.UpstreamProtocol
-	default:
-		out.EffectiveUpstreamProtocol = store.UpstreamHTTP1
-	}
+	out.EffectiveUpstreamProtocol = proto.EffectiveUpstream(out.ClientUpstreamProtocol, s.UpstreamProtocol)
 	return out
 }
 

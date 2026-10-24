@@ -319,3 +319,17 @@ type StreamHeader struct {
 	// TunnelID is the tunnel this data stream serves.
 	TunnelID string `json:"tunnel_id"`
 }
+
+// EffectiveUpstream is the upstream protocol that applies to an http tunnel:
+// the one its client named at registration, else the service's stored
+// setting, else UpstreamHTTP1. The relay and the API both use it, so that what
+// the dashboard shows is what the proxy does.
+func EffectiveUpstream(client, stored string) string {
+	if client != "" {
+		return client
+	}
+	if stored != "" {
+		return stored
+	}
+	return UpstreamHTTP1
+}

@@ -608,3 +608,38 @@ func TestLoadFileConfig_ProxyProtocol(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadFileConfig_UpstreamProtocol(t *testing.T) {
+	write := func(services string) string {
+		yml := filepath.Join(t.TempDir(), "burrow.yaml")
+		if err := os.WriteFile(yml, []byte("server: relay.example.com:7000\ntoken: mytoken\nservices:\n"+services), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return yml
+	}
+	c, err := LoadFileConfig(write("  - { name: api, local: 127.0.0.1:50051, type: http, upstream_protocol: h2c }\n" +
+		"  - { name: web, local: 127.0.0.1:3000, type: http }\n" +
+		"  - { name: tls, local: 127.0.0.1:8443, type: http, upstream_protocol: https }\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{c.Tunnels[0].UpstreamProtocol, c.Tunnels[1].UpstreamProtocol, c.Tunnels[2].UpstreamProtocol}; got[0] != "h2c" || got[1] != "" || got[2] != "https" {
+		t.Fatalf("upstream protocols = %q", got)
+	}
+	// `burrow connect --config` runs the same services and sends the same wish.
+	cc, err := LoadCompleteFileConfig(write("  - { name: api, local: 127.0.0.1:50051, type: http, upstream_protocol: h2 }\n"))
+	if err != nil || cc.Tunnels[0].UpstreamProtocol != "h2" {
+		t.Fatalf("connect --config: %+v %v", cc.Tunnels, err)
+	}
+	for name, svc := range map[string]string{
+		"unknown value": "  - { name: a, local: 127.0.0.1:1, type: http, upstream_protocol: grpc }\n",
+		"on a tcp":      "  - { name: a, local: 127.0.0.1:1, type: tcp, upstream_protocol: h2c }\n",
+		"default type":  "  - { name: a, local: 127.0.0.1:1, upstream_protocol: h2c }\n",
+		"on an mcp":     "  - { name: a, type: mcp, command: x, upstream_protocol: h2c }\n",
+	} {
+		_, err := LoadFileConfig(write(svc))
+		if err == nil || !strings.Contains(err.Error(), "upstream_protocol") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+}

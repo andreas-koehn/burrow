@@ -15,7 +15,7 @@ import (
 func exitCodeOfConnectError(err error) int { return exitCode(err) }
 
 func TestExitCode(t *testing.T) {
-	_, targetErr := client.ParseTarget("https://localhost:3000")
+	_, targetErr := client.ParseTarget("ftp://localhost:3000")
 	cases := []struct {
 		name string
 		err  error
@@ -42,7 +42,7 @@ func TestExitCode(t *testing.T) {
 }
 
 func TestReport(t *testing.T) {
-	_, targetErr := client.ParseTarget("https://localhost:3000")
+	_, targetErr := client.ParseTarget("ftp://localhost:3000")
 	cases := []struct {
 		name string
 		err  error

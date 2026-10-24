@@ -57,6 +57,13 @@ type TunnelSpec struct {
 	// for the header too). "" leaves it to the relay. The relay is told, to
 	// show it.
 	ProxyProtocol string
+	// UpstreamProtocol (http only) is the protocol the relay speaks to the
+	// local service: one of proto.UpstreamHTTP1, UpstreamHTTPS, UpstreamH2C
+	// and UpstreamH2. "" = the user chose none: nothing is sent and the
+	// relay's setting for the service applies. A relay that does not announce
+	// proto.CapUpstreamProtocol is never sent a tunnel with a choice other
+	// than http1: see UpstreamNotAppliedError.
+	UpstreamProtocol string
 }
 
 // Options configures a Client.
@@ -189,6 +196,12 @@ func (c *Client) Run(ctx context.Context) error {
 			c.registered.Store(false)
 			return err
 		}
+		var upNotApplied *UpstreamNotAppliedError
+		if errors.As(err, &upNotApplied) && ctx.Err() == nil {
+			// The relay does not get younger by waiting.
+			c.registered.Store(false)
+			return err
+		}
 		var notApplied *AccessNotAppliedError
 		if errors.As(err, &notApplied) && ctx.Err() == nil {
 			// Never tried again, whatever the caller asked for: every attempt
@@ -305,6 +318,7 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		}
 	}
 	tcpAccess := slices.Contains(ar.Capabilities, proto.CapTCPAccess)
+	upstreamProto := slices.Contains(ar.Capabilities, proto.CapUpstreamProtocol)
 	var env proto.Envelope
 	// A refusal that will not change (see RefusedError.Final) ends its own
 	// tunnel: it is logged and skipped, and the others are served. Only a
@@ -343,9 +357,25 @@ func (c *Client) connectOnce(ctx context.Context) error {
 			skip(tn.Name, ae)
 			continue
 		}
+		// An older relay speaks HTTP/1.1 whatever it is asked: a service
+		// that needs another protocol would fail without a word, so it is
+		// not registered. http1 is what such a relay does anyway.
+		upstream := ""
+		if tn.Type == "http" && tn.UpstreamProtocol != "" {
+			switch {
+			case upstreamProto:
+				upstream = tn.UpstreamProtocol
+			case tn.UpstreamProtocol != proto.UpstreamHTTP1:
+				ue := &UpstreamNotAppliedError{Name: tn.Name, Protocol: tn.UpstreamProtocol}
+				c.log.Error("tunnel not registered: the relay cannot speak this upstream protocol", "name", tn.Name, "upstream_protocol", tn.UpstreamProtocol)
+				skip(tn.Name, ue)
+				continue
+			}
+		}
 		if err := proto.WriteMessage(ctrl, proto.MsgTunnelRegister, proto.TunnelRegister{
 			Name: tn.Name, Type: tn.Type, RemotePort: tn.RemotePort, LocalAddr: tn.LocalAddr,
 			Slug: tn.Slug, Access: tn.Access, AccessDefault: accessDefault, ProxyProtocol: tcpProxyProtocol(tn),
+			UpstreamProtocol: upstream,
 		}); err != nil {
 			return err
 		}
@@ -629,7 +659,18 @@ func (c *Client) requestSummary(env proto.Envelope) {
 	}
 	id, method, path, status := s.TunnelID, proto.SummaryMethod(s.Method), proto.SummaryPath(s.Path), s.Status
 	at = at.Local()
-	c.events.emitLine(func(o Observer) { o.Request(id, at, method, path, status) })
+	var grpc *int
+	if s.GRPCStatus != nil {
+		g := *s.GRPCStatus
+		grpc = &g
+	}
+	c.events.emitLine(func(o Observer) {
+		if gobs, ok := o.(GRPCObserver); ok {
+			gobs.RequestGRPC(id, at, method, path, status, grpc)
+			return
+		}
+		o.Request(id, at, method, path, status)
+	})
 }
 
 // countConnection adds d (1 or -1) to the open visitor connections of a

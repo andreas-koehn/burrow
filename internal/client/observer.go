@@ -78,6 +78,14 @@ type SessionObserver interface {
 	Session(info SessionInfo)
 }
 
+// GRPCObserver is an Observer that also wants the grpc-status of a request.
+// It is optional. For a request an Observer that is one is told RequestGRPC
+// in place of Request; grpc is nil when the call was no gRPC call or ended
+// without a status.
+type GRPCObserver interface {
+	RequestGRPC(tunnelID string, at time.Time, method, path string, status int, grpc *int)
+}
+
 // CountObserver is an Observer that is also told how many visitor connections
 // a tunnel has. It is optional: an Observer without the method is not told.
 //

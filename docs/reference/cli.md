@@ -177,6 +177,7 @@ burrow <command> [flags]
 | [`logout`](#logout) | Forget the stored sign-in |
 | [`http`](#http-and-tcp) | Expose a local HTTP service |
 | [`tcp`](#http-and-tcp) | Expose a local TCP port |
+| [`grpc`](#grpc) | Expose a local gRPC service |
 | [`forward`](#forward) | Reach a private tcp service on a local port |
 | [`up`](#up) | Run every service in `burrow.yaml` |
 | [`status`](#status) | Show what this machine is signed in to |
@@ -264,12 +265,15 @@ Tokens**). It does not revoke the token itself.
 
 ```sh
 burrow http <target> [--name <name>] [--slug <slug>] [--access open|login|api-key]
+burrow http <target> [--upstream-protocol http1|https|h2c|h2]
 burrow tcp  <target> [--name <name>] [--access open|ip|private] [--remote <port>] [--proxy-protocol v2]
 ```
 
 `<target>` is `3000` (`127.0.0.1:3000`), `localhost:3000`, `192.168.1.20:8080`
-or `http://localhost:3000`. A path or an `https://` address is rejected (exit
-code 2).
+or `http://localhost:3000`. `burrow http` also takes `https://host:port` (the
+local service speaks TLS, default port 443) and `h2c://host:port` (plain
+HTTP/2). A path, credentials or any other scheme is rejected (exit code 2), and
+so is `https://` or `h2c://` on `burrow tcp`.
 
 | Flag | Applies to | Description |
 |------|-----------|-------------|
@@ -277,6 +281,7 @@ code 2).
 | `--slug <slug>` | `http` | Path under `/svc/`; used only when the service is created |
 | `--access open\|login\|api-key` | `http` | Access mode; used only when the service is created. `login` is the relay's `burrow_login`, `api-key` is `api_key` and creates no key |
 | `--access open\|ip\|private` | `tcp` | Access mode. Without the flag a service that exists is served in its stored mode, and a new one is created `private`: no public port, reached with `burrow forward`. `ip` and `open` open a public port. A dashboard mode stricter than the flag is kept; a looser one makes the relay refuse with "restart with --access `<mode>`". Against a relay too old for tcp modes, `ip` and `private` register nothing |
+| `--upstream-protocol http1\|https\|h2c\|h2` | `http` | How the relay speaks to the local service. `http1` is HTTP/1.1 in plain text; `https` is HTTP/1.1 over TLS; `h2c` is HTTP/2 without TLS; `h2` is HTTP/2 over TLS and fails if the service does not offer it. Without the flag the scheme of the target decides (`https://` is `https`, `h2c://` is `h2c`), and without either the service's setting in the dashboard applies (`http1` by default). The flag and the scheme must agree: `https://` takes `https` or `h2`, `h2c://` takes `h2c`. What you choose here wins over the dashboard and is shown there as "set by client". Against a relay too old to know it, any value but `http1` registers nothing and the command stops with "relay too old" |
 | `--proxy-protocol v2` | `tcp` | Write a PROXY protocol v2 header with the visitor's address (a forwarder's address, for a forward) to the local target before any other byte. Any other value is a usage error; on `burrow http` it is refused. The relay's per-service setting turns the header on as well. Update the client before you turn it on for a service: an older client writes no header. See [PROXY protocol](/guide/remote-desktop-and-tcp#proxy-protocol-to-the-local-target) |
 | `--remote <port>` | `tcp` | Fixed public port (default: any free port). Needs `--access open` or `ip`; with `private` it is a usage error |
 
@@ -285,6 +290,27 @@ Exit codes: 2 bad target or flag; 3 not signed in (or the stored sign-in is for
 another relay); 4 token rejected; 6 client too old; 1 anything else, including
 a slug the relay refused and an access mode the relay did not apply. When the
 relay cannot be reached, the command says so once and keeps retrying.
+
+### grpc
+
+```sh
+burrow grpc <target> [--name <name>] [--slug <slug>] [--access open|login|api-key]
+```
+
+`burrow grpc` is `burrow http` for a gRPC server: an http service whose
+upstream protocol is `h2c`. `burrow grpc 50051` forwards to `127.0.0.1:50051`
+and speaks plain HTTP/2 to it. `h2c://localhost:50051` says the same;
+`https://localhost:50443` or `--upstream-protocol h2` speaks HTTP/2 over TLS
+(`h2`). `--upstream-protocol` accepts `h2c` and `h2` here. The other flags and
+the exit codes are those of `burrow http`.
+
+gRPC clients cannot use the `/svc/<slug>/` prefix, so give the service a host
+name of its own: a custom domain on the service in the dashboard (**Host
+names**). The dashboard shows the address to give a gRPC client, for example
+`grpc.example.com:443`. In the client's status view a gRPC call shows its
+`grpc-status` (for example `grpc 14`) in place of the HTTP status, which is
+200 for every call that reached the server. A relay that does not send it
+shows the HTTP status as before.
 
 ### forward
 
@@ -321,7 +347,15 @@ Runs every service in a `burrow.yaml`, found as `--file <path>`, `./burrow.yaml`
 then `burrow.yaml` in the user config directory. `server` and `token` in the
 file are optional; what is missing comes from the sign-in. `BURROW_SERVER` and
 `BURROW_TOKEN`, when set, come before the file. `burrow connect --config` uses
-the file alone. See [Configuration](/guide/configuration#burrow-yaml).
+the file alone. An http service may set `upstream_protocol: http1|https|h2c|h2`,
+the same choice as `--upstream-protocol`; on a tcp or mcp service it is an
+error, and without it the service's setting in the dashboard applies. See
+[Configuration](/guide/configuration#burrow-yaml).
+
+```yaml
+services:
+  - { name: api, local: 127.0.0.1:50051, type: http, upstream_protocol: h2c }
+```
 
 ### status
 

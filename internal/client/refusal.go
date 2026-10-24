@@ -65,6 +65,22 @@ func refusalCode(stage, code, message string) string {
 	return ""
 }
 
+// UpstreamNotAppliedError ends Run when a service asked for an upstream
+// protocol other than http1 and the relay does not announce
+// proto.CapUpstreamProtocol. That relay speaks HTTP/1.1 to the local service
+// whatever it is asked, so the service is not registered. With other services
+// to serve only this one is skipped; Run ends with this error when nothing
+// else runs, and does not try again.
+type UpstreamNotAppliedError struct {
+	Name     string // the service
+	Protocol string // the upstream protocol that was asked for
+}
+
+func (e *UpstreamNotAppliedError) Error() string {
+	return "not registered: the relay is too old to speak " + e.Protocol + " to service " + e.Name +
+		"; update the relay, or use --upstream-protocol http1"
+}
+
 // AccessNotAppliedError ends Run when an access mode other than open was
 // wished for an http service and the relay registered the tunnel without a
 // word about it. That relay is older: it ignored the wish, and the service it

@@ -39,11 +39,5 @@ func (s *Server) ClientUpstreamProtocol(serviceID string) string {
 // of an http service whose stored setting is stored: the client's, when it
 // named one, else stored, else proto.UpstreamHTTP1.
 func EffectiveUpstreamProtocol(tn *Tunnel, stored string) string {
-	if p := tn.ClientUpstreamProtocol(); p != "" {
-		return p
-	}
-	if stored != "" {
-		return stored
-	}
-	return proto.UpstreamHTTP1
+	return proto.EffectiveUpstream(tn.ClientUpstreamProtocol(), stored)
 }

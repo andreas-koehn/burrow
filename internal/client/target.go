@@ -1,11 +1,15 @@
 package client
 
 import (
+	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/ankoehn/burrow/internal/proto"
 )
 
 // TargetError explains why a target was not accepted. Its message is shown to
@@ -14,16 +18,32 @@ type TargetError struct{ Input, Reason string }
 
 func (e *TargetError) Error() string {
 	return "cannot use " + strconv.Quote(e.Input) + " as a target: " + e.Reason +
-		"\nAccepted forms: 3000   localhost:3000   192.168.1.20:8080   http://localhost:3000"
+		"\nAccepted forms: 3000   localhost:3000   192.168.1.20:8080   http://localhost:3000   https://localhost:8443   h2c://localhost:50051"
 }
 
 // ParseTarget turns what the user typed into the local address to forward to.
-// A bare port means 127.0.0.1.
+// A bare port means 127.0.0.1. https:// and h2c:// are accepted like http://;
+// ParseTargetProtocol also says what the scheme asks for.
 func ParseTarget(s string) (string, error) {
+	addr, _, err := ParseTargetProtocol(s)
+	return addr, err
+}
+
+// ParseTargetProtocol is ParseTarget that also returns the upstream protocol
+// the scheme names: proto.UpstreamHTTPS for https://, proto.UpstreamH2C for
+// h2c://, and "" for http:// and for a target without a scheme. The scheme is
+// no more than a wish: ResolveUpstream weighs it against --upstream-protocol.
+func ParseTargetProtocol(s string) (addr, protocol string, err error) {
 	in := strings.TrimSpace(s)
 	// shown is the input as echoed in errors: a typed password is never repeated.
 	shown := redactCredentials(s)
-	bad := func(reason string) (string, error) { return "", &TargetError{Input: shown, Reason: reason} }
+	bad := func(reason string) (string, string, error) { return "", "", &TargetError{Input: shown, Reason: reason} }
+	done := func(a string, e error) (string, string, error) {
+		if e != nil {
+			return "", "", e
+		}
+		return a, protocol, nil
+	}
 	const credReason = "an address must not contain credentials"
 
 	rest := in
@@ -39,11 +59,16 @@ func ParseTarget(s string) (string, error) {
 		if err != nil {
 			return bad("it is not a valid address with a port")
 		}
+		defaultPort := "80"
 		switch {
 		case u.Scheme == "https":
-			return bad("HTTPS upstreams are not supported; point at the plain HTTP port of the local service")
+			protocol, defaultPort = proto.UpstreamHTTPS, "443"
+		case u.Scheme == "h2c":
+			protocol = proto.UpstreamH2C
 		case u.Scheme != "http":
-			return bad("only http:// addresses are understood")
+			return bad("only http://, https:// and h2c:// addresses are understood")
+		}
+		switch {
 		case u.User != nil:
 			return bad(credReason)
 		case (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "":
@@ -51,19 +76,59 @@ func ParseTarget(s string) (string, error) {
 		}
 		host, port := u.Hostname(), u.Port()
 		if port == "" {
-			port = "80"
+			port = defaultPort
 		}
-		return joinTarget(shown, host, port)
+		return done(joinTarget(shown, host, port))
 	}
 	if !strings.Contains(in, ":") {
 		// a bare port
-		return joinTarget(shown, "127.0.0.1", in)
+		return done(joinTarget(shown, "127.0.0.1", in))
 	}
 	host, port, err := net.SplitHostPort(in)
 	if err != nil {
 		return bad("it needs the form host:port with a numeric port")
 	}
-	return joinTarget(shown, host, port)
+	return done(joinTarget(shown, host, port))
+}
+
+// ResolveUpstream settles the upstream protocol of an http service from what
+// the target's scheme asked for (ParseTargetProtocol), the value of
+// --upstream-protocol ("" if not given) and whether the command is `burrow
+// grpc`. "" means the user chose none: nothing is sent and the relay's setting
+// applies.
+//
+//   - https:// is https, or h2 with the flag; any other flag contradicts it.
+//   - h2c:// is h2c; any other flag contradicts it.
+//   - burrow grpc is h2c, h2 for an https:// target, and h2 or h2c as flag.
+func ResolveUpstream(scheme, flag string, grpc bool) (string, error) {
+	if flag != "" && !proto.ValidUpstreamProtocol(flag) {
+		return "", errors.New("--upstream-protocol must be one of http1, https, h2c or h2")
+	}
+	if grpc && flag != "" && flag != proto.UpstreamH2C && flag != proto.UpstreamH2 {
+		return "", errors.New("burrow grpc speaks HTTP/2: --upstream-protocol must be h2c or h2")
+	}
+	switch scheme {
+	case proto.UpstreamHTTPS:
+		switch flag {
+		case "", proto.UpstreamHTTPS:
+			if grpc {
+				return proto.UpstreamH2, nil
+			}
+			return proto.UpstreamHTTPS, nil
+		case proto.UpstreamH2:
+			return proto.UpstreamH2, nil
+		}
+		return "", fmt.Errorf("an https:// target is spoken to over TLS: --upstream-protocol %s contradicts it (use https or h2)", flag)
+	case proto.UpstreamH2C:
+		if flag != "" && flag != proto.UpstreamH2C {
+			return "", fmt.Errorf("an h2c:// target is plain HTTP/2: --upstream-protocol %s contradicts it (use h2c)", flag)
+		}
+		return proto.UpstreamH2C, nil
+	}
+	if flag == "" && grpc {
+		return proto.UpstreamH2C, nil
+	}
+	return flag, nil
 }
 
 func joinTarget(input, host, port string) (string, error) {

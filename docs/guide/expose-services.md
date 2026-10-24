@@ -18,8 +18,9 @@ burrow tcp 22
 
 `<target>` is what is listening locally: `3000` means `127.0.0.1:3000`;
 `localhost:3000` and `192.168.1.20:8080` name a host and port; `http://localhost:3000`
-means the same as `localhost:3000`. A path or an `https://` address is
-rejected: HTTPS upstreams are not supported.
+means the same as `localhost:3000`. `https://localhost:8443` and `h2c://localhost:50051` say that the local
+service speaks TLS or plain HTTP/2 (see the
+[CLI reference](/reference/cli#http-and-tcp)). A path is rejected.
 
 | Flag | Applies to | Meaning |
 |------|-----------|---------|

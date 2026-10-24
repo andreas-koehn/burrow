@@ -232,6 +232,12 @@ func report(w io.Writer, err error) int {
 		fmt.Fprintln(w, accessNotApplied(na))
 		return exitCode(err)
 	}
+	var un *client.UpstreamNotAppliedError
+	if errors.As(err, &un) && !errors.As(err, &ee) {
+		fmt.Fprintf(w, "This relay is too old to speak %s to the local service: service %s was not registered. "+
+			"Update the relay, or run with --upstream-protocol http1.\n", plainText(un.Protocol), plainText(un.Name))
+		return exitCode(err)
+	}
 	var fu *client.ForwardUnsupportedError
 	var fr *client.ForwardRefusedError
 	switch {

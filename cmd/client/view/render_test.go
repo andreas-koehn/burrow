@@ -522,3 +522,28 @@ func TestRender_GatewayOnlyHasNoURLRemark(t *testing.T) {
 		t.Fatalf("remark about a URL that does not exist:\n%s", text)
 	}
 }
+
+// A gRPC call shows its grpc-status where an HTTP request shows its status;
+// the codes that mean the call failed are coloured.
+func TestRender_GRPCStatus(t *testing.T) {
+	s := httpService()
+	s.Recent = []Line{
+		{At: at(14, 2, 11), Method: "POST", Path: "/pkg.S/Ok", Status: 200, GRPC: 0, HasGRPC: true},
+		{At: at(14, 2, 12), Method: "POST", Path: "/pkg.S/Down", Status: 200, GRPC: 14, HasGRPC: true},
+		{At: at(14, 2, 13), Method: "POST", Path: "/pkg.S/Nope", Status: 200, GRPC: 5, HasGRPC: true},
+	}
+	m := connected(s)
+	if text := strings.Join(Render(m, 100, false), "\n"); strings.ContainsRune(text, 0x1b) {
+		t.Fatalf("ESC without colour: %q", text)
+	}
+	col := Render(m, 100, true)
+	for _, want := range []string{
+		"  14:02:11  POST  /pkg.S/Ok       grpc 0",
+		"  14:02:12  POST  /pkg.S/Down     \x1b[31mgrpc 14\x1b[0m",
+		"  14:02:13  POST  /pkg.S/Nope     \x1b[33mgrpc 5\x1b[0m",
+	} {
+		if !hasLine(col, want) {
+			t.Errorf("line %q missing in:\n%q", want, col)
+		}
+	}
+}

@@ -457,3 +457,19 @@ func TestStore_GatewayOnlyServiceShowsNoAddress(t *testing.T) {
 		t.Fatalf("Public = %q", got)
 	}
 }
+
+// A gRPC call keeps its grpc-status in the line.
+func TestStore_RequestGRPC(t *testing.T) {
+	s := NewStore("burrow.example.com", "v0.6.0", specs())
+	s.State(client.StateConnected, "", 0)
+	register(s, "1")
+	base := time.Date(2026, 10, 5, 14, 0, 0, 0, time.UTC)
+	code := 14
+	s.RequestGRPC("a1", base, "POST", "/pkg.S/M", 200, &code)
+	s.RequestGRPC("a1", base.Add(time.Second), "GET", "/", 200, nil)
+	code = 0 // the store keeps its own copy
+	r := s.Snapshot().Services[0].Recent
+	if len(r) != 2 || !r[0].HasGRPC || r[0].GRPC != 14 || r[1].HasGRPC {
+		t.Fatalf("recent = %+v", r)
+	}
+}

@@ -275,6 +275,17 @@ func service(s Service, w int) []row {
 			r := row{text: recent(l, methodCol, pathCol, w)}
 			if l.Method != "" || l.Path != "" {
 				switch {
+				case l.HasGRPC:
+					// 0 is OK; the codes that mean the call failed on the
+					// way (unknown, deadline, internal, unavailable, data
+					// loss) are red, the others yellow.
+					switch l.GRPC {
+					case 0:
+					case 2, 4, 13, 14, 15:
+						r.mark, r.markSGR = lineStatus(l), sgrRed
+					default:
+						r.mark, r.markSGR = lineStatus(l), sgrYellow
+					}
 				case l.Status >= 500:
 					r.mark, r.markSGR = fmt.Sprintf("%d", l.Status), sgrRed
 				case l.Status >= 400:
@@ -419,10 +430,7 @@ func recent(l Line, methodCol, pathCol, w int) string {
 		}
 		return "  " + ip
 	}
-	status := ""
-	if l.Status != 0 {
-		status = fmt.Sprintf("%d", l.Status)
-	}
+	status := lineStatus(l)
 	if status == "" {
 		if full := "  " + at + "  " + pad(method, methodCol) + "  " + path; length(full) <= w {
 			return full
@@ -510,3 +518,16 @@ var sgrRe = regexp.MustCompile("\x1b\\[[0-9;?]*[A-Za-z]")
 
 // stripSGR removes the escape sequences this package writes.
 func stripSGR(s string) string { return sgrRe.ReplaceAllString(s, "") }
+
+// lineStatus is what a request line shows as its result: the HTTP status, or
+// for a gRPC call its grpc-status ("grpc 14"), which the HTTP status 200 of
+// the call does not tell. "" when there is none.
+func lineStatus(l Line) string {
+	switch {
+	case l.HasGRPC:
+		return fmt.Sprintf("grpc %d", l.GRPC)
+	case l.Status != 0:
+		return fmt.Sprintf("%d", l.Status)
+	}
+	return ""
+}

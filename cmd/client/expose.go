@@ -18,21 +18,30 @@ const (
 	defaultTCPAccess = "private"
 )
 
-// newExposeCmd builds `burrow http <target>` (typ "http") and
-// `burrow tcp <target>` (typ "tcp").
-func newExposeCmd(d deps, typ string) *cobra.Command {
+// newExposeCmd builds `burrow http <target>` (kind "http"), `burrow tcp
+// <target>` (kind "tcp") and `burrow grpc <target>` (kind "grpc": an http
+// service whose upstream protocol is h2c, or h2 for an https:// target).
+func newExposeCmd(d deps, kind string) *cobra.Command {
+	typ, grpc := kind, kind == "grpc"
+	if grpc {
+		typ = "http"
+	}
 	short := "Expose a local HTTP service"
-	if typ == "tcp" {
+	switch {
+	case typ == "tcp":
 		short = "Expose a local TCP port"
+	case grpc:
+		short = "Expose a local gRPC service"
 	}
 	cmd := &cobra.Command{
-		Use:   typ + " <target>",
+		Use:   kind + " <target>",
 		Short: short,
 		Long: short + ".\n\n<target> is what is listening locally:\n" +
 			"  3000                    127.0.0.1:3000\n" +
 			"  localhost:3000          that host and port\n" +
 			"  192.168.1.20:8080       that host and port\n" +
-			"  http://localhost:3000   the same as localhost:3000\n\n" +
+			"  http://localhost:3000   the same as localhost:3000\n" +
+			upstreamLong(kind) + "\n" +
 			"The command runs in the foreground until interrupted and reconnects by itself." + tcpLong(typ),
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
@@ -47,6 +56,9 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 				if flags.Changed("slug") {
 					return usageErrorf("--slug applies to http services")
 				}
+				if flags.Changed("upstream-protocol") {
+					return usageErrorf("--upstream-protocol applies to http services")
+				}
 			} else if flags.Changed("remote") {
 				return usageErrorf("--remote applies to tcp services")
 			} else if flags.Changed("proxy-protocol") {
@@ -57,9 +69,20 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 				return usageErrorf("--proxy-protocol must be v2")
 			}
 
-			local, err := client.ParseTarget(args[0])
+			local, scheme, err := client.ParseTargetProtocol(args[0])
 			if err != nil {
 				return err
+			}
+			upstream := ""
+			if typ == "tcp" {
+				if scheme != "" {
+					return &client.TargetError{Input: args[0], Reason: scheme + " targets are for http services; a tcp service is forwarded as it is"}
+				}
+			} else {
+				flag, _ := flags.GetString("upstream-protocol")
+				if upstream, err = client.ResolveUpstream(scheme, flag, grpc); err != nil {
+					return usageErrorf("%s", err.Error())
+				}
 			}
 
 			// The relay checks both again; this is for a quick answer.
@@ -122,7 +145,8 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 			}
 
 			spec := client.TunnelSpec{Name: name, Type: typ, LocalAddr: local, RemotePort: remote, Slug: slug, Access: mode,
-				AccessDefault: accessDefault, ProxyProtocol: proxyProtocol}
+				AccessDefault: accessDefault, ProxyProtocol: proxyProtocol,
+				UpstreamProtocol: upstream}
 			return foreground(cmd, d, creds, []client.TunnelSpec{spec}, g)
 		},
 	}
@@ -134,13 +158,18 @@ func newExposeCmd(d deps, typ string) *cobra.Command {
 	} else {
 		f.String("access", "", "access mode: open|login|api-key; used only when the service is created")
 	}
+	if typ == "http" {
+		f.String("upstream-protocol", "", "http1|https|h2c|h2: how the relay speaks to the local service (default: the service's setting, http1)")
+	} else {
+		f.String("upstream-protocol", "", "")
+	}
 	f.Int("remote", 0, "fixed public port with --access open or ip (default: any free port)")
 	f.String("proxy-protocol", "", "v2: send a PROXY protocol v2 header with the visitor's address to the target first")
 	// A flag of the other kind is known, so that it gets a message that says
 	// where it belongs, but it is not listed in the help.
 	hidden := []string{"remote", "proxy-protocol"}
 	if typ == "tcp" {
-		hidden = []string{"slug"}
+		hidden = []string{"slug", "upstream-protocol"}
 	}
 	for _, name := range hidden {
 		_ = f.MarkHidden(name)
@@ -160,4 +189,22 @@ func tcpLong(typ string) string {
 		"Without --access a service that exists is served in the mode set in the dashboard.\n" +
 		"With --access, a mode set in the dashboard that is stricter is kept; a looser one is not\n" +
 		"widened by the client: the relay asks to restart with that mode."
+}
+
+// upstreamLong is what the help of `burrow http` and `burrow grpc` says of
+// the upstream protocol.
+func upstreamLong(kind string) string {
+	switch kind {
+	case "tcp":
+		return ""
+	case "grpc":
+		return "  h2c://localhost:50051   plain HTTP/2, the default of burrow grpc\n" +
+			"  https://localhost:50443 HTTP/2 over TLS (h2)\n\n" +
+			"burrow grpc is burrow http with the upstream protocol h2c, or h2 for an https:// target. " +
+			"gRPC visitors need a host name of their own: add a custom domain to the service in the dashboard.\n"
+	}
+	return "  https://localhost:8443  HTTP/1.1 over TLS, or HTTP/2 over TLS with --upstream-protocol h2\n" +
+		"  h2c://localhost:50051   plain HTTP/2 (prior knowledge)\n\n" +
+		"--upstream-protocol http1|https|h2c|h2 sets how the relay speaks to the local service; " +
+		"without it the service's setting in the dashboard applies (http1 by default).\n"
 }

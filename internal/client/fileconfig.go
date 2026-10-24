@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ankoehn/burrow/internal/proto"
 )
 
 // FileConfig is the parsed result of a burrow.yaml file. Server and Token are
@@ -52,6 +54,9 @@ type rawService struct {
 	// ProxyProtocol (tcp, `burrow up` only): v2 writes a PROXY protocol v2
 	// header to the target before the bytes of every connection.
 	ProxyProtocol string `yaml:"proxy_protocol"`
+	// UpstreamProtocol (http): http1, https, h2c or h2, the protocol the relay
+	// speaks to the local service. Empty = the relay's setting applies.
+	UpstreamProtocol string `yaml:"upstream_protocol"`
 	// Command, Args, Env and URL describe the local MCP server of a service
 	// of type mcp (`burrow up` only).
 	Command string            `yaml:"command"`
@@ -164,6 +169,14 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 		if typ == "" {
 			typ = "tcp"
 		}
+		if svc.UpstreamProtocol != "" {
+			if typ != "http" {
+				return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: upstream_protocol applies to http services", i, svc.Name)
+			}
+			if !proto.ValidUpstreamProtocol(svc.UpstreamProtocol) {
+				return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: upstream_protocol must be http1, https, h2c or h2", i, svc.Name)
+			}
+		}
 		if typ == "mcp" {
 			if complete {
 				return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: type mcp is run by `burrow up`, not by `burrow connect`", i, svc.Name)
@@ -218,6 +231,9 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 			Type:       typ,
 			LocalAddr:  svc.Local,
 			RemotePort: remotePort,
+			// Read by `burrow connect --config` too: it sends the wish, and
+			// a relay that cannot apply it refuses the service.
+			UpstreamProtocol: svc.UpstreamProtocol,
 		}
 		// slug and access are the wishes of `burrow http --slug --access`
 		// and `burrow tcp --access`. `connect --config` does not know them:

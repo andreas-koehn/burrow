@@ -72,7 +72,11 @@ type Line struct {
 	At           time.Time
 	Method, Path string // request summaries; empty for a plain connection
 	Status       int
-	SourceIP     string
+	// GRPC is the grpc-status of a gRPC call; HasGRPC is false for any other
+	// request.
+	GRPC     int
+	HasGRPC  bool
+	SourceIP string
 }
 
 // Store is a concurrency-safe Model that implements client.Observer. Its
@@ -309,6 +313,12 @@ func (s *Store) Counts(tunnelID string, open, total int) {
 // are cut and made printable here once more, so that what the store keeps is
 // small whatever it is handed.
 func (s *Store) Request(tunnelID string, at time.Time, method, path string, status int) {
+	s.RequestGRPC(tunnelID, at, method, path, status, nil)
+}
+
+// RequestGRPC implements client.GRPCObserver: Request with the grpc-status of
+// the call, nil for a request that is no gRPC call.
+func (s *Store) RequestGRPC(tunnelID string, at time.Time, method, path string, status int, grpc *int) {
 	s.update(func() {
 		i, ok := s.byTunnel[tunnelID]
 		if !ok || s.m.Services[i].Type != "http" || status < 100 || status > 599 {
@@ -331,7 +341,11 @@ func (s *Store) Request(tunnelID string, at time.Time, method, path string, stat
 			}
 			sv.Recent = kept
 		}
-		sv.add(Line{At: at, Method: method, Path: path, Status: status})
+		line := Line{At: at, Method: method, Path: path, Status: status}
+		if grpc != nil {
+			line.GRPC, line.HasGRPC = *grpc, true
+		}
+		sv.add(line)
 	})
 }
 

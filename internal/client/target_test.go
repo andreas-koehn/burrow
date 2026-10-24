@@ -22,6 +22,10 @@ func TestParseTarget(t *testing.T) {
 		"1":                        "127.0.0.1:1",
 		"65535":                    "127.0.0.1:65535",
 		"http://[::1]:3000":        "[::1]:3000",
+		"https://localhost:3000":   "localhost:3000",
+		"https://localhost":        "localhost:443",
+		"h2c://localhost:50051":    "localhost:50051",
+		"h2c://127.0.0.1:50051/":   "127.0.0.1:50051",
 	}
 	for in, want := range ok {
 		got, err := ParseTarget(in)
@@ -40,11 +44,14 @@ func TestParseTarget(t *testing.T) {
 		"localhost:":                 "port",
 		"localhost:abc":              "port",
 		":3000":                      "host",
-		"https://localhost:3000":     "HTTPS",
 		"http://localhost:3000/api":  "path",
 		"http://localhost:3000?x=1":  "path",
 		"http://user:pw@localhost:1": "credentials",
 		"ftp://localhost:21":         "http",
+		"h2://localhost:3000":        "http",
+		"h2c://localhost:3000/x":     "path",
+		"https://localhost:3000/x":   "path",
+		"h2c://u:p@localhost:3000":   "credentials",
 		"localhost:3000:1":           "port",
 		"local host:3000":            "host",
 		"pw@localhost:3000":          "credentials",
@@ -151,6 +158,68 @@ func TestDefaultNameAlwaysValidSlug(t *testing.T) {
 			if again := DefaultName(h, a); again != got {
 				t.Errorf("DefaultName(%q, %q) not stable: %q vs %q", h, a, got, again)
 			}
+		}
+	}
+}
+
+func TestParseTargetProtocol(t *testing.T) {
+	for in, want := range map[string][3]string{ // addr, protocol
+		"3000":                   {"127.0.0.1:3000", "", ""},
+		"localhost:3000":         {"localhost:3000", "", ""},
+		"http://localhost:3000":  {"localhost:3000", "", ""},
+		"https://localhost:8443": {"localhost:8443", "https", ""},
+		"https://localhost":      {"localhost:443", "https", ""},
+		"h2c://localhost:50051":  {"localhost:50051", "h2c", ""},
+		"h2c://[::1]:50051":      {"[::1]:50051", "h2c", ""},
+	} {
+		addr, p, err := ParseTargetProtocol(in)
+		if err != nil || addr != want[0] || p != want[1] {
+			t.Errorf("ParseTargetProtocol(%q) = %q, %q, %v; want %q, %q", in, addr, p, err, want[0], want[1])
+		}
+	}
+	if _, _, err := ParseTargetProtocol("h2://localhost:1"); err == nil {
+		t.Error("h2:// accepted")
+	}
+	// The accepted forms name the new schemes.
+	_, err := ParseTarget("ftp://x:1")
+	if err == nil || !strings.Contains(err.Error(), "https://") || !strings.Contains(err.Error(), "h2c://") {
+		t.Errorf("error does not list https:// and h2c://: %v", err)
+	}
+}
+
+func TestResolveUpstream(t *testing.T) {
+	for _, c := range []struct {
+		name, scheme, flag string
+		grpc               bool
+		want               string
+		bad                string // part of the error; "" = none
+	}{
+		{"nothing chosen", "", "", false, "", ""},
+		{"flag alone", "", "h2c", false, "h2c", ""},
+		{"flag http1 is a choice", "", "http1", false, "http1", ""},
+		{"plain scheme and flag", "", "h2", false, "h2", ""},
+		{"https scheme", "https", "", false, "https", ""},
+		{"https scheme with h2", "https", "h2", false, "h2", ""},
+		{"https scheme with https", "https", "https", false, "https", ""},
+		{"https scheme against h2c", "https", "h2c", false, "", "https://"},
+		{"https scheme against http1", "https", "http1", false, "", "https://"},
+		{"h2c scheme", "h2c", "", false, "h2c", ""},
+		{"h2c scheme with h2c", "h2c", "h2c", false, "h2c", ""},
+		{"h2c scheme against h2", "h2c", "h2", false, "", "h2c://"},
+		{"unknown flag", "", "grpc", false, "", "http1, https, h2c or h2"},
+		{"grpc bare", "", "", true, "h2c", ""},
+		{"grpc https", "https", "", true, "h2", ""},
+		{"grpc h2c", "h2c", "", true, "h2c", ""},
+		{"grpc with h2", "", "h2", true, "h2", ""},
+		{"grpc with http1", "", "http1", true, "", "h2c or h2"},
+		{"grpc with https", "", "https", true, "", "h2c or h2"},
+	} {
+		got, err := ResolveUpstream(c.scheme, c.flag, c.grpc)
+		if c.bad == "" && (err != nil || got != c.want) {
+			t.Errorf("%s: %q, %v; want %q", c.name, got, err, c.want)
+		}
+		if c.bad != "" && (err == nil || !strings.Contains(err.Error(), c.bad)) {
+			t.Errorf("%s: %q, %v; want an error with %q", c.name, got, err, c.bad)
 		}
 	}
 }

@@ -107,7 +107,16 @@ func TestExpose_UsageErrors(t *testing.T) {
 		{"http without a target", []string{"http"}, []string{"Usage:", "burrow http <target>"}},
 		{"http with two targets", []string{"http", "a", "b"}, []string{"Usage:", "burrow http <target>"}},
 		{"tcp without a target", []string{"tcp"}, []string{"Usage:", "burrow tcp <target>"}},
-		{"https target", []string{"http", "https://localhost:3000"}, []string{"HTTPS upstreams are not supported", "Accepted forms:"}},
+		{"ftp target", []string{"http", "ftp://localhost:3000"}, []string{"https://", "h2c://", "Accepted forms:"}},
+		{"tcp https target", []string{"tcp", "https://localhost:3000"}, []string{"http services", "Accepted forms:"}},
+		{"tcp h2c target", []string{"tcp", "h2c://localhost:3000"}, []string{"http services", "Accepted forms:"}},
+		{"tcp --upstream-protocol", []string{"tcp", "5432", "--upstream-protocol", "h2c"}, []string{"--upstream-protocol applies to http services"}},
+		{"unknown upstream protocol", []string{"http", "3000", "--upstream-protocol", "grpc"}, []string{"http1, https, h2c or h2"}},
+		{"https target against h2c", []string{"http", "https://localhost:3000", "--upstream-protocol", "h2c"}, []string{"https://"}},
+		{"h2c target against h2", []string{"http", "h2c://localhost:3000", "--upstream-protocol", "h2"}, []string{"h2c://"}},
+		{"grpc without a target", []string{"grpc"}, []string{"Usage:", "burrow grpc <target>"}},
+		{"grpc --remote", []string{"grpc", "50051", "--remote", "9000"}, []string{"--remote applies to tcp services"}},
+		{"grpc --upstream-protocol http1", []string{"grpc", "50051", "--upstream-protocol", "http1"}, []string{"h2c or h2"}},
 		{"target with a path", []string{"http", "http://localhost:3000/app"}, []string{"must not contain a path", "Accepted forms:"}},
 		{"target that is no port", []string{"tcp", "nonsense"}, []string{"Accepted forms:"}},
 		{"tcp --slug", []string{"tcp", "5432", "--slug", "x"}, []string{"--slug applies to http services"}},
@@ -149,7 +158,7 @@ func TestExpose_UsageErrors(t *testing.T) {
 // A usage error is reported before the sign-in is looked at.
 func TestExpose_UsageErrorComesBeforeNotSignedIn(t *testing.T) {
 	h := newHarness(t)
-	if code := h.exec("http", "https://localhost:3000"); code != 2 {
+	if code := h.exec("http", "ftp://localhost:3000"); code != 2 {
 		t.Fatalf("exit %d, want 2", code)
 	}
 }
@@ -365,5 +374,73 @@ func TestExpose_HowTheRunEnds(t *testing.T) {
 	h.runErr = errors.New("boom")
 	if code := h.exec("tcp", "5432"); code != 1 || h.stderr.String() != "error: boom\n" {
 		t.Fatalf("exit %d, stderr %q", code, h.stderr.String())
+	}
+}
+
+func TestHTTP_UpstreamProtocol(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		args  []string
+		local string
+		want  string
+	}{
+		{"none", []string{"http", "3000"}, "127.0.0.1:3000", ""},
+		{"flag h2c", []string{"http", "50051", "--upstream-protocol", "h2c"}, "127.0.0.1:50051", "h2c"},
+		{"flag http1", []string{"http", "3000", "--upstream-protocol", "http1"}, "127.0.0.1:3000", "http1"},
+		{"https scheme", []string{"http", "https://localhost:8443"}, "localhost:8443", "https"},
+		{"https scheme with h2", []string{"http", "https://localhost:8443", "--upstream-protocol", "h2"}, "localhost:8443", "h2"},
+		{"h2c scheme", []string{"http", "h2c://localhost:50051"}, "localhost:50051", "h2c"},
+		{"grpc", []string{"grpc", "50051"}, "127.0.0.1:50051", "h2c"},
+		{"grpc h2c scheme", []string{"grpc", "h2c://localhost:50051"}, "localhost:50051", "h2c"},
+		{"grpc https scheme", []string{"grpc", "https://localhost:50443"}, "localhost:50443", "h2"},
+		{"grpc flag h2", []string{"grpc", "localhost:50443", "--upstream-protocol", "h2"}, "localhost:50443", "h2"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.signIn()
+			if code := h.exec(c.args...); code != 0 {
+				t.Fatalf("exit %d: %s", code, h.stderr.String())
+			}
+			sp := h.oneRun().tunnels[0]
+			if sp.Type != "http" || sp.LocalAddr != c.local || sp.UpstreamProtocol != c.want {
+				t.Fatalf("spec = %+v, want local %s protocol %q", sp, c.local, c.want)
+			}
+		})
+	}
+	// The other flags of burrow http work on burrow grpc.
+	h := newHarness(t)
+	h.signIn()
+	if code := h.exec("grpc", "50051", "--name", "api", "--slug", "my-api", "--access", "api-key"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	if sp := h.oneRun().tunnels[0]; sp.Name != "api" || sp.Slug != "my-api" || sp.Access != "api_key" || sp.UpstreamProtocol != "h2c" {
+		t.Fatalf("spec = %+v", sp)
+	}
+}
+
+func TestUp_UpstreamProtocolFromTheFile(t *testing.T) {
+	h := newHarness(t)
+	h.signIn()
+	file := filepath.Join(t.TempDir(), "burrow.yaml")
+	if err := os.WriteFile(file, []byte("services:\n  - { name: api, local: 127.0.0.1:50051, type: http, upstream_protocol: h2c }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := h.exec("up", "--file", file); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	if sp := h.oneRun().tunnels[0]; sp.UpstreamProtocol != "h2c" {
+		t.Fatalf("spec = %+v", sp)
+	}
+}
+
+func TestReport_UpstreamNotApplied(t *testing.T) {
+	var b strings.Builder
+	code := report(&b, &client.UpstreamNotAppliedError{Name: "api", Protocol: "h2c"})
+	out := b.String()
+	if code == 0 || !strings.Contains(out, "h2c") || !strings.Contains(out, "api") || !strings.Contains(out, "--upstream-protocol http1") {
+		t.Fatalf("code %d: %q", code, out)
+	}
+	if strings.HasPrefix(out, "error:") {
+		t.Fatalf("out = %q", out)
 	}
 }
