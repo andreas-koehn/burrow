@@ -1152,7 +1152,7 @@ components:
       description: >
         The settings of a tcp service that shape its connections. Neither
         changes who may connect.
-      required: [proxy_protocol, idle_timeout_s, client_proxy_protocol]
+      required: [proxy_protocol, idle_timeout_s, client_proxy_protocol, client_proxy_supported]
       properties:
         proxy_protocol:
           type: string
@@ -1178,6 +1178,16 @@ components:
             its own configuration (burrow.yaml proxy_protocol,
             --proxy-protocol), whatever proxy_protocol says; "" when it does
             not, or no client serves the service.
+        client_proxy_supported:
+          type: boolean
+          nullable: true
+          description: >
+            Whether the client that serves the service can write the PROXY v2
+            header (it announces the capability proxy_protocol_v2). An older
+            client cannot: while proxy_protocol is v2 the relay closes its
+            visitors without a byte and refuses its forwards (connection-log
+            reason proxy_unsupported). null when no client serves the
+            service.
     TcpSettingsInput:
       type: object
       description: The settings to change; at least one. A field left out is kept.
@@ -4059,6 +4069,7 @@ paths:
       tags: [services]
       operationId: serviceTcpSettingsUpdate
       x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      x-burrow-mcp: false
       summary: Set the PROXY protocol or idle timeout of a tcp service
       description: |
         Changes the settings named in the body and keeps the others. The
@@ -4066,6 +4077,8 @@ paths:
         to the next connection, the idle timeout to the open ones as well.
         Neither widens who may connect. Audited as
         `service.tcp_settings.update` with both settings before and after.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not change what a service's target is told about its visitors, nor cut its connections off.
       parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
       requestBody:
         required: true

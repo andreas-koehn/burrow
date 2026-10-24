@@ -58,6 +58,9 @@ func newConnectCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				for _, w := range fc.Warnings {
+					fmt.Fprintln(cmd.ErrOrStderr(), "warning: "+w)
+				}
 
 				g := globalFlags{logLevel: "info", logFormat: "text"}
 				g.insecure, _ = cmd.Flags().GetBool("insecure")

@@ -15,6 +15,14 @@ import (
 // serverName ("" sends no server name).
 func clientHello(t *testing.T, serverName string) []byte {
 	t.Helper()
+	b, err := helloBytes(serverName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func helloBytes(serverName string) ([]byte, error) {
 	a, b := net.Pipe()
 	defer a.Close()
 	defer b.Close()
@@ -26,13 +34,13 @@ func clientHello(t *testing.T, serverName string) []byte {
 	_ = b.SetReadDeadline(time.Now().Add(2 * time.Second))
 	hdr := make([]byte, 5)
 	if _, err := ioReadFull(b, hdr); err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	body := make([]byte, binary.BigEndian.Uint16(hdr[3:5]))
 	if _, err := ioReadFull(b, body); err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
-	return append(hdr, body...)
+	return append(hdr, body...), nil
 }
 
 func ioReadFull(c net.Conn, p []byte) (int, error) {
@@ -197,5 +205,74 @@ func TestSniffer(t *testing.T) {
 	}
 	if p, _ := slow.Result(); p != ProtoTLS {
 		t.Fatalf("slow: %q", p)
+	}
+}
+
+// ServerName never panics and never reads past what it is given; a name it
+// returns is a valid, normalised host name.
+func FuzzServerName(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte("SSH-2.0-x\r\n"))
+	f.Add([]byte{0x16, 0x03, 0x01, 0x00, 0x05, 0x01, 0x00, 0x00, 0x01, 0x00})
+	for _, h := range seedHellos {
+		f.Add(h)
+	}
+	f.Fuzz(func(t *testing.T, b []byte) {
+		sni, err := ServerName(b)
+		if err == nil && sni != "" {
+			if n, ok := NormalizeHostname(sni); !ok || n != sni {
+				t.Fatalf("returned %q, which is not a normalised host name", sni)
+			}
+		}
+		if err != nil && sni != "" {
+			t.Fatalf("a name %q with the error %v", sni, err)
+		}
+	})
+}
+
+// The Sniffer, fed the same bytes in any chunks, keeps to its bound and
+// gives the answer of the bytes as a whole.
+func FuzzSniffer(f *testing.F) {
+	for _, h := range seedHellos {
+		f.Add(h, uint8(7))
+	}
+	f.Add([]byte("SSH-2.0-OpenSSH\r\n"), uint8(1))
+	f.Add([]byte("GET / HTTP/1.1\r\n"), uint8(3))
+	f.Fuzz(func(t *testing.T, b []byte, step uint8) {
+		n := int(step%64) + 1
+		var s Sniffer
+		for i := 0; i < len(b); i += n {
+			s.Observe(b[i:min(i+n, len(b))])
+			if len(s.buf) > MaxClientHello {
+				t.Fatalf("kept %d bytes", len(s.buf))
+			}
+		}
+		var whole Sniffer
+		whole.Observe(b)
+		p1, n1 := s.Result()
+		p2, n2 := whole.Result()
+		if s.Done() && whole.Done() && (p1 != p2 || n1 != n2) {
+			t.Fatalf("in chunks of %d: %q %q, whole: %q %q", n, p1, n1, p2, n2)
+		}
+	})
+}
+
+// seedHellos are ClientHellos of a real Go client, with and without a name.
+var seedHellos = func() [][]byte {
+	var out [][]byte
+	for _, name := range []string{"rdp.example.com", ""} {
+		if b, err := helloBytes(name); err == nil {
+			out = append(out, b)
+		}
+	}
+	return out
+}()
+
+func TestNormalizeHostname(t *testing.T) {
+	for in, want := range map[string]string{"RDP.Example.COM.": "rdp.example.com", "a": "a", " x": "", "bad name": "", "": ""} {
+		got, ok := NormalizeHostname(in)
+		if got != want || ok != (want != "") {
+			t.Errorf("NormalizeHostname(%q) = %q %v, want %q", in, got, ok, want)
+		}
 	}
 }

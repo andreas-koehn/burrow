@@ -37,7 +37,7 @@ func checkServiceTCPSettings(t *testing.T, x *DB, userID string) {
 	if got.ProxyProtocol != "" || got.IdleTimeoutS != 0 {
 		t.Fatalf("new service: %+v", got)
 	}
-	if err := x.SetServiceTCPSettings(ctx, svc.ID, "v2", 3600); err != nil {
+	if err := x.SetServiceTCPSettings(ctx, svc.ID, ptr("v2"), ptr(3600)); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = x.GetServiceByID(ctx, svc.ID)
@@ -48,13 +48,26 @@ func checkServiceTCPSettings(t *testing.T, x *DB, userID string) {
 	if err != nil || len(list) != 1 || list[0].ProxyProtocol != "v2" || list[0].IdleTimeoutS != 3600 {
 		t.Fatalf("list: %+v %v", list, err)
 	}
-	if err := x.SetServiceTCPSettings(ctx, svc.ID, "", 0); err != nil {
+	// One field alone leaves the other.
+	if err := x.SetServiceTCPSettings(ctx, svc.ID, nil, ptr(60)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := x.GetServiceByID(ctx, svc.ID); got.ProxyProtocol != "v2" || got.IdleTimeoutS != 60 {
+		t.Fatalf("idle alone: %+v", got)
+	}
+	if err := x.SetServiceTCPSettings(ctx, svc.ID, ptr(""), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := x.GetServiceByID(ctx, svc.ID); got.ProxyProtocol != "" || got.IdleTimeoutS != 60 {
+		t.Fatalf("proxy alone: %+v", got)
+	}
+	if err := x.SetServiceTCPSettings(ctx, svc.ID, nil, ptr(0)); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := x.GetServiceByID(ctx, svc.ID); got.ProxyProtocol != "" || got.IdleTimeoutS != 0 {
 		t.Fatalf("after clear: %+v", got)
 	}
-	if err := x.SetServiceTCPSettings(ctx, "svc-missing-"+userID, "v2", 60); !errors.Is(err, ErrNotFound) {
+	if err := x.SetServiceTCPSettings(ctx, "svc-missing-"+userID, ptr("v2"), ptr(60)); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing service: %v", err)
 	}
 }
@@ -113,3 +126,5 @@ func checkTCPCompleteTables(t *testing.T, x *DB, userID string) {
 		t.Fatalf("rows left after delete: %d %v", n, err)
 	}
 }
+
+func ptr[T any](v T) *T { return &v }

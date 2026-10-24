@@ -289,3 +289,19 @@ func TestProxyProtocol_OffWritesNothing(t *testing.T) {
 		t.Fatalf("target got %q", b)
 	}
 }
+
+// A client with a tcp tunnel says that it writes the PROXY header
+// (proto.CapProxyProtocolV2); the relay does not pair one that does not
+// with a service that asks for it.
+func TestProxyProtocol_ATCPClientAnnouncesTheCapability(t *testing.T) {
+	r := startRawRelay(t, oldAuthOK, oldRegister)
+	c := New(r.options(TunnelSpec{Name: "rdp", Type: "tcp", LocalAddr: "127.0.0.1:3389"}))
+	runUntilDone(t, c)
+	if !waitTrue(func() bool { a, _ := r.sent(); return len(a) > 0 }, 3*time.Second) {
+		t.Fatal("no auth request")
+	}
+	auths, _ := r.sent()
+	if !strings.HasSuffix(auths[0], `,"capabilities":["proxy_protocol_v2"]}`) {
+		t.Fatalf("auth request %s", strings.Replace(auths[0], "bur_test_0000", "…", 1))
+	}
+}

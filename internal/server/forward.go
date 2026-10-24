@@ -170,6 +170,10 @@ type liveConn struct {
 	// sniffed is set (see watched).
 	sniff   tcpsniff.Sniffer
 	sniffed atomic.Bool
+	// idleBytes and idleSince are the idle sweeper's: the bytes it last saw
+	// and since when they have not moved (see sweepIdle).
+	idleBytes uint64
+	idleSince time.Time
 }
 
 func (c *liveConn) close() { c.closeOnce.Do(c.closeFn) }
@@ -224,16 +228,8 @@ func (c *liveConn) view() ConnView {
 	}
 }
 
-// addConn and dropConn keep the tunnel's table of live connections.
-func (t *Tunnel) addConn(c *liveConn) {
-	t.connMu.Lock()
-	if t.conns == nil {
-		t.conns = map[string]*liveConn{}
-	}
-	t.conns[c.id] = c
-	t.connMu.Unlock()
-}
-
+// dropConn takes a connection out of the tunnel's table of live
+// connections (addLiveConn puts it in).
 func (t *Tunnel) dropConn(id string) {
 	t.connMu.Lock()
 	delete(t.conns, id)
@@ -386,6 +382,11 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 		refuse(proto.CodeOffline, fmt.Sprintf("the service %q is offline: no client serves it now", target.Name))
 		return
 	}
+	if !tn.canServeProxy() {
+		s.refuseForward(cs, target.ServiceID, TCPRefusedProxyUnsupported)
+		refuse(proto.CodeOffline, fmt.Sprintf("the client that serves %q cannot write the PROXY protocol header the service asks for; it needs an update", target.Name))
+		return
+	}
 	if tn.limits != nil {
 		if reason := tn.limits.admitForward(cs.UserID, target.Owner); reason != "" {
 			s.refuseForward(cs, target.ServiceID, reason)
@@ -429,7 +430,7 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 	}
 	_ = st.SetWriteDeadline(time.Time{})
 	c.closeFn = func() { endStream(st); endStream(home) }
-	tn.addConn(c)
+	s.addLiveConn(tn, c)
 	cs.addForward(c)
 	// A recheck that ran since the authorization above did not see this
 	// forward: ask again now that a later recheck will.
@@ -447,12 +448,10 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 	// What the forwarder writes goes to the home client (BytesIn); the
 	// service's tunnel counts it, and so does the connection.
 	var in, out atomic.Uint64
-	stopIdle := s.watchIdle(tn, c)
 	bridge.Pipe(c.watched(st), &countingStream{
 		Conn: &countingStream{Conn: home, in: &tn.BytesIn, out: &tn.BytesOut},
 		in:   &c.in, out: &c.out,
 	}, &in, &out)
-	stopIdle()
 	tn.dropConn(c.id)
 	cs.dropForward(c.id)
 	s.forwardTraffic(tn, c, observe.OutcomeClean, c.endReason(cs, tn.sess))

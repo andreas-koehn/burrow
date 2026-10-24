@@ -110,6 +110,13 @@ type forwardRelay struct {
 
 func newForwardRelay(t *testing.T, port int, mut func(*Options)) *forwardRelay {
 	t.Helper()
+	return newForwardRelayCaps(t, port, []string{proto.CapProxyProtocolV2}, mut)
+}
+
+// newForwardRelayCaps is newForwardRelay with a home client that announces
+// caps (newForwardRelay's can write a PROXY protocol header).
+func newForwardRelayCaps(t *testing.T, port int, caps []string, mut func(*Options)) *forwardRelay {
+	t.Helper()
 	fwd := &fakeForwards{allowed: map[string]bool{}}
 	res, access, log := newTCPResolver(), newFakeTCPAccess(), &recConnLog{}
 	fwd.res = res
@@ -120,7 +127,7 @@ func newForwardRelay(t *testing.T, port int, mut func(*Options)) *forwardRelay {
 		}
 	})
 	told := &atomic.Int32{}
-	home := r.client(func(st *yamux.Stream) {
+	home := r.clientCaps("secret", caps, func(st *yamux.Stream) {
 		told.Add(1)
 		_, _ = st.Write([]byte("hi "))
 		_, _ = io.Copy(st, st)

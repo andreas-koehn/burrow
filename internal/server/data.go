@@ -311,6 +311,10 @@ func (s *Server) admitVisitor(tun *Tunnel, visitor net.Conn) (string, bool) {
 		s.refuseVisitor(tun, visitor, ip.String(), observe.RejectedIPGeo)
 		return "", false
 	}
+	if !tun.canServeProxy() {
+		s.refuseVisitor(tun, visitor, ip.String(), TCPRefusedProxyUnsupported)
+		return "", false
+	}
 	source := sourceKey(ip)
 	if tun.limits != nil {
 		if reason := tun.limits.admit(source); reason != "" {
@@ -351,14 +355,12 @@ func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn, source string) {
 		serviceID: tun.ServiceID, started: started,
 	}
 	c.closeFn = func() { _ = visitor.Close(); endStream(stream) }
-	tun.addConn(c)
+	s.addLiveConn(tun, c)
 	var in, out atomic.Uint64
-	stopIdle := s.watchIdle(tun, c)
 	bridge.Pipe(c.watched(visitor), &countingStream{
 		Conn: &countingStream{Conn: stream, in: &tun.BytesIn, out: &tun.BytesOut},
 		in:   &c.in, out: &c.out,
 	}, &in, &out)
-	stopIdle()
 	tun.dropConn(c.id)
 	s.tcpTraffic(tun, visitor, c, started, c.in.Load(), c.out.Load(), observe.OutcomeClean, c.endReason(tun.sess))
 }

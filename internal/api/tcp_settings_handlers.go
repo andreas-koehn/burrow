@@ -19,20 +19,26 @@ import (
 )
 
 // ClientProxyReader is the relay as the API reads the PROXY protocol the
-// client that serves a tcp service writes by its own configuration
-// (*server.Server). It is found on Deps.Connections.
+// client that serves a tcp service writes by its own configuration, and
+// whether that client can write the header at all (*server.Server). It is
+// found on Deps.Connections.
 type ClientProxyReader interface {
 	ClientProxyProtocol(serviceID string) string
+	ClientProxySupported(serviceID string) (supported, online bool)
 }
 
 // tcpSettingsResp is the tcp settings of a service. client_proxy_protocol is
 // "v2" while the client that serves it writes a PROXY v2 header by its own
 // configuration (burrow.yaml proxy_protocol, --proxy-protocol), whatever
 // proxy_protocol says; "" when it does not or no client serves it.
+// client_proxy_supported says whether the client that serves it can write
+// the header (an older one cannot, and the relay then refuses its
+// connections while proxy_protocol is v2); null when no client serves it.
 type tcpSettingsResp struct {
-	ProxyProtocol       string `json:"proxy_protocol"`
-	IdleTimeoutS        int    `json:"idle_timeout_s"`
-	ClientProxyProtocol string `json:"client_proxy_protocol"`
+	ProxyProtocol        string `json:"proxy_protocol"`
+	IdleTimeoutS         int    `json:"idle_timeout_s"`
+	ClientProxyProtocol  string `json:"client_proxy_protocol"`
+	ClientProxySupported *bool  `json:"client_proxy_supported"`
 }
 
 // tcpSettingsReq changes the settings it names and keeps the others.
@@ -45,6 +51,9 @@ func (d Deps) tcpSettingsView(serviceID string, s store.TCPSettings) tcpSettings
 	out := tcpSettingsResp{ProxyProtocol: s.ProxyProtocol, IdleTimeoutS: s.IdleTimeoutS}
 	if l, ok := d.Connections.(ClientProxyReader); ok {
 		out.ClientProxyProtocol = l.ClientProxyProtocol(serviceID)
+		if supported, online := l.ClientProxySupported(serviceID); online {
+			out.ClientProxySupported = &supported
+		}
 	}
 	return out
 }

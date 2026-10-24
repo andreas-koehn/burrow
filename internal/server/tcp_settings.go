@@ -13,7 +13,8 @@ package server
 //     back, and a protocol whose server speaks first is simply unknown
 //     until, and unless, its client sends something the sniffer knows.
 //   - E4: the idle timeout. A connection that carried no byte in either
-//     direction for that long is closed, with reason idle_timeout.
+//     direction for that long is closed, with reason idle_timeout. One
+//     sweeper per tunnel looks while the tunnel has live connections.
 //
 // A change of a setting applies without a new registration
 // (RefreshTCPService): the PROXY protocol to the next connection, the idle
@@ -115,34 +116,77 @@ func (c *liveConn) protocol() (protocol, sni string) {
 	return c.sniff.Result()
 }
 
-// watchIdle closes c with reason idle_timeout once it carried no byte for its
-// tunnel's idle timeout, read again on every tick so that a change applies.
-// The returned func stops the watch; the caller calls it when the connection
-// has ended.
-func (s *Server) watchIdle(tn *Tunnel, c *liveConn) (stop func()) {
-	done := make(chan struct{})
-	tick := s.idleTick
-	go func() {
-		t := time.NewTicker(tick)
-		defer t.Stop()
-		last, since := c.in.Load()+c.out.Load(), time.Now()
-		for {
-			select {
-			case <-done:
-				return
-			case now := <-t.C:
-				if n := c.in.Load() + c.out.Load(); n != last {
-					last, since = n, now
-					continue
-				}
-				if d := tn.tcpSettings().idle; d > 0 && now.Sub(since) >= d {
-					s.log.Info("tcp connection closed: idle", "service_id", c.serviceID, "conn_id", c.id,
-						"kind", c.kind, "idle", d.String())
-					c.closeWith(ConnLogReasonIdleTimeout)
-					return
-				}
+// TCPRefusedProxyUnsupported: the service asks for a PROXY protocol header
+// and the client that serves it cannot write one (it does not announce
+// proto.CapProxyProtocolV2).
+const TCPRefusedProxyUnsupported = "proxy_unsupported"
+
+// canServeProxy reports whether the tunnel's client can serve a connection
+// as the service's settings ask: it writes the PROXY header when one is
+// asked for.
+func (t *Tunnel) canServeProxy() bool {
+	return t.tcpSettings().proxyProtocol == "" || t.sess.proxyV2
+}
+
+// ClientProxySupported reports whether the client that serves a tcp service
+// writes a PROXY protocol v2 header when asked (supported), and whether a
+// client serves it at all (online).
+func (s *Server) ClientProxySupported(serviceID string) (supported, online bool) {
+	tn, ok := s.LookupTunnelByServiceID(serviceID)
+	if !ok || tn.IsHTTP {
+		return false, false
+	}
+	return tn.sess.proxyV2, true
+}
+
+// addLiveConn makes c a live connection of tn and sees that the tunnel's
+// idle sweeper runs while it has any.
+func (s *Server) addLiveConn(tn *Tunnel, c *liveConn) {
+	c.idleSince = time.Now()
+	tn.connMu.Lock()
+	if tn.conns == nil {
+		tn.conns = map[string]*liveConn{}
+	}
+	tn.conns[c.id] = c
+	start := !tn.sweeping
+	tn.sweeping = true
+	tn.connMu.Unlock()
+	if start {
+		go s.sweepIdle(tn)
+	}
+}
+
+// sweepIdle is the one idle watch of a tunnel: on every tick it closes, with
+// reason idle_timeout, the live connections whose bytes in and out have not
+// moved for the tunnel's idle timeout, which it reads again each time so
+// that a change applies to open connections. It ends when the tunnel has no
+// live connection left; addLiveConn starts it again.
+func (s *Server) sweepIdle(tn *Tunnel) {
+	t := time.NewTicker(s.idleTick)
+	defer t.Stop()
+	for now := range t.C {
+		tn.connMu.Lock()
+		if len(tn.conns) == 0 {
+			tn.sweeping = false
+			tn.connMu.Unlock()
+			return
+		}
+		conns := make([]*liveConn, 0, len(tn.conns))
+		for _, c := range tn.conns {
+			conns = append(conns, c)
+		}
+		tn.connMu.Unlock()
+		d := tn.tcpSettings().idle
+		for _, c := range conns {
+			if n := c.in.Load() + c.out.Load(); n != c.idleBytes {
+				c.idleBytes, c.idleSince = n, now
+				continue
+			}
+			if d > 0 && now.Sub(c.idleSince) >= d {
+				s.log.Info("tcp connection closed: idle", "service_id", c.serviceID, "conn_id", c.id,
+					"kind", c.kind, "idle", d.String())
+				c.closeWith(ConnLogReasonIdleTimeout)
 			}
 		}
-	}()
-	return func() { close(done) }
+	}
 }

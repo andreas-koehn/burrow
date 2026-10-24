@@ -279,6 +279,9 @@ var openAPIMCPDisabled = map[string]string{
 	"serviceIpGrantDelete": "DELETE /api/v1/services/{serviceID}/ip-grants/{grantID}",
 	// Nor cut off the people who use a tcp service.
 	"serviceConnectionDelete": "DELETE /api/v1/services/{serviceID}/connections/{connID}",
+	// Nor change what a tcp service's target is told about its visitors (the
+	// PROXY header), nor cut its connections off (the idle timeout).
+	"serviceTcpSettingsUpdate": "PUT /api/v1/services/{serviceID}/tcp-settings",
 	// Nor change who may reach a service: its ip rules and its role list.
 	"serviceIpGeoUpdate":        "PUT /api/v1/services/{serviceID}/ip-geo",
 	"serviceAccessPolicyUpdate": "PUT /api/v1/services/{serviceID}/access-policy",

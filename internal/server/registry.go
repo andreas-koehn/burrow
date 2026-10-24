@@ -73,6 +73,8 @@ type Tunnel struct {
 	// itself (TunnelRegister.ProxyProtocol), for the dashboard.
 	settings    atomic.Pointer[tcpSettings]
 	clientProxy string
+	// sweeping: a sweepIdle goroutine runs for the tunnel (under connMu).
+	sweeping bool
 }
 
 // ClientSession is one authenticated client connection.
@@ -83,6 +85,9 @@ type ClientSession struct {
 	// LocalAddr is the relay's address the session connected to: the
 	// destination of the PROXY protocol header of its forward streams.
 	LocalAddr string
+	// proxyV2: the client writes a PROXY protocol v2 header when asked
+	// (proto.CapProxyProtocolV2).
+	proxyV2 bool
 	// Handshake metadata (best-effort, from AuthRequest). Zero values when a
 	// client predates these fields. Hostname is reserved (v0.3) and unused.
 	OS            string

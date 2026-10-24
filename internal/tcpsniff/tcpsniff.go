@@ -234,8 +234,8 @@ func ServerName(b []byte) (string, error) {
 			if kind != 0 { // host_name
 				continue
 			}
-			s := strings.TrimSuffix(strings.ToLower(string(name)), ".")
-			if !validName(s) {
+			s, ok := NormalizeHostname(string(name))
+			if !ok {
 				return "", ErrMalformed
 			}
 			return s, nil
@@ -243,6 +243,19 @@ func ServerName(b []byte) (string, error) {
 		return "", nil
 	}
 	return "", nil
+}
+
+// NormalizeHostname is the form a host name is compared and stored in: lower
+// case, without a trailing dot. ok is false for anything that is no host
+// name (see validName). The SNI of a ClientHello is read through it, and a
+// tcp service's TLS passthrough host name (services.tcp_hostname, Q03) must
+// be stored through it too, so that the two compare equal.
+func NormalizeHostname(s string) (string, bool) {
+	n := strings.TrimSuffix(strings.ToLower(s), ".")
+	if !validName(n) {
+		return "", false
+	}
+	return n, true
 }
 
 // validName reports whether s is a host name: at most 253 bytes of labels of

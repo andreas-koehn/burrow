@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -801,5 +802,39 @@ func TestServiceTCPSettings(t *testing.T) {
 	}
 	if !slices.Contains(audit.AllActions, audit.ActionServiceTCPSettingsUpdate) || audit.ActionServiceTCPSettingsUpdate != "service.tcp_settings.update" {
 		t.Fatal("service.tcp_settings.update is not an audit action")
+	}
+}
+
+// Two writes of different tcp settings at once both land: the update changes
+// only the fields it names, in one statement.
+func TestServiceTCPSettings_ConcurrentWritesKeepBoth(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	owner := mustCreateUser(t, st, "owner@x", "user")
+	rdp := mustGetOrCreateService(t, st, owner.ID, "rdp", "tcp")
+	for round := 0; round < 25; round++ {
+		pp, idle := "v2", 60+round
+		if round%2 == 1 {
+			pp = ""
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if _, _, err := st.SetServiceTCPSettings(ctx, owner.ID, "user", rdp.ID, TCPSettingsUpdate{ProxyProtocol: &pp}); err != nil {
+				t.Error(err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, _, err := st.SetServiceTCPSettings(ctx, owner.ID, "user", rdp.ID, TCPSettingsUpdate{IdleTimeoutS: &idle}); err != nil {
+				t.Error(err)
+			}
+		}()
+		wg.Wait()
+		got, err := st.ServiceTCPSettings(ctx, owner.ID, "user", rdp.ID)
+		if err != nil || got != (TCPSettings{ProxyProtocol: pp, IdleTimeoutS: idle}) {
+			t.Fatalf("round %d: %+v %v, want %q %d", round, got, err, pp, idle)
+		}
 	}
 }

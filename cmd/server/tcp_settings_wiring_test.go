@@ -16,10 +16,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ankoehn/burrow/internal/api"
 	"github.com/ankoehn/burrow/internal/client"
 	"github.com/ankoehn/burrow/internal/server"
 	"github.com/ankoehn/burrow/internal/store"
 )
+
+var _ api.ClientProxyReader = (*server.Server)(nil)
 
 // The relay and the store agree on the idle timeout range.
 func TestTCPIdleTimeout_OneRange(t *testing.T) {
@@ -41,7 +44,8 @@ func TestTCPSettings_ResolverAndLoaderReadThem(t *testing.T) {
 	if r.ProxyProtocol != "" || r.IdleTimeout != 0 {
 		t.Fatalf("new service: %+v", r)
 	}
-	if err := x.SetServiceTCPSettings(ctx, r.ServiceID, "v2", 900); err != nil {
+	v2, idle := "v2", 900
+	if err := x.SetServiceTCPSettings(ctx, r.ServiceID, &v2, &idle); err != nil {
 		t.Fatal(err)
 	}
 	again, err := res.ResolveTCP(ctx, uid, "web", server.ResolveOptions{})
@@ -165,10 +169,13 @@ func TestServe_TCPSettings(t *testing.T) {
 	if tn := r.tunnels()["web"].ID; tn != tunnel {
 		t.Fatalf("the client registered again (%s → %s)", tunnel, tn)
 	}
-	got = settings{}
-	r.mustAdmin(http.MethodGet, "/api/v1/services/"+id+"/tcp-settings", nil, http.StatusOK, &got)
-	if got != (settings{ProxyProtocol: "v2", IdleTimeoutS: 60}) {
-		t.Fatalf("GET %+v", got)
+	var full struct {
+		settings
+		ClientProxySupported *bool `json:"client_proxy_supported"`
+	}
+	r.mustAdmin(http.MethodGet, "/api/v1/services/"+id+"/tcp-settings", nil, http.StatusOK, &full)
+	if full.settings != (settings{ProxyProtocol: "v2", IdleTimeoutS: 60}) || full.ClientProxySupported == nil || !*full.ClientProxySupported {
+		t.Fatalf("GET %+v supported %v", full.settings, full.ClientProxySupported)
 	}
 	r.mustAdmin(http.MethodPut, "/api/v1/services/"+id+"/tcp-settings", map[string]any{"idle_timeout_s": 30}, http.StatusBadRequest, nil)
 	r.eventually("rows that say ssh", func() bool {

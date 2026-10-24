@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/yamux"
+
 	"github.com/ankoehn/burrow/internal/observe"
 	"github.com/ankoehn/burrow/internal/proto"
 	"github.com/ankoehn/burrow/internal/tcpsniff"
@@ -283,4 +285,92 @@ func TestTCPIdle_QuietConnectionsAreClosed(t *testing.T) {
 		t.Fatalf("the quiet forward is still open: %v", err)
 	}
 	r.rowFor(t, TrafficTCPForward, func(e ConnLogEntry) bool { return e.Reason == ConnLogReasonIdleTimeout })
+}
+
+// A service that asks for a PROXY v2 header is served only by a client that
+// says it writes one (proto.CapProxyProtocolV2): otherwise a visitor is
+// closed before a byte and before the home client hears of it, a forward is
+// refused, and both leave a proxy_unsupported row. The relay tells whether
+// the serving client can.
+func TestTCPSettings_ProxyProtocolNeedsTheClientsCapability(t *testing.T) {
+	r := newForwardRelayCaps(t, 19535, nil, nil)
+	r.res.mu.Lock()
+	r.res.proxy["svc-web"] = proto.ProxyProtocolV2
+	r.res.mu.Unlock()
+	if supported, online := r.srv.ClientProxySupported("svc-web"); supported || online {
+		t.Fatalf("offline: %v %v", supported, online)
+	}
+	if rr := r.home.register(t, proto.TunnelRegister{Name: "web", Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	if supported, online := r.srv.ClientProxySupported("svc-web"); supported || !online {
+		t.Fatalf("an old client: %v %v", supported, online)
+	}
+	if got, err := visit(t, 19535, 2*time.Second); err == nil || len(got) != 0 {
+		t.Fatalf("visitor got %q %v", got, err)
+	}
+	f := r.forwarder("secret")
+	if _, resp, err := f.open(t, "web"); err != nil || resp.OK || resp.Code != proto.CodeOffline || !strings.Contains(resp.Error, "PROXY") {
+		t.Fatalf("forward: %+v %v", resp, err)
+	}
+	r.waitFor("two proxy_unsupported rows", func() bool {
+		return len(r.refusedRows(TCPRefusedProxyUnsupported)) == 2
+	})
+	if n := r.told.Load(); n != 0 {
+		t.Fatalf("the home client was told of %d connections", n)
+	}
+	select {
+	case nc := <-r.home.notices:
+		t.Fatalf("new_connection sent: %+v", nc)
+	default:
+	}
+
+	// Without the setting the same client serves.
+	r.access.set("svc-web", TCPAccess{Mode: TCPAccessOpen})
+	if err := r.srv.RefreshTCPService(context.Background(), "svc-web"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := visit(t, 19535, 2*time.Second); err != nil || string(got) != "hi he" {
+		t.Fatalf("without the setting: %q %v", got, err)
+	}
+}
+
+// A client that announces the capability is told it can.
+func TestTCPSettings_TheCapabilityIsKept(t *testing.T) {
+	r := newForwardRelay(t, 19536, nil)
+	if rr := r.home.register(t, proto.TunnelRegister{Name: "web", Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	if supported, online := r.srv.ClientProxySupported("svc-web"); !supported || !online {
+		t.Fatalf("%v %v", supported, online)
+	}
+}
+
+// Bytes in one direction only keep a connection alive.
+func TestTCPIdle_OneWayTrafficKeepsAConnection(t *testing.T) {
+	res, access, log := newTCPResolver(), newFakeTCPAccess(), &recConnLog{}
+	res.idle["svc-feed"] = 300 * time.Millisecond
+	r := tcpRelay(t, 19537, 19537, res, func(o *Options) { o.TCPAccess, o.ConnLog = access, log })
+	r.srv.idleTick = 20 * time.Millisecond
+	home := r.client(func(st *yamux.Stream) {
+		for i := 0; i < 20; i++ {
+			if _, err := st.Write([]byte("t")); err != nil {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+	if rr := home.register(t, proto.TunnelRegister{Name: "feed", Type: "tcp", LocalAddr: "x", Access: "open"}); !rr.OK {
+		t.Fatalf("register: %+v", rr)
+	}
+	conn, err := net.Dial("tcp", "127.0.0.1:19537")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 12) // 1.2 s of ticks, four times the timeout
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("the feed was cut: %v", err)
+	}
 }

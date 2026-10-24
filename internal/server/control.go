@@ -117,6 +117,7 @@ func HandleHandshakeWith(conn net.Conn, auth TokenAuthenticator, sessionID strin
 	if slices.Contains(ar.Capabilities, proto.CapRequestSummaries) {
 		cs.summaries = make(chan proto.RequestSummary, summaryQueue)
 	}
+	cs.proxyV2 = slices.Contains(ar.Capabilities, proto.CapProxyProtocolV2)
 	return cs, nil
 }
 

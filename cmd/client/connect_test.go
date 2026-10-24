@@ -526,3 +526,23 @@ func TestConnect_ThroughRoot_LogFlag(t *testing.T) {
 		t.Fatalf("format = %s", f)
 	}
 }
+
+// burrow connect --config does not write a PROXY header: it says so for a
+// service whose file asks for one.
+func TestConnect_ConfigFile_WarnsOfProxyProtocol(t *testing.T) {
+	cleanEnv(t)
+	captureStart(t)
+	yml := writeFile(t, "burrow.yaml", "server: relay.example.com:7000\ntoken: filetok\nservices:\n"+
+		"  - { name: web, local: 127.0.0.1:8443, proxy_protocol: v2 }\n")
+	cmd := newConnectCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var stderr strings.Builder
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--config", yml})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "warning:") || !strings.Contains(stderr.String(), "proxy_protocol") {
+		t.Fatalf("stderr %q", stderr.String())
+	}
+}

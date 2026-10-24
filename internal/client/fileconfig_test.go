@@ -591,6 +591,13 @@ func TestLoadFileConfig_ProxyProtocol(t *testing.T) {
 	if cc.Tunnels[0].ProxyProtocol != "" {
 		t.Fatalf("connect --config applied proxy_protocol: %+v", cc.Tunnels[0])
 	}
+	// It says so: the target expects a header it will not get.
+	if len(cc.Warnings) != 1 || !strings.Contains(cc.Warnings[0], `"web"`) || !strings.Contains(cc.Warnings[0], "burrow up") {
+		t.Fatalf("warnings %q", cc.Warnings)
+	}
+	if len(c.Warnings) != 0 {
+		t.Fatalf("burrow up warns: %q", c.Warnings)
+	}
 	for _, bad := range []struct{ yml, want string }{
 		{"  - { name: web, local: 127.0.0.1:8443, proxy_protocol: v1 }\n", "proxy_protocol must be v2"},
 		{"  - { name: web, local: 127.0.0.1:8080, type: http, proxy_protocol: v2 }\n", "proxy_protocol applies to tcp services"},

@@ -24,11 +24,16 @@ import (
 type liveTCP struct {
 	conns       []server.ConnView
 	clientProxy map[string]string
+	supported   map[string]bool // service id → its client can write the header; absent: offline
 }
 
 func (l *liveTCP) ServiceConnections(string) []server.ConnView { return l.conns }
 func (l *liveTCP) CloseServiceConnection(string, string) bool  { return false }
 func (l *liveTCP) ClientProxyProtocol(serviceID string) string { return l.clientProxy[serviceID] }
+func (l *liveTCP) ClientProxySupported(serviceID string) (bool, bool) {
+	s, ok := l.supported[serviceID]
+	return s, ok
+}
 
 func decodeTCPSettings(t *testing.T, r *http.Response) tcpSettingsResp {
 	t.Helper()
@@ -44,15 +49,26 @@ func decodeTCPSettings(t *testing.T, r *http.Response) tcpSettingsResp {
 }
 
 func TestTCPSettings_GetAndPut(t *testing.T) {
-	live := &liveTCP{clientProxy: map[string]string{"rdp": "v2"}}
+	live := &liveTCP{clientProxy: map[string]string{"rdp": "v2"}, supported: map[string]bool{"rdp": true}}
 	a := newTCPAPI(t, func(d *Deps) { d.Connections = live })
 	a.svcs.getSvc = store.ServiceDetail{ServiceView: store.ServiceView{ID: "rdp", Type: "tcp", AccessMode: "open"}}
 	a.svcs.tcpSettings = store.TCPSettings{IdleTimeoutS: 600}
 
 	got := decodeTCPSettings(t, a.c.get(t, "/api/v1/services/rdp/tcp-settings"))
-	if got != (tcpSettingsResp{ProxyProtocol: "", IdleTimeoutS: 600, ClientProxyProtocol: "v2"}) {
+	if got.ProxyProtocol != "" || got.IdleTimeoutS != 600 || got.ClientProxyProtocol != "v2" ||
+		got.ClientProxySupported == nil || !*got.ClientProxySupported {
 		t.Fatalf("GET %+v", got)
 	}
+	// An old client cannot write the header: false; offline: null.
+	live.supported["rdp"] = false
+	if got := decodeTCPSettings(t, a.c.get(t, "/api/v1/services/rdp/tcp-settings")); got.ClientProxySupported == nil || *got.ClientProxySupported {
+		t.Fatalf("old client: %+v", got)
+	}
+	delete(live.supported, "rdp")
+	if body := readBody(t, a.c.get(t, "/api/v1/services/rdp/tcp-settings")); !strings.Contains(body, `"client_proxy_supported":null`) {
+		t.Fatalf("offline: %s", body)
+	}
+	live.supported["rdp"] = true
 
 	// One field changes it alone; the answer is the settings after.
 	got = decodeTCPSettings(t, a.c.put(t, "/api/v1/services/rdp/tcp-settings", map[string]string{"proxy_protocol": "v2"}))

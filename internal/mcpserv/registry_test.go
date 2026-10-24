@@ -272,6 +272,10 @@ func TestRegistry_CredentialRoutingAndInspectionWritesAreNotTools(t *testing.T) 
 		// and the roles that may reach a service (burrow_login, and who may
 		// forward to a private tcp service) widen access too.
 		"serviceIpGeoUpdate", "serviceAccessPolicyUpdate",
+		// tcp complete: the PROXY header changes what a service's target is
+		// told about its visitors (the source it may trust), and an idle
+		// timeout cuts connections off.
+		"serviceTcpSettingsUpdate",
 	} {
 		if _, ok := r.Lookup(id); ok {
 			t.Errorf("%s is a management tool", id)
@@ -282,7 +286,7 @@ func TestRegistry_CredentialRoutingAndInspectionWritesAreNotTools(t *testing.T) 
 		"serviceDomainsList", "serviceDomainGet", "webhooksList", "webhookDeliveriesList",
 		"guardrailSettingsGet", "redactionSettingsGet", "redactionRulesList", "serviceAiConfigGet",
 		"retentionSettingsGet", "redactionPreview", "guardrailPreview", "webhookPreview",
-		"serviceIpGeoGet", "serviceAccessPolicyGet", "automationTokenCreate",
+		"serviceIpGeoGet", "serviceAccessPolicyGet", "automationTokenCreate", "serviceTcpSettingsGet",
 		"aiModelsList", "gatewayKeysList", "usersList", "rolesList",
 	} {
 		if _, ok := r.Lookup(id); !ok {
@@ -333,13 +337,10 @@ var mcpExposedWrites = map[string]bool{
 	"serviceDomainDelete":           true,
 	"serviceMaxConnectionsUpdate":   true, // a cap of 1 to 256 visitors; widens nobody's access
 	"serviceSlugUpdate":             true,
-	// The PROXY protocol header the home client writes and the idle timeout
-	// of a tcp service: they shape connections, not who may make them.
-	"serviceTcpSettingsUpdate": true,
-	"sessionDelete":            true,
-	"sessionsRevokeAll":        true,
-	"settingsTestEmail":        true,
-	"webhookPreview":           true,
+	"sessionDelete":                 true,
+	"sessionsRevokeAll":             true,
+	"settingsTestEmail":             true,
+	"webhookPreview":                true,
 }
 
 // mcpSensitiveAllowed are exposed writes the heuristic below flags that stay

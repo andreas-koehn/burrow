@@ -252,9 +252,15 @@ func (c *Client) connectOnce(ctx context.Context) error {
 	}
 	defer conn.Close()
 
+	// A client with a tcp tunnel writes a PROXY protocol header when the
+	// relay asks for one, and says so; one with http tunnels alone sends the
+	// auth request it always has.
 	var caps []string
+	if slices.ContainsFunc(c.opts.Tunnels, func(tn TunnelSpec) bool { return tn.Type == "tcp" || tn.Type == "" }) {
+		caps = append(caps, proto.CapProxyProtocolV2)
+	}
 	if c.opts.RequestSummaries && c.events != nil {
-		caps = []string{proto.CapRequestSummaries}
+		caps = append(caps, proto.CapRequestSummaries)
 	}
 	ar, err := authenticate(conn, c.opts.Token, caps)
 	if err != nil {

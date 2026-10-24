@@ -37,6 +37,13 @@ const (
 // that reads request_summary messages.
 const CapRequestSummaries = "request_summaries"
 
+// CapProxyProtocolV2 is the capability (AuthRequest.Capabilities) of a client
+// that writes a PROXY protocol v2 header to its target when new_connection
+// asks for one. A relay does not pair a visitor of a service that asks for
+// the header with a client that lacks it: an older client would hand the
+// target the visitor's bytes without the header.
+const CapProxyProtocolV2 = "proxy_protocol_v2"
+
 // Capabilities a relay announces in AuthResponse.Capabilities. A client that
 // needs one checks for it before it relies on it: an older relay announces
 // none.

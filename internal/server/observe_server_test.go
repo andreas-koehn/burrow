@@ -121,11 +121,17 @@ func settle() { time.Sleep(200 * time.Millisecond) }
 
 func (r *observedRelay) dial(token, version string) (net.Conn, proto.AuthResponse) {
 	r.t.Helper()
+	return r.dialCaps(token, version, nil)
+}
+
+// dialCaps is dial with the client capabilities caps.
+func (r *observedRelay) dialCaps(token, version string, caps []string) (net.Conn, proto.AuthResponse) {
+	r.t.Helper()
 	conn, err := tls.Dial("tcp", r.srv.Addr(), &tls.Config{RootCAs: r.pool, ServerName: "localhost"})
 	if err != nil {
 		r.t.Fatalf("dial: %v", err)
 	}
-	if err := proto.WriteMessage(conn, proto.MsgAuthRequest, proto.AuthRequest{ProtocolVersion: 1, Token: token, ClientVersion: version}); err != nil {
+	if err := proto.WriteMessage(conn, proto.MsgAuthRequest, proto.AuthRequest{ProtocolVersion: 1, Token: token, ClientVersion: version, Capabilities: caps}); err != nil {
 		r.t.Fatalf("auth request: %v", err)
 	}
 	var env proto.Envelope
@@ -158,7 +164,13 @@ func (r *observedRelay) client(onConn func(st *yamux.Stream)) *handClient {
 // clientWith is client with the given token.
 func (r *observedRelay) clientWith(token string, onConn func(st *yamux.Stream)) *handClient {
 	r.t.Helper()
-	conn, ar := r.dial(token, "")
+	return r.clientCaps(token, nil, onConn)
+}
+
+// clientCaps is clientWith a client that announces caps.
+func (r *observedRelay) clientCaps(token string, caps []string, onConn func(st *yamux.Stream)) *handClient {
+	r.t.Helper()
+	conn, ar := r.dialCaps(token, "", caps)
 	if !ar.OK {
 		r.t.Fatalf("auth: %+v", ar)
 	}

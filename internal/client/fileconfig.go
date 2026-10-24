@@ -18,6 +18,9 @@ type FileConfig struct {
 	// Forwards are the forwards: section (`burrow up` only). A file may hold
 	// forwards alone.
 	Forwards []ForwardSpec
+	// Warnings are what the loader read past and the user should know of
+	// (`burrow connect --config` dropping proxy_protocol).
+	Warnings []string
 }
 
 // rawFileConfig is the intermediate struct used for YAML unmarshalling.
@@ -151,6 +154,7 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 
 	// Build TunnelSpec slice, applying defaults and validations.
 	tunnels := make([]TunnelSpec, 0, len(raw.Services))
+	var warnings []string
 	for i, svc := range raw.Services {
 		if svc.Name == "" {
 			return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d]: name is required", i)
@@ -184,6 +188,10 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 		}
 		if svc.Local == "" {
 			return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: local is required", i, svc.Name)
+		}
+		if complete && svc.ProxyProtocol != "" {
+			warnings = append(warnings, fmt.Sprintf("service %q: proxy_protocol is read by burrow up only; "+
+				"burrow connect sends no PROXY header (a relay setting of the service still asks for one)", svc.Name))
 		}
 		if typ != "tcp" && typ != "http" {
 			return FileConfig{}, fmt.Errorf("loadfileconfig: service[%d] %q: unknown type %q: must be tcp, http or mcp", i, svc.Name, typ)
@@ -266,6 +274,7 @@ func loadFileConfig(path string, complete bool) (FileConfig, error) {
 		Token:    token,
 		Tunnels:  tunnels,
 		Forwards: forwards,
+		Warnings: warnings,
 	}, nil
 }
 

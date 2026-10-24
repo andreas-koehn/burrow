@@ -340,23 +340,23 @@ func (s *Store) SetServiceTCPSettings(ctx context.Context, callerID, callerRole,
 	if svc.Type != "tcp" {
 		return TCPSettings{}, TCPSettings{}, ErrServiceNotTCP
 	}
+	if p := u.ProxyProtocol; p != nil && *p != "" && *p != "v2" {
+		return TCPSettings{}, TCPSettings{}, ErrInvalidProxyProtocol
+	}
+	if n := u.IdleTimeoutS; n != nil && *n != 0 && (*n < MinTCPIdleTimeoutS || *n > MaxTCPIdleTimeoutS) {
+		return TCPSettings{}, TCPSettings{}, ErrInvalidIdleTimeout
+	}
+	// The update writes only the named fields, in one statement; "before"
+	// is the row as read above, "after" the row as it is now.
 	before = TCPSettings{ProxyProtocol: svc.ProxyProtocol, IdleTimeoutS: svc.IdleTimeoutS}
-	after = before
-	if u.ProxyProtocol != nil {
-		if p := *u.ProxyProtocol; p != "" && p != "v2" {
-			return TCPSettings{}, TCPSettings{}, ErrInvalidProxyProtocol
-		}
-		after.ProxyProtocol = *u.ProxyProtocol
-	}
-	if u.IdleTimeoutS != nil {
-		if n := *u.IdleTimeoutS; n != 0 && (n < MinTCPIdleTimeoutS || n > MaxTCPIdleTimeoutS) {
-			return TCPSettings{}, TCPSettings{}, ErrInvalidIdleTimeout
-		}
-		after.IdleTimeoutS = *u.IdleTimeoutS
-	}
-	if err := s.q.SetServiceTCPSettings(ctx, serviceID, after.ProxyProtocol, after.IdleTimeoutS); err != nil {
+	if err := s.q.SetServiceTCPSettings(ctx, serviceID, u.ProxyProtocol, u.IdleTimeoutS); err != nil {
 		return TCPSettings{}, TCPSettings{}, err
 	}
+	now, err := s.q.GetServiceByID(ctx, serviceID)
+	if err != nil {
+		return TCPSettings{}, TCPSettings{}, err
+	}
+	after = TCPSettings{ProxyProtocol: now.ProxyProtocol, IdleTimeoutS: now.IdleTimeoutS}
 	s.emitAudit(withAuditDeadline(ctx), audit.ActionServiceTCPSettingsUpdate, func(e *audit.Event) {
 		e.SubjectID = serviceID
 		e.SubjectLabel = svc.Name
