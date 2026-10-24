@@ -388,7 +388,7 @@ func (d Deps) GetConnectionLogsExport(w http.ResponseWriter, r *http.Request) {
 		_ = cw.Write([]string{
 			"id", "kind", "service_id", "tunnel_id", "user_id", "client_session_id",
 			"source_ip", "user_agent", "started_at", "ended_at", "duration_ms",
-			"bytes_in", "bytes_out", "status", "reason", "token_name", "protocol", "sni",
+			"bytes_in", "bytes_out", "status", "reason", "token_name", "protocol", "sni", "grpc_method", "grpc_status",
 		})
 		for _, row := range rows {
 			_ = cw.Write([]string{
@@ -401,6 +401,7 @@ func (d Deps) GetConnectionLogsExport(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("%d", row.BytesIn),
 				fmt.Sprintf("%d", row.BytesOut),
 				row.Status, row.Reason, row.TokenName, row.Protocol, row.SNI,
+				row.GRPCMethod, grpcStatusCSV(row.GRPCStatus),
 			})
 		}
 		cw.Flush()
@@ -414,4 +415,12 @@ func (d Deps) GetConnectionLogsExport(w http.ResponseWriter, r *http.Request) {
 			_ = enc.Encode(toConnectionLogResp(row))
 		}
 	}
+}
+
+// grpcStatusCSV is a grpc-status as a CSV cell: the number, "" for a row that is no gRPC call.
+func grpcStatusCSV(s *int) string {
+	if s == nil {
+		return ""
+	}
+	return strconv.Itoa(*s)
 }

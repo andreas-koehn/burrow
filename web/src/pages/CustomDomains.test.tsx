@@ -260,6 +260,35 @@ describe("CustomDomainsPanel host names", () => {
     await waitFor(() => expect(sent).toEqual({ hostname: "grpc.example.com", cert_source: "auto" }));
   });
 
+  it("switching to automatic drops a pasted certificate and key: none is sent, none comes back", async () => {
+    let sent: Record<string, unknown> | null = null;
+    server.use(http.post("/api/v1/services/:id/domains", async ({ request }) => {
+      sent = (await request.clone().json()) as Record<string, unknown>;
+      return HttpResponse.json({ ...db.customDomains[0]!, id: "dom_b", hostname: "k.example.com", cert_source: "auto", cert_status: "pending", cert_sha256: "" }, { status: 201 });
+    }));
+    mount();
+    const dialog = await openAdd();
+    await userEvent.type(within(dialog).getByLabelText(/hostname/i), "k.example.com");
+    await userEvent.type(within(dialog).getByLabelText("Certificate (PEM)"), "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----");
+    await userEvent.type(within(dialog).getByLabelText("Private key (PEM)"), "-----BEGIN PRIVATE KEY-----\nX\n-----END PRIVATE KEY-----");
+    await userEvent.click(within(dialog).getByRole("radio", { name: /Automatic/ }));
+    // Back to upload: the fields start empty.
+    await userEvent.click(within(dialog).getByRole("radio", { name: /Upload a certificate/ }));
+    expect(within(dialog).getByLabelText("Certificate (PEM)")).toHaveValue("");
+    expect(within(dialog).getByLabelText("Private key (PEM)")).toHaveValue("");
+    await userEvent.click(within(dialog).getByRole("radio", { name: /Automatic/ }));
+    await userEvent.click(within(dialog).getByRole("button", { name: /add$/i }));
+    await waitFor(() => expect(sent).toEqual({ hostname: "k.example.com", cert_source: "auto" }));
+  });
+
+  it("the mock relay reads and changes domains only for someone who may configure the service", async () => {
+    db.me = { ...db.me, role: "user", permissions: ["tunnels:read:own"] };
+    const r = await fetch("/api/v1/services/svc_ai001/domains");
+    expect(r.status).toBe(403);
+    const put = await fetch("/api/v1/services/svc_ai001/domains/dom_001", { method: "PUT", headers: { "X-CSRF-Token": db.csrf }, body: "{}" });
+    expect(put.status).toBe(403);
+  });
+
   it("someone who holds only services:configure:own is offered an uploaded certificate only", async () => {
     db.me = { ...db.me, role: "user", permissions: ["services:configure:own"] };
     db.services.find((s) => s.id === "svc_ai001")!.user_id = db.me.id;
@@ -300,7 +329,8 @@ describe("CustomDomainsPanel host names", () => {
   it("New domain and Delete are offered only with services:configure", async () => {
     db.me = { ...db.me, role: "user", permissions: ["tunnels:read:own"] };
     mount();
-    await screen.findByText("foo.example.com");
+    // The relay answers 403 to the list: nothing is shown and nothing is offered.
+    await screen.findByRole("alert");
     expect(screen.queryByRole("button", { name: "New domain" })).toBeNull();
     expect(screen.queryByRole("button", { name: /delete/i })).toBeNull();
   });

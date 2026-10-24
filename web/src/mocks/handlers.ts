@@ -108,6 +108,12 @@ function httpService(id: string): ServiceRow | Response {
   if (svc.type !== "http") return err(409, "this setting applies to http services only");
   return svc;
 }
+// The custom-domain routes need services:configure:own|any (access.go) and then a service the caller may configure.
+function domainsDenied(id: string): Response | null {
+  if (!holds("services:configure:own", "services:configure:any")) return err(403, "forbidden");
+  const svc = db.services.find((s) => s.id === id);
+  return !svc || !canConfigure(svc) ? err(404, "service not found") : null;
+}
 function httpSettingsOf(id: string): HttpSettings {
   const r = db.httpSettings[id] ?? { upstream_protocol: "http1", upstream_tls_verify: false, upstream_tls_server_name: "", upstream_tls_ca_pem: "", grpc_max_duration_s: 0, client_upstream_protocol: "" };
   return {
@@ -2230,8 +2236,7 @@ export const handlers = [
   // ---- v0.5.0 custom domains (spec Part D) ----
   http.get("/api/v1/services/:id/domains", ({ request, params }) => {
     const g = gate(request); if (g) return g;
-    const svc = db.services.find((s) => s.id === params.id);
-    if (!svc) return err(404, "service not found");
+    { const d = domainsDenied(params.id as string); if (d) return d; }
     const rows = db.customDomains
       .filter((d) => d.service_id === params.id)
       .slice()
@@ -2241,8 +2246,8 @@ export const handlers = [
   http.post("/api/v1/services/:id/domains", async ({ request, params }) => {
     const g = gate(request); if (g) return g;
     { const r = needReauth(); if (r) return r; }
-    const svc = db.services.find((s) => s.id === params.id);
-    if (!svc || !canConfigure(svc)) return err(404, "service not found");
+    { const d = domainsDenied(params.id as string); if (d) return d; }
+    const svc = db.services.find((s) => s.id === params.id)!;
     const b = await body<CreateCustomDomainInput>(request);
     if (!b) return err(400, "invalid body");
     const source = b.cert_source ?? "uploaded";
@@ -2290,12 +2295,15 @@ export const handlers = [
   }),
   http.get("/api/v1/services/:id/domains/:did", ({ request, params }) => {
     const g = gate(request); if (g) return g;
+    { const d = domainsDenied(params.id as string); if (d) return d; }
     const d = db.customDomains.find((x) => x.id === params.did && x.service_id === params.id);
     if (!d) return err(404, "domain not found");
     return json(d);
   }),
   http.put("/api/v1/services/:id/domains/:did", ({ request, params }) => {
     const g = gate(request); if (g) return g;
+    { const r = needReauth(); if (r) return r; }
+    { const d = domainsDenied(params.id as string); if (d) return d; }
     const d = db.customDomains.find((x) => x.id === params.did && x.service_id === params.id);
     if (!d) return err(404, "domain not found");
     return noContent();
@@ -2303,6 +2311,7 @@ export const handlers = [
   http.delete("/api/v1/services/:id/domains/:did", ({ request, params }) => {
     const g = gate(request); if (g) return g;
     { const r = needReauth(); if (r) return r; }
+    { const d = domainsDenied(params.id as string); if (d) return d; }
     const i = db.customDomains.findIndex((x) => x.id === params.did && x.service_id === params.id);
     if (i < 0) return err(404, "domain not found");
     db.customDomains.splice(i, 1);

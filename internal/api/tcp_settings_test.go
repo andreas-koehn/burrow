@@ -158,7 +158,11 @@ func TestTCPSettings_ProtocolAndSNIAreShown(t *testing.T) {
 		t.Fatalf("csv %v %v", recs, err)
 	}
 	head, row := recs[0], recs[1]
-	if head[len(head)-2] != "protocol" || head[len(head)-1] != "sni" || row[len(row)-2] != "tls" || row[len(row)-1] != "rdp.example.com" {
+	col := map[string]int{}
+	for i, h := range head {
+		col[h] = i
+	}
+	if row[col["protocol"]] != "tls" || row[col["sni"]] != "rdp.example.com" {
 		t.Fatalf("csv %v / %v", head, row)
 	}
 	if nd := readBody(t, c.get(t, "/api/v1/connection-logs/export")); !strings.Contains(nd, `"protocol":"tls"`) || !strings.Contains(nd, `"sni":"rdp.example.com"`) {

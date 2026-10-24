@@ -2,10 +2,12 @@ package api
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -648,5 +650,46 @@ func TestConnectionLogsGETCarriesGRPCFields(t *testing.T) {
 	v, ok := rows[1]["grpc_status"]
 	if !ok || v != nil || rows[1]["grpc_method"] != "" {
 		t.Fatalf("plain row = %v", rows[1])
+	}
+}
+
+// TestConnectionLogsExportCarriesGRPCFields: ndjson and CSV both name the method and status of a
+// gRPC call, and leave them empty (CSV) or null (ndjson) for any other row.
+func TestConnectionLogsExportCarriesGRPCFields(t *testing.T) {
+	st := 14
+	store := &fakeConnLogStore{logs: []db.ConnectionLog{
+		{ID: "g1", Kind: "http_proxy", Protocol: "grpc", GRPCMethod: "/pkg.Svc/Do", GRPCStatus: &st},
+		{ID: "h1", Kind: "http_proxy", Protocol: "h2"},
+	}}
+	d := Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, ConnLogDB: store}
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	records, err := csv.NewReader(strings.NewReader(readBody(t, c.get(t, "/api/v1/connection-logs/export?format=csv")))).ReadAll()
+	if err != nil || len(records) != 3 {
+		t.Fatalf("csv: %v, %d records", err, len(records))
+	}
+	col := map[string]int{}
+	for i, h := range records[0] {
+		col[h] = i
+	}
+	if records[1][col["grpc_method"]] != "/pkg.Svc/Do" || records[1][col["grpc_status"]] != "14" {
+		t.Fatalf("grpc row = %v", records[1])
+	}
+	if records[2][col["grpc_method"]] != "" || records[2][col["grpc_status"]] != "" {
+		t.Fatalf("plain row = %v", records[2])
+	}
+
+	lines := splitLines(readBody(t, c.get(t, "/api/v1/connection-logs/export?format=ndjson")))
+	if len(lines) < 2 {
+		t.Fatalf("ndjson lines = %d", len(lines))
+	}
+	var a, b map[string]any
+	if json.Unmarshal([]byte(lines[0]), &a) != nil || json.Unmarshal([]byte(lines[1]), &b) != nil {
+		t.Fatal("ndjson not json")
+	}
+	if a["grpc_method"] != "/pkg.Svc/Do" || a["grpc_status"] != float64(14) || b["grpc_method"] != "" || b["grpc_status"] != nil {
+		t.Fatalf("ndjson rows = %v %v", a, b)
 	}
 }

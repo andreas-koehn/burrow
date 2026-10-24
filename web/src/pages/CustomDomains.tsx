@@ -281,7 +281,7 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
               aria-label="Certificate source"
               options={[{ value: "uploaded", label: "Upload a certificate" }, { value: "auto", label: "Automatic (Let's Encrypt)" }]}
               value={source}
-              onChange={(v) => { setSource(v); setRejectMsg(null); }}
+              onChange={(v) => { setSource(v); setRejectMsg(null); if (v === "auto") setPem(emptyPem); }}
             />
           ) : (
             <p className="muted small">Automatic certificates are set up by an administrator; here you upload one.</p>
