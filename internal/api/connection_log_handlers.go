@@ -88,6 +88,10 @@ type connectionLogResp struct {
 	// "" for other rows and for connections that were never looked at.
 	Protocol string `json:"protocol"`
 	SNI      string `json:"sni"`
+	// GRPCMethod is the method of a gRPC call (/pkg.Service/Method) and
+	// GRPCStatus its grpc-status; "" and null for every other row.
+	GRPCMethod string `json:"grpc_method"`
+	GRPCStatus *int   `json:"grpc_status"`
 }
 
 func toConnectionLogResp(r db.ConnectionLog) connectionLogResp {
@@ -110,6 +114,8 @@ func toConnectionLogResp(r db.ConnectionLog) connectionLogResp {
 		TokenName:       r.TokenName,
 		Protocol:        r.Protocol,
 		SNI:             r.SNI,
+		GRPCMethod:      r.GRPCMethod,
+		GRPCStatus:      r.GRPCStatus,
 	}
 }
 

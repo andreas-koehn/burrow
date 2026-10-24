@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, CircleCheck } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { apiFetch, ApiError } from "@/lib/api";
-import { Button, PageHeader, ErrorNotice } from "@/components/ds";
+import { Button, PageHeader, ErrorNotice, Segmented } from "@/components/ds";
 import { useAuth } from "@/auth/useAuth";
 import { useCan } from "@/auth/useCan";
 import { P } from "@/auth/permissions";
@@ -156,6 +156,8 @@ function useServed(): Served {
 export default function ConnectClient() {
   const otherId = useId();
   const served = useServed();
+  // What the machine serves: a web app or API (burrow http) or a gRPC server (burrow grpc).
+  const [grpc, setGrpc] = useState(false);
   // What the reader chose; until then the section follows the relay's age.
   const [otherChoice, setOtherChoice] = useState<boolean | null>(null);
 
@@ -213,6 +215,14 @@ export default function ConnectClient() {
           shows port {served.target} instead: put in where the server listens.
         </p>
       )}
+      {served.state !== "loading" && (
+        <Segmented
+          aria-label="Kind of service"
+          options={[{ value: "http", label: "Web app or API" }, { value: "grpc", label: "gRPC" }]}
+          value={grpc ? "grpc" : "http"}
+          onChange={(v) => setGrpc(v === "grpc")}
+        />
+      )}
       {/* While the answer is out no command is shown: it would be the one for some other service. */}
       {served.state !== "loading" && (
         <>
@@ -220,6 +230,7 @@ export default function ConnectClient() {
             relayOrigin={origin}
             target={served.state === "service" ? served.target : undefined}
             name={served.state === "service" ? served.name : undefined}
+            grpc={grpc}
           />
           {served.state === "service" && served.providerSlug
             ? <WaitForProvider slug={served.providerSlug} />

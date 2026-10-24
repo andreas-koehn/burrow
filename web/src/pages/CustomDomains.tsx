@@ -2,12 +2,16 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatTimestamp } from "@/lib/format";
-import { Badge, Button, ErrorNotice, FormFieldGroup, Input, Dialog, SkeletonRows, TableEmptyRow } from "@/components/ds";
+import { Badge, Button, ErrorNotice, FormFieldGroup, Input, Dialog, Segmented, SkeletonRows, TableEmptyRow } from "@/components/ds";
+import { CopyButton } from "@/components/CopyableCode";
+import { useCan } from "@/auth/useCan";
+import { P } from "@/auth/permissions";
+import { grpcAddress } from "@/lib/grpc";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { CertPemEditor } from "@/components/CertPemEditor";
 import type { CertPemEditorValue } from "@/components/CertPemEditor";
-import type { CustomDomain, CustomDomainRejection } from "@/lib/contract";
+import type { CertSource, CertStatus, CustomDomain, CustomDomainRejection } from "@/lib/contract";
 
 // ---- Verbatim rejection messages ----
 const REJECTION_MESSAGES: Record<CustomDomainRejection["reason"], string> = {
@@ -43,6 +47,19 @@ export const STATUS_LABEL: Record<CustomDomain["status"], string> = {
   cert_expired:  "Expired",
 };
 
+// The status of an automatic certificate: ready once the relay holds one, pending until then,
+// not needed where a proxy in front terminates TLS.
+const CERT_STATUS_LABEL: Record<CertStatus, string> = {
+  ready: "Ready",
+  pending: "Waiting for a certificate",
+  not_needed: "Handled by the proxy",
+};
+const CERT_STATUS_KIND: Record<CertStatus, string> = {
+  ready: "status-connected",
+  pending: "status-idle",
+  not_needed: "status-idle",
+};
+
 function truncateFp(fp: string): string {
   if (fp.length <= 12) return fp;
   return fp.slice(0, 12) + "…";
@@ -54,6 +71,11 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
   const qc = useQueryClient();
   const domainsKey = ["service", serviceId, "domains"] as const;
 
+  // The relay lets the owner (:own) and the holder of :any write domains; an automatic certificate
+  // is for :any only, because it proves nothing about who controls the name.
+  const canWrite = useCan([P.servicesConfigureOwn, P.servicesConfigureAny]);
+  const canAuto = useCan(P.servicesConfigureAny);
+
   const { data, isError } = useQuery({
     queryKey: domainsKey,
     queryFn: () => apiFetch<CustomDomain[]>(`/services/${serviceId}/domains`),
@@ -63,6 +85,7 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
   // Add-domain dialog
   const [adding, setAdding] = useState(false);
   const [hostname, setHostname] = useState("");
+  const [source, setSource] = useState<CertSource>("uploaded");
   const [pem, setPem] = useState<CertPemEditorValue>(emptyPem);
   const [rejectMsg, setRejectMsg] = useState<string | null>(null);
 
@@ -71,6 +94,7 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
 
   function openAdd() {
     setHostname("");
+    setSource("uploaded");
     setPem(emptyPem);
     setRejectMsg(null);
     setAdding(true);
@@ -87,14 +111,20 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
       try {
         return await apiFetch<CustomDomain>(`/services/${serviceId}/domains`, {
           method: "POST",
-          body: JSON.stringify({ hostname, cert_pem: pem.cert_pem, key_pem: pem.key_pem }),
+          body: JSON.stringify(
+            source === "auto"
+              ? { hostname, cert_source: "auto" }
+              : { hostname, cert_pem: pem.cert_pem, key_pem: pem.key_pem },
+          ),
         });
       } catch (e) {
         if (e instanceof ApiError && e.status === 400) {
           const j = (e.body ?? {}) as Partial<CustomDomainRejection>;
           if (j.reason && j.reason in REJECTION_MESSAGES) throw new DomainRejectionError(REJECTION_MESSAGES[j.reason]);
-          throw new Error(e.message || "Bad request", { cause: e });
         }
+        // 400, 403 (automatic certificates are for administrators), 409 (the name has another owner)
+        // and 429 (the relay's caps): the relay's own text says what to change.
+        if (e instanceof ApiError && [400, 403, 409, 429].includes(e.status) && e.message) throw new DomainRejectionError(e.message);
         throw e;
       }
     },
@@ -129,54 +159,83 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
     <div className="custom-domains-panel">
       <div className="panel-head">
         <h3>Custom domains</h3>
-        <Button variant="primary" size="sm" onClick={openAdd}>
-          New domain
-        </Button>
+        {canWrite && (
+          <Button variant="primary" size="sm" onClick={openAdd}>
+            New domain
+          </Button>
+        )}
       </div>
-      <p className="help">Certificates here apply only to this service.</p>
+      <p className="help">
+        Certificates here apply only to this service. A gRPC client dials a custom domain on port 443
+        (<span className="mono">host:443</span>).
+      </p>
 
       <div className="table-wrap">
         <table className="data" aria-label="Custom domains">
           <thead>
             <tr>
               <th>Hostname</th>
+              <th>Certificate</th>
               <th>Status</th>
               <th>Expires</th>
               <th>Fingerprint</th>
+              <th>gRPC address</th>
               <th className="col-actions"></th>
             </tr>
           </thead>
           <tbody>
-            {domains.map((d) => (
-              <tr key={d.id}>
-                <td className="mono">{d.hostname}</td>
-                <td>
-                  <Badge kind={statusBadgeKind(d.status)}>
-                    {STATUS_LABEL[d.status]}
-                  </Badge>
-                </td>
-                <td>{formatTimestamp(d.not_after)}</td>
-                <td className="mono">{truncateFp(d.cert_sha256)}</td>
-                <td className="col-actions">
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    aria-label={`Delete domain ${d.hostname}`}
-                    onClick={() => setDeleteTarget(d)}
-                  >
-                    Delete
-                  </Button>
-                </td>
-              </tr>
-            ))}
+            {domains.map((d) => {
+              // A relay from before automatic certificates leaves the field out: the certificate was uploaded.
+              const auto = d.cert_source === "auto";
+              const addr = grpcAddress(d.hostname);
+              return (
+                <tr key={d.id}>
+                  <td className="mono">{d.hostname}</td>
+                  <td>{auto ? "Automatic" : "Uploaded"}</td>
+                  <td>
+                    {auto ? (
+                      <Badge kind={CERT_STATUS_KIND[d.cert_status ?? "pending"]}>
+                        {CERT_STATUS_LABEL[d.cert_status ?? "pending"]}
+                      </Badge>
+                    ) : (
+                      <Badge kind={statusBadgeKind(d.status)}>
+                        {STATUS_LABEL[d.status]}
+                      </Badge>
+                    )}
+                  </td>
+                  <td>{auto ? "—" : formatTimestamp(d.not_after)}</td>
+                  <td className="mono">{auto ? "—" : truncateFp(d.cert_sha256)}</td>
+                  <td>
+                    {addr ? (
+                      <span className="row row-center gap-1">
+                        <span className="mono small">{addr}</span>
+                        <CopyButton text={addr} label={`Copy gRPC address ${addr}`} />
+                      </span>
+                    ) : "—"}
+                  </td>
+                  <td className="col-actions">
+                    {canWrite && (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        aria-label={`Delete domain ${d.hostname}`}
+                        onClick={() => setDeleteTarget(d)}
+                      >
+                        Delete
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
             {!data && !isError && (
-              <tr><td colSpan={5}><SkeletonRows n={3} /></td></tr>
+              <tr><td colSpan={7}><SkeletonRows n={3} /></td></tr>
             )}
             {isError && !data && (
-              <tr><td colSpan={5}><ErrorNotice>Could not load custom domains.</ErrorNotice></td></tr>
+              <tr><td colSpan={7}><ErrorNotice>Could not load custom domains.</ErrorNotice></td></tr>
             )}
             {data && data.length === 0 && (
-              <TableEmptyRow colSpan={5} title="No custom domains yet.">
+              <TableEmptyRow colSpan={7} title="No custom domains yet.">
                 Add a domain to serve this service on your own hostname.
               </TableEmptyRow>
             )}
@@ -189,7 +248,9 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
         open={adding}
         onOpenChange={(o) => { if (!o) closeAdd(); }}
         title="Add custom domain"
-        description="Supply a hostname and the TLS certificate + private key in PEM format."
+        description={source === "auto"
+          ? "Supply a hostname. The relay orders its certificate itself."
+          : "Supply a hostname and the TLS certificate + private key in PEM format."}
         footer={
           <>
             <Button variant="secondary" onClick={closeAdd}>Cancel</Button>
@@ -215,7 +276,24 @@ export function CustomDomainsPanel({ serviceId }: { serviceId: string }) {
               onChange={(e) => setHostname(e.target.value)}
             />
           </div>
-          <CertPemEditor value={pem} onChange={setPem} />
+          {canAuto ? (
+            <Segmented
+              aria-label="Certificate source"
+              options={[{ value: "uploaded", label: "Upload a certificate" }, { value: "auto", label: "Automatic (Let's Encrypt)" }]}
+              value={source}
+              onChange={(v) => { setSource(v); setRejectMsg(null); }}
+            />
+          ) : (
+            <p className="muted small">Automatic certificates are set up by an administrator; here you upload one.</p>
+          )}
+          {source === "auto" ? (
+            <p className="muted small">
+              The relay orders the certificate itself once the name&apos;s DNS points at this relay and port 80 or 443 reaches it.
+              Until then the status reads Waiting for a certificate. Behind a proxy that ends TLS no certificate is needed.
+            </p>
+          ) : (
+            <CertPemEditor value={pem} onChange={setPem} />
+          )}
           {rejectMsg && (
             <ErrorNotice>{rejectMsg}</ErrorNotice>
           )}

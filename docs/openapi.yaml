@@ -1572,7 +1572,7 @@ components:
             trust anchor client certificates are verified against.
     ConnectionLog:
       type: object
-      required: [id, kind, service_id, tunnel_id, user_id, client_session_id, source_ip, user_agent, started_at, ended_at, duration_ms, bytes_in, bytes_out, status, reason, token_name, protocol, sni]
+      required: [id, kind, service_id, tunnel_id, user_id, client_session_id, source_ip, user_agent, started_at, ended_at, duration_ms, bytes_in, bytes_out, status, reason, token_name, protocol, sni, grpc_method, grpc_status]
       properties:
         id: { type: string }
         kind:
@@ -1600,15 +1600,24 @@ components:
           description: The client token name of the user who forwards (kind tcp_forward); "" otherwise.
         protocol:
           type: string
-          enum: ['', tls, ssh, rdp, http, unknown]
+          enum: ['', tls, ssh, rdp, http, unknown, h2, http/1.1, grpc, grpc-web]
           description: >
             What the first bytes of a tcp connection (kinds tcp_proxy and
             tcp_forward) were, watched as they passed without holding them
             back; "" for other rows and for connections whose bytes were
-            never looked at (refused, or never paired).
+            never looked at (refused, or never paired). For an http_proxy
+            row it is the protocol of the request: h2, http/1.1, grpc or
+            grpc-web.
         sni:
           type: string
           description: The server name of the connection's TLS ClientHello (protocol tls); "" for none.
+        grpc_method:
+          type: string
+          description: The method of a gRPC call (/pkg.Service/Method), cut to 256 bytes; "" for any other row.
+        grpc_status:
+          type: integer
+          nullable: true
+          description: The grpc-status of a gRPC call (0 is OK); null for any other row.
     ConnectionLogRollup:
       type: object
       required: [day, service_id, kind, sessions, bytes_in, bytes_out, avg_duration_ms, p95_duration_ms]

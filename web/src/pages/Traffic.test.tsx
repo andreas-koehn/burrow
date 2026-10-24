@@ -38,7 +38,7 @@ describe("Traffic page", () => {
     mount();
     const t = await table();
     expect(within(t).getAllByRole("columnheader").map((h) => h.textContent))
-      .toEqual(["Time", "Service", "Client IP", "Protocol", "Detected", "SNI", "Status", "Reason", "Duration", "Bytes"]);
+      .toEqual(["Time", "Service", "Client IP", "Protocol", "Detected", "SNI", "gRPC", "Status", "Reason", "Duration", "Bytes"]);
   });
 
   it("shows what a tcp connection looked like, its server name and why it was refused", async () => {
@@ -54,13 +54,43 @@ describe("Traffic page", () => {
     const t = await table();
     await waitFor(() => expect(bodyRows(t)).toHaveLength(5));
     const cell = (row: number, col: number) => bodyRows(t)[row].querySelectorAll("td")[col]?.textContent;
-    // Detected, SNI and Reason are columns 4, 5 and 7.
-    expect([cell(0, 4), cell(0, 5), cell(0, 7)]).toEqual(["TLS", "rdp.example.org", "—"]);
-    expect(cell(1, 7)).toBe("banned source");
-    expect(cell(2, 7)).toBe("daily volume reached");
-    expect([cell(3, 4), cell(3, 7)]).toEqual(["SSH", "idle timeout"]);
-    expect(cell(4, 7)).toMatch(/PROXY/);
+    // Detected, SNI and Reason are columns 4, 5 and 8 (gRPC is 6).
+    expect([cell(0, 4), cell(0, 5), cell(0, 8)]).toEqual(["TLS", "rdp.example.org", "—"]);
+    expect(cell(1, 8)).toBe("banned source");
+    expect(cell(2, 8)).toBe("daily volume reached");
+    expect([cell(3, 4), cell(3, 8)]).toEqual(["SSH", "idle timeout"]);
+    expect(cell(4, 8)).toMatch(/PROXY/);
     expect(cell(1, 4)).toBe("—");
+  });
+
+  it("shows the protocol of an http request and the code of a gRPC call", async () => {
+    const base = db.connectionLogs[0];
+    db.connectionLogs.splice(0, db.connectionLogs.length,
+      { ...base, id: "g1", kind: "http_proxy", status: "closed_clean", reason: "", protocol: "grpc", sni: "", grpc_method: "/pkg.Svc/Do", grpc_status: 14 },
+      { ...base, id: "g2", kind: "http_proxy", status: "closed_clean", reason: "", protocol: "grpc", sni: "", grpc_method: "/pkg.Svc/Ok", grpc_status: 0 },
+      { ...base, id: "h1", kind: "http_proxy", status: "closed_clean", reason: "", protocol: "h2", sni: "", grpc_method: "", grpc_status: null },
+      { ...base, id: "h2", kind: "http_proxy", status: "closed_clean", reason: "", protocol: "http/1.1", sni: "" },
+    );
+    mount();
+    const t = await table();
+    await waitFor(() => expect(bodyRows(t)).toHaveLength(4));
+    const cell = (row: number, col: number) => bodyRows(t)[row].querySelectorAll("td")[col]?.textContent;
+    expect([cell(0, 4), cell(0, 6)]).toEqual(["gRPC", "14 UNAVAILABLE"]);
+    expect([cell(1, 4), cell(1, 6)]).toEqual(["gRPC", "0 OK"]);
+    expect([cell(2, 4), cell(2, 6)]).toEqual(["HTTP/2", "—"]);
+    expect([cell(3, 4), cell(3, 6)]).toEqual(["HTTP/1.1", "—"]);
+    // The method is in the cell for whoever reads on.
+    expect(bodyRows(t)[0].querySelectorAll("td")[6]!.querySelector("[title='/pkg.Svc/Do']")).not.toBeNull();
+  });
+
+  it("the detail of a gRPC call names its method and status", async () => {
+    db.connectionLogs = [{ ...db.connectionLogs[0]!, kind: "http_proxy", protocol: "grpc", grpc_method: "/pkg.Svc/Do", grpc_status: 4 }];
+    mount();
+    const t = await table();
+    await userEvent.click(within(bodyRows(t)[0]!).getByRole("button", { name: /^Show details/ }));
+    const panel = screen.getByRole("region", { name: "Traffic details" });
+    expect(panel).toHaveTextContent(/gRPC method\s*\/pkg\.Svc\/Do/);
+    expect(panel).toHaveTextContent(/gRPC status\s*4 DEADLINE_EXCEEDED/);
   });
 
   it("renders the seeded rows in the table", async () => {

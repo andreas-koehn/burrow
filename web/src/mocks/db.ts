@@ -8,7 +8,7 @@ import type {
   AutomationToken, BackupRow, CacheStatsV5, SemanticCacheSettings,
   UpstreamCredentialBinding, CustomDomain, AiModel, AiGatewayKey, AiRequestAttempt,
   RetentionSettings, DatabaseStatus,
-  ConnectionLog, ConnectionLogRollup, TcpSettings, TcpLimits, TcpBan,
+  ConnectionLog, ConnectionLogRollup, UpstreamProtocol, IngressStatus, TcpSettings, TcpLimits, TcpBan,
   ToolSource, ToolSourceTool, ToolDefinition,
   OAuthRequest, OAuthGrant, OAuthClient,
 } from "@/lib/contract";
@@ -29,6 +29,17 @@ export interface CacheSettingsPayload {
 // work them out on every response (serviceWire), as the relay does. A row is
 // online while `connected`, offline when it has a last_seen, never connected
 // otherwise.
+/** What the relay stores of the upstream settings; the CA is kept as PEM, the API returns its fingerprint. */
+export interface HttpSettingsRow {
+  upstream_protocol: UpstreamProtocol;
+  upstream_tls_verify: boolean;
+  upstream_tls_server_name: string;
+  upstream_tls_ca_pem: string;
+  grpc_max_duration_s: number;
+  /** What the connected client names; "" for none. */
+  client_upstream_protocol: UpstreamProtocol | "";
+}
+
 export interface ServiceRow extends Omit<Service, "status" | "last_seen" | "last_client" | "client_session_id" | "provider_slug"> {
   user_id: string;
   /** When a client last served it; absent while none has. */
@@ -114,6 +125,16 @@ export interface MockDb {
   tcpHostnames: Record<string, string>;
   /** Services reached by host name only (no public port), by service id. */
   tcpHostnameOnly: Record<string, boolean>;
+  /** The stored http-settings of http services, by service id; a service without an entry has the defaults. */
+  httpSettings: Record<string, HttpSettingsRow>;
+  /** GET /ingress/status. */
+  ingress: IngressStatus;
+  /** The relay's TCP-hostname shadow answers, by service id (reachable_on / shadowed_by). */
+  tcpShadow: Record<string, { reachable_on?: string[]; shadowed_by?: "custom_domain" | "relay" }>;
+  /** The relay runs behind a proxy (a plain listener): automatic domains need no certificate. */
+  behindProxy: boolean;
+  /** Automatic custom domains the relay allows in all (BURROW_ACME_CUSTOM_MAX) and per user. */
+  autoDomainCaps: { global: number; perUser: number };
   tcpLimits: Record<string, TcpLimits>;
   tcpBans: Record<string, TcpBan[]>;
   /** Whether the relay has a GeoIP database; without one it refuses to save a new country. */
@@ -279,6 +300,11 @@ function seed(): MockDb {
     tcpSettings: {},
     tcpHostnames: {},
     tcpHostnameOnly: {},
+    httpSettings: {},
+    ingress: { h2c: true, https_passthrough: true, passthrough_listen: "", acme: true },
+    tcpShadow: {},
+    behindProxy: false,
+    autoDomainCaps: { global: 100, perUser: 10 },
     tcpLimits: {},
     tcpBans: {},
     geoDatabase: true,
@@ -563,6 +589,8 @@ function seed(): MockDb {
         updated_at: "2026-05-19T00:00:00Z",
         status: "active",
         status_updated_at: "2026-05-19T00:00:00Z",
+        cert_source: "uploaded",
+        cert_status: "ready",
       },
     ],
     // v0.5.0 retention settings (spec Part F).

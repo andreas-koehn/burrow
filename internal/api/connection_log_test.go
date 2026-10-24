@@ -620,3 +620,33 @@ func splitLines(s string) []string {
 	}
 	return out
 }
+
+// TestConnectionLogsGETCarriesGRPCFields: a gRPC row shows its method and
+// status; any other row has an empty method and a null status.
+func TestConnectionLogsGETCarriesGRPCFields(t *testing.T) {
+	st := 14
+	store := &fakeConnLogStore{logs: []db.ConnectionLog{
+		{ID: "g1", Kind: "http_proxy", Protocol: "grpc", GRPCMethod: "/pkg.Svc/Do", GRPCStatus: &st},
+		{ID: "h1", Kind: "http_proxy", Protocol: "h2"},
+	}}
+	d := Deps{Log: discardLog(), Users: &fakeUserStore{role: "admin"}, ConnLogDB: store}
+	srv := httptest.NewServer(NewRouter(d))
+	defer srv.Close()
+	c := authedClient(t, srv)
+
+	r := c.get(t, "/api/v1/connection-logs")
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", r.StatusCode)
+	}
+	var rows []map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows[0]["grpc_method"] != "/pkg.Svc/Do" || rows[0]["grpc_status"] != float64(14) || rows[0]["protocol"] != "grpc" {
+		t.Fatalf("grpc row = %v", rows[0])
+	}
+	v, ok := rows[1]["grpc_status"]
+	if !ok || v != nil || rows[1]["grpc_method"] != "" {
+		t.Fatalf("plain row = %v", rows[1])
+	}
+}

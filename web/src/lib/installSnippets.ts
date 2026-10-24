@@ -72,6 +72,8 @@ export function runTarget(localAddr: string | undefined, fallback?: string): str
 
 /** What the run line publishes when it is given nothing it can use. */
 export const EXAMPLE_TARGET = "3000";
+/** The same for a gRPC service: the port gRPC servers usually listen on. */
+export const GRPC_EXAMPLE_TARGET = "50051";
 
 /**
  * The three lines that bring a machine online. `relayOrigin` is the address
@@ -80,18 +82,20 @@ export const EXAMPLE_TARGET = "3000";
  * as it is: the client then says what it needs. A `target` that is not a
  * port or host:port gives way to the example port. With `name` the run line
  * serves the service of that name instead of publishing one of its own; a
- * name that is not safe in a shell is left out.
+ * name that is not safe in a shell is left out. With `grpc` the run line is
+ * `burrow grpc`, which serves the target over HTTP/2.
  */
-export function installLines(os: ClientOs, relayOrigin: string, target = EXAMPLE_TARGET, name?: string): InstallLineSet {
+export function installLines(os: ClientOs, relayOrigin: string, target?: string, name?: string, grpc = false): InstallLineSet {
   const origin = relayOrigin.replace(/\/+$/, "");
   const relay = isHttpsOrigin(origin) ? origin.slice("https://".length) : origin;
   // Only the brackets of an IPv6 address are left to quote: single quotes are
   // literal in a POSIX shell and in PowerShell alike, and a target holds none.
-  const published = shellQuote(isTarget(target) ? target : EXAMPLE_TARGET);
+  const example = grpc ? GRPC_EXAMPLE_TARGET : EXAMPLE_TARGET;
+  const published = shellQuote(target !== undefined && isTarget(target) ? target : example);
   return {
     install: os === "windows" ? `irm ${origin}/install.ps1 | iex` : `curl -fsSL ${origin}/install.sh | sh`,
     login: `burrow login ${relay}`,
-    run: `burrow http ${published}${isCommandName(name) ? ` --name ${name}` : ""}`,
+    run: `burrow ${grpc ? "grpc" : "http"} ${published}${isCommandName(name) ? ` --name ${name}` : ""}`,
   };
 }
 

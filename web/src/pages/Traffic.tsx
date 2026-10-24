@@ -8,6 +8,7 @@ import { statusLabel } from "@/lib/status";
 import { protocolLabel, reasonText } from "@/lib/tcpAccess";
 import { parseTimeRange, timeRangeMs, widerRange, type TimeRange } from "@/lib/time-range";
 import { Button, Badge, EmptyState, InfoHint, PageHeader } from "@/components/ds";
+import { grpcStatusText } from "@/lib/grpc";
 import { LogView, type LogColumn } from "@/components/LogView";
 import { RelativeTime } from "@/components/RelativeTime";
 import type { ConnectionLog, ConnectionLogRollup, ConnectionLogKind, ConnectionLogStatus, Service } from "@/lib/contract";
@@ -76,6 +77,8 @@ function LogDetail({ row, service }: { row: ConnectionLog; service: string }) {
     ["Reason", row.reason ? reasonText(row.reason) : ""],
     ["Detected protocol", protocolLabel(row.protocol)],
     ["TLS server name", row.sni ?? ""],
+    ["gRPC method", row.grpc_method ?? ""],
+    ["gRPC status", grpcStatusText(row.grpc_status)],
     ["User agent", row.user_agent],
     ["Client session", row.client_session_id],
     // The id of the live connection the service was served through.
@@ -174,6 +177,9 @@ export default function Traffic() {
     // What the first bytes of a tcp connection looked like, and the TLS server name it asked for.
     { id: "detected", header: "Detected", cell: (r) => protocolLabel(r.protocol) || "—" },
     { id: "sni", header: "SNI", cell: (r) => r.sni ? <span className="mono small">{r.sni}</span> : "—" },
+    // A gRPC call: its status code by name; the method is on hover and in the detail.
+    { id: "grpc", header: "gRPC", cell: (r) => r.grpc_status === null || r.grpc_status === undefined ? "—"
+      : <span className="mono small" title={r.grpc_method || undefined}>{grpcStatusText(r.grpc_status)}</span> },
     { id: "status", header: "Status", cell: (r) => <span data-status={r.status}><Badge kind={statusClass(r.status)}>{statusLabel(r.status)}</Badge></span> },
     { id: "reason", header: "Reason", cell: (r) => r.reason ? reasonText(r.reason) : "—" },
     { id: "duration", header: "Duration", numeric: true, cell: (r) => <span className="mono small">{r.duration_ms}ms</span> },

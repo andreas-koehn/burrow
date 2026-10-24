@@ -208,3 +208,100 @@ describe("CustomDomainsPanel empty state", () => {
     expect(screen.queryByText("No custom domains yet.")).toBeNull();
   });
 });
+
+// ---- H13: certificate source, status, the gRPC address, the relay's refusals ----
+
+async function openAdd() {
+  await screen.findByText("foo.example.com");
+  await userEvent.click(screen.getByRole("button", { name: "New domain" }));
+  return screen.findByRole("dialog", { name: /custom domain/i });
+}
+
+describe("CustomDomainsPanel host names", () => {
+  it("shows the certificate source and status of each domain, and the gRPC address host:443", async () => {
+    db.customDomains = [
+      { ...db.customDomains[0]!, id: "d1", hostname: "up.example.com", cert_source: "uploaded", cert_status: "ready" },
+      { ...db.customDomains[0]!, id: "d2", hostname: "auto.example.com", cert_source: "auto", cert_status: "pending", cert_sha256: "" },
+      { ...db.customDomains[0]!, id: "d3", hostname: "proxied.example.com", cert_source: "auto", cert_status: "not_needed", cert_sha256: "" },
+    ];
+    mount();
+    await screen.findByText("up.example.com");
+    const t = screen.getByRole("table", { name: "Custom domains" });
+    const rows = within(t).getAllByRole("row").slice(1);
+    expect(rows[0]).toHaveTextContent(/up\.example\.com.*Uploaded.*Active/s);
+    expect(rows[1]).toHaveTextContent(/auto\.example\.com.*Automatic.*Waiting for a certificate/s);
+    expect(rows[2]).toHaveTextContent(/proxied\.example\.com.*Automatic.*Handled by the proxy/s);
+    // The address a gRPC client dials, copyable.
+    expect(within(rows[1]!).getByRole("button", { name: "Copy gRPC address auto.example.com:443" })).toBeInTheDocument();
+    expect(rows[1]).toHaveTextContent("auto.example.com:443");
+    // No expiry or fingerprint for an automatic certificate.
+    expect(rows[1]!.querySelectorAll("td")[3]).toHaveTextContent("—");
+  });
+
+  it("a relay from before cert_source shows the domain as uploaded", async () => {
+    db.customDomains = [{ ...db.customDomains[0]!, cert_source: undefined, cert_status: undefined }];
+    mount();
+    expect(await screen.findByText("Uploaded")).toBeInTheDocument();
+  });
+
+  it("an administrator can choose automatic: no certificate is asked for, and none is sent", async () => {
+    let sent: Record<string, unknown> | null = null;
+    server.use(http.post("/api/v1/services/:id/domains", async ({ request }) => {
+      sent = (await request.clone().json()) as Record<string, unknown>;
+      return HttpResponse.json({ ...db.customDomains[0]!, id: "dom_a", hostname: "grpc.example.com", cert_source: "auto", cert_status: "pending", cert_sha256: "" }, { status: 201 });
+    }));
+    mount();
+    const dialog = await openAdd();
+    await userEvent.type(within(dialog).getByLabelText(/hostname/i), "grpc.example.com");
+    await userEvent.click(within(dialog).getByRole("radio", { name: /Automatic/ }));
+    expect(within(dialog).queryByLabelText("Certificate (PEM)")).toBeNull();
+    expect(within(dialog).getByText(/DNS.*points at this relay/i)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: /add$/i }));
+    await waitFor(() => expect(sent).toEqual({ hostname: "grpc.example.com", cert_source: "auto" }));
+  });
+
+  it("someone who holds only services:configure:own is offered an uploaded certificate only", async () => {
+    db.me = { ...db.me, role: "user", permissions: ["services:configure:own"] };
+    db.services.find((s) => s.id === "svc_ai001")!.user_id = db.me.id;
+    mount();
+    const dialog = await openAdd();
+    expect(within(dialog).queryByRole("radio", { name: /Automatic/ })).toBeNull();
+    expect(within(dialog).getByLabelText("Certificate (PEM)")).toBeInTheDocument();
+    expect(within(dialog).getByText(/Automatic certificates are set up by an administrator/i)).toBeInTheDocument();
+  });
+
+  it.each([
+    [403, "automatic certificates need an administrator; upload a certificate instead"],
+    [409, "hostname is a tcp host name"],
+    [409, "hostname overlaps a wildcard custom domain of another service: it lies under one, or as a wildcard it covers another service's custom domain"],
+    [429, "the relay has as many custom domains with automatic certificates as it may (BURROW_ACME_CUSTOM_MAX); upload a certificate instead, or remove one"],
+  ])("shows the relay's %i text in the dialog: %s", async (status, text) => {
+    server.use(http.post("/api/v1/services/:id/domains", () => HttpResponse.json({ error: text }, { status })));
+    mount();
+    const dialog = await openAdd();
+    await userEvent.type(within(dialog).getByLabelText(/hostname/i), "x.example.com");
+    await userEvent.click(within(dialog).getByRole("radio", { name: /Automatic/ }));
+    await userEvent.click(within(dialog).getByRole("button", { name: /add$/i }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(text);
+    // The dialog stays open so that the reader can change the name or the source.
+    expect(screen.getByRole("dialog", { name: /custom domain/i })).toBeInTheDocument();
+  });
+
+  it("the mock relay refuses auto at the caps with the relay's 429", async () => {
+    db.autoDomainCaps = { global: 0, perUser: 10 };
+    mount();
+    const dialog = await openAdd();
+    await userEvent.type(within(dialog).getByLabelText(/hostname/i), "y.example.com");
+    await userEvent.click(within(dialog).getByRole("radio", { name: /Automatic/ }));
+    await userEvent.click(within(dialog).getByRole("button", { name: /add$/i }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/BURROW_ACME_CUSTOM_MAX/);
+  });
+
+  it("New domain and Delete are offered only with services:configure", async () => {
+    db.me = { ...db.me, role: "user", permissions: ["tunnels:read:own"] };
+    mount();
+    await screen.findByText("foo.example.com");
+    expect(screen.queryByRole("button", { name: "New domain" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /delete/i })).toBeNull();
+  });
+});

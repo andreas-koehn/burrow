@@ -18,6 +18,8 @@ export interface InstallLinesProps {
    * port as a service of its own.
    */
   name?: string;
+  /** The run line is `burrow grpc`: the target speaks gRPC (HTTP/2) and not HTTP/1.1. */
+  grpc?: boolean;
   /** Which lines to show. All three by default, and then they are numbered. */
   lines?: readonly InstallLineId[];
 }
@@ -35,13 +37,13 @@ const BOX_NAME: Record<InstallLineId, string> = { install: "Install command", lo
  * relay, sign it in, publish a port. No line ever holds a token; the sign-in
  * is approved in the browser, on /link.
  */
-export function InstallLines({ relayOrigin, target, name, lines = ALL_LINES }: InstallLinesProps) {
+export function InstallLines({ relayOrigin, target, name, grpc = false, lines = ALL_LINES }: InstallLinesProps) {
   const [os, setOs] = useState<ClientOs>(() => detectOs());
   const [said, setSaid] = useState("");
   const clear = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(clear.current), []);
 
-  const text = installLines(os, relayOrigin, target, name);
+  const text = installLines(os, relayOrigin, target, name, grpc);
   const served = isCommandName(name) ? name : null;
   const numbered = lines.length === ALL_LINES.length;
 
@@ -94,7 +96,13 @@ export function InstallLines({ relayOrigin, target, name, lines = ALL_LINES }: I
                 <Link className="link-inline" to="/clients?tab=tokens">Clients, tab Tokens</Link>.
               </p>
             )}
-            {id === "run" && (
+            {id === "run" && grpc && (
+              <p className="muted small">
+                <code>burrow grpc</code> publishes a gRPC server: the relay speaks HTTP/2 to it
+                (h2c; <code>https://host:port</code> for TLS). Callers dial the service's custom domain on port 443.
+              </p>
+            )}
+            {id === "run" && !grpc && (
               <p className="muted small">
                 {served
                   ? <>Serves <code>{served}</code> with what listens on that port of the machine; put your own port, or host:port, in its place.</>

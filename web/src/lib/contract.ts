@@ -116,7 +116,7 @@ export interface ServiceConnection {
 }
 
 /** What the relay's first-bytes classifier made of a connection. */
-export type ConnectionProtocol = "tls" | "ssh" | "rdp" | "http" | "unknown";
+export type ConnectionProtocol = "tls" | "ssh" | "rdp" | "http" | "unknown" | "h2" | "http/1.1" | "grpc" | "grpc-web";
 
 /** GET /client/discovery: what a client may know before it has a token. Public. */
 export interface ClientDiscovery {
@@ -485,6 +485,44 @@ export interface TcpHostname {
   reachable: boolean;
   /** The relay opens no public port while a name reaches the service (reached by host name only). */
   hostname_only: boolean;
+  /** Where a client naming the service reaches it now: "https" (the 443 mux) and/or the dedicated listener's address. Absent on an older relay. */
+  reachable_on?: string[];
+  /** The http side owns a name of the service and wins it; absent when nothing shadows it. */
+  shadowed_by?: "custom_domain" | "relay";
+}
+
+/** How the relay talks to the service behind the tunnel. */
+export type UpstreamProtocol = "http1" | "https" | "h2c" | "h2";
+
+/** GET/PUT /services/{id}/http-settings (http services only). */
+export interface HttpSettings {
+  upstream_protocol: UpstreamProtocol;
+  upstream_tls_verify: boolean;
+  upstream_tls_server_name: string;
+  /** The fingerprint of the stored CA; the PEM itself is never returned. "" for none. */
+  upstream_tls_ca_sha256: string;
+  /** 0 is no cap. */
+  grpc_max_duration_s: number;
+  /** What the connected client names, "" when none does. */
+  client_upstream_protocol: UpstreamProtocol | "";
+  effective_upstream_protocol: UpstreamProtocol;
+}
+
+/** The PUT body: any subset, at least one. "" clears the server name and the CA. */
+export interface HttpSettingsInput {
+  upstream_protocol?: UpstreamProtocol;
+  upstream_tls_verify?: boolean;
+  upstream_tls_server_name?: string;
+  upstream_tls_ca_pem?: string;
+  grpc_max_duration_s?: number;
+}
+
+/** GET /ingress/status: the relay's environment-only switches. */
+export interface IngressStatus {
+  h2c: boolean;
+  https_passthrough: boolean;
+  passthrough_listen: string;
+  acme: boolean;
 }
 
 export interface TcpAutoBan {
@@ -995,12 +1033,21 @@ export interface CustomDomain {
   updated_at: string;
   status: CustomDomainStatus;
   status_updated_at: string;
+  /** Absent on a relay from before automatic certificates; then it is uploaded. */
+  cert_source?: CertSource;
+  /** auto: pending until the relay holds a certificate, not_needed behind a proxy. */
+  cert_status?: CertStatus;
 }
+
+export type CertSource = "uploaded" | "auto";
+export type CertStatus = "ready" | "pending" | "not_needed";
 
 export interface CreateCustomDomainInput {
   hostname: string;
-  cert_pem: string;
-  key_pem: string;
+  cert_source?: CertSource;
+  /** Only with cert_source uploaded. */
+  cert_pem?: string;
+  key_pem?: string;
 }
 
 export interface CustomDomainRejection {
@@ -1030,9 +1077,13 @@ export interface ConnectionLog {
   reason: string;
   /** The client token name of the user who forwards (kind tcp_forward); "" otherwise. Absent on an older relay. */
   token_name?: string;
-  /** What the first bytes of a tcp connection looked like, and its TLS server name. Absent on an older relay. */
+  /** What the first bytes of a tcp connection looked like, and its TLS server name; for an http row, h2, http/1.1, grpc or grpc-web. Absent on an older relay. */
   protocol?: ConnectionProtocol | "";
   sni?: string;
+  /** The method of a gRPC call (/pkg.Service/Method); "" for any other row. Absent on an older relay. */
+  grpc_method?: string;
+  /** The grpc-status of a gRPC call (0 is OK); null for any other row. */
+  grpc_status?: number | null;
 }
 
 // ConnectionLogRollupTopIP — one (ip, sessions) entry from the per-rollup

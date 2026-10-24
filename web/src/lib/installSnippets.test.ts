@@ -176,3 +176,15 @@ describe("runTarget", () => {
     expect(runTarget("$(reboot):80", MODEL_SERVER_PORT)).toBe("11434");
   });
 });
+
+describe("installLines for a gRPC service", () => {
+  it("the run line is burrow grpc, on the usual gRPC port by default", () => {
+    expect(installLines("linux", "https://b.example.com", undefined, undefined, true).run).toBe("burrow grpc 50051");
+  });
+  it("keeps a target and a name", () => {
+    expect(installLines("linux", "https://b.example.com", "9000", "api", true).run).toBe("burrow grpc 9000 --name api");
+  });
+  it("burrow http stays the default", () => {
+    expect(installLines("linux", "https://b.example.com").run).toBe("burrow http 3000");
+  });
+});

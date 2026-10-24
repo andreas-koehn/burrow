@@ -504,3 +504,29 @@ describe("Connect a client — for a service or a provider", () => {
     await waitFor(() => expect(feed.asked).toBeGreaterThan(0));
   });
 });
+
+describe("Connect a client — a gRPC service", () => {
+  it("offers HTTP and gRPC; gRPC shows burrow grpc 50051 and says what it does", async () => {
+    const user = userEvent.setup();
+    mount();
+    const kind = screen.getByRole("radiogroup", { name: "Kind of service" });
+    expect(within(kind).getAllByRole("radio").map((r) => r.textContent)).toEqual(["Web app or API", "gRPC"]);
+    expect(within(kind).getByRole("radio", { name: "Web app or API" })).toHaveAttribute("aria-checked", "true");
+    await user.click(within(kind).getByRole("radio", { name: "gRPC" }));
+    expect(lineTexts()[2]).toBe("burrow grpc 50051");
+    expect(screen.getByText(/speaks HTTP\/2 to it/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Copy run command" }));
+    expect(await navigator.clipboard.readText()).toBe("burrow grpc 50051");
+    await user.click(within(kind).getByRole("radio", { name: "Web app or API" }));
+    expect(lineTexts()[2]).toBe("burrow http 3000");
+  });
+
+  it("keeps the install and sign-in lines as they are", async () => {
+    mount();
+    await userEvent.click(screen.getByRole("radio", { name: "gRPC" }));
+    expect(lineTexts().slice(0, 2)).toEqual([
+      `curl -fsSL ${window.location.origin}/install.sh | sh`,
+      `burrow login ${window.location.origin}`,
+    ]);
+  });
+});

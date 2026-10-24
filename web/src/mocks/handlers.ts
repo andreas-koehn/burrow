@@ -2,7 +2,7 @@ import { http, HttpResponse } from "msw";
 import { ALL_PERMISSIONS } from "@/auth/permissions";
 import { modelNameError } from "@/lib/modelNames";
 import { db, NO_MODES, mockToolHash, MOCK_TOOL_PATTERN, type MockDb, type CacheSettingsPayload, type AiProviderRow, type ServiceRow } from "@/mocks/db";
-import type { OAuthApprove, OAuthClient, AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, ClientView, CostGroupBy, CostSummary, Dialect, DialectMode, KnownClient, Service, ServiceAIConfig, ToolSource, ToolSourceCreate, ToolSourceUpdate, ToolSourceTool, ToolSourceToolUpdate, ToolSyncResult, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule, TcpSettings, TcpHostname, TcpLimits } from "@/lib/contract";
+import type { OAuthApprove, OAuthClient, AccessMode, AiGatewayKey, AiModel, AiModelTarget, AiProvider, AiRequestAttempt, ClientLoginRequest, ClientView, CostGroupBy, CostSummary, Dialect, DialectMode, KnownClient, Service, ServiceAIConfig, ToolSource, ToolSourceCreate, ToolSourceUpdate, ToolSourceTool, ToolSourceToolUpdate, ToolSyncResult, CustomDomain, CreateCustomDomainInput, RetentionSettings, GuardrailSettings, RedactionRule, TcpSettings, TcpHostname, TcpLimits, HttpSettings, HttpSettingsInput, UpstreamProtocol } from "@/lib/contract";
 
 const json = (body: unknown, status = 200) => HttpResponse.json(body as object, { status });
 const err = (status: number, message: string) => HttpResponse.json({ error: message }, { status });
@@ -101,6 +101,26 @@ function tcpService(id: string): ServiceRow | Response {
   if (svc.type !== "tcp") return err(409, "this setting applies to tcp services only");
   return svc;
 }
+// The http service a /services/{id}/http-settings route is about, or the answer that says why not.
+function httpService(id: string): ServiceRow | Response {
+  const svc = db.services.find((s) => s.id === id);
+  if (!svc || !canConfigure(svc)) return err(404, "service not found");
+  if (svc.type !== "http") return err(409, "this setting applies to http services only");
+  return svc;
+}
+function httpSettingsOf(id: string): HttpSettings {
+  const r = db.httpSettings[id] ?? { upstream_protocol: "http1", upstream_tls_verify: false, upstream_tls_server_name: "", upstream_tls_ca_pem: "", grpc_max_duration_s: 0, client_upstream_protocol: "" };
+  return {
+    upstream_protocol: r.upstream_protocol,
+    upstream_tls_verify: r.upstream_tls_verify,
+    upstream_tls_server_name: r.upstream_tls_server_name,
+    // The relay returns the fingerprint of the stored CA, never the PEM.
+    upstream_tls_ca_sha256: r.upstream_tls_ca_pem ? `sha256_${r.upstream_tls_ca_pem.length.toString(16).padStart(8, "0")}ca` : "",
+    grpc_max_duration_s: r.grpc_max_duration_s,
+    client_upstream_protocol: r.client_upstream_protocol,
+    effective_upstream_protocol: (r.client_upstream_protocol || r.upstream_protocol || "http1") as UpstreamProtocol,
+  };
+}
 function tcpSettingsOf(id: string): TcpSettings {
   return db.tcpSettings[id] ?? { proxy_protocol: "", idle_timeout_s: 0, client_proxy_protocol: "", client_proxy_supported: true };
 }
@@ -113,6 +133,7 @@ function tcpHostnameOf(svc: ServiceRow): TcpHostname {
     tcp_hostname: custom, hostnames, passthrough: db.tlsPassthrough,
     reachable: db.tlsPassthrough && svc.access_mode !== "private" && hostnames.length > 0,
     hostname_only: db.tcpHostnameOnly[svc.id] ?? false,
+    ...(db.tcpShadow[svc.id] ?? {}),
   };
 }
 function tcpLimitsOf(id: string): TcpLimits {
@@ -1489,6 +1510,34 @@ export const handlers = [
     grants.splice(i, 1);
     return noContent();
   }),
+  // ---- http/2 and gRPC: upstream settings of an http service and the relay's ingress switches ----
+  http.get("/api/v1/services/:id/http-settings", ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    if (!holds("services:configure:own", "services:configure:any")) return err(403, "forbidden");
+    const svc = httpService(params.id as string); if (svc instanceof Response) return svc;
+    return json(httpSettingsOf(svc.id));
+  }),
+  http.put("/api/v1/services/:id/http-settings", async ({ request, params }) => {
+    const g = gate(request); if (g) return g;
+    if (!holds("services:configure:own", "services:configure:any")) return err(403, "forbidden");
+    const svc = httpService(params.id as string); if (svc instanceof Response) return svc;
+    const b = await body<HttpSettingsInput>(request);
+    const known = ["upstream_protocol", "upstream_tls_verify", "upstream_tls_server_name", "upstream_tls_ca_pem", "grpc_max_duration_s"];
+    if (!b || Object.keys(b).some((k) => !known.includes(k))) return err(400, "invalid body");
+    if (Object.keys(b).length === 0) return err(400, "at least one of upstream_protocol, upstream_tls_verify, upstream_tls_server_name, upstream_tls_ca_pem or grpc_max_duration_s is required");
+    if (b.upstream_protocol !== undefined && !["http1", "https", "h2c", "h2"].includes(b.upstream_protocol)) return err(400, "upstream_protocol must be http1, https, h2c or h2");
+    if (b.grpc_max_duration_s !== undefined && (!Number.isInteger(b.grpc_max_duration_s) || b.grpc_max_duration_s < 0 || b.grpc_max_duration_s > 86400)) return err(400, "grpc_max_duration_s must be 0 (no cap) or 1 to 86400");
+    if (b.upstream_tls_ca_pem && !b.upstream_tls_ca_pem.includes("-----BEGIN CERTIFICATE-----")) return err(400, "upstream_tls_ca_pem must be PEM with a CERTIFICATE block, at most 64 KiB");
+    if (b.upstream_tls_server_name && /^[0-9.]+$|:/.test(b.upstream_tls_server_name)) return err(400, "upstream_tls_server_name must be a DNS name (an IP address is none)");
+    const cur = db.httpSettings[svc.id] ?? { upstream_protocol: "http1" as const, upstream_tls_verify: false, upstream_tls_server_name: "", upstream_tls_ca_pem: "", grpc_max_duration_s: 0, client_upstream_protocol: "" as const };
+    db.httpSettings[svc.id] = { ...cur, ...b };
+    return json(httpSettingsOf(svc.id));
+  }),
+  http.get("/api/v1/ingress/status", ({ request }) => {
+    const g = gate(request); if (g) return g;
+    if (!holds("services:configure:own", "services:configure:any")) return err(403, "forbidden");
+    return json(db.ingress);
+  }),
   http.get("/api/v1/geo/status", ({ request }) =>
     gate(request) ?? json(db.geoDatabase
       ? { enabled: true, configured: true, db_path: "/var/burrow/geoip.mmdb", db_age_seconds: 3600, rules_not_enforced: 0 }
@@ -2191,36 +2240,50 @@ export const handlers = [
   }),
   http.post("/api/v1/services/:id/domains", async ({ request, params }) => {
     const g = gate(request); if (g) return g;
+    { const r = needReauth(); if (r) return r; }
     const svc = db.services.find((s) => s.id === params.id);
-    if (!svc) return err(404, "service not found");
+    if (!svc || !canConfigure(svc)) return err(404, "service not found");
     const b = await body<CreateCustomDomainInput>(request);
     if (!b) return err(400, "invalid body");
+    const source = b.cert_source ?? "uploaded";
 
-    // Mock-validator (plan §Task 6 Step 1).
-    if (b.hostname === "san-mismatch.example.com")
-      return json({ error: "san_mismatch", reason: "san_mismatch" }, 400);
-    if (b.cert_pem === "")
-      return json({ error: "chain invalid", reason: "chain_invalid" }, 400);
-    if (b.hostname === "expired.example.com")
-      return json({ error: "expired", reason: "expired" }, 400);
-    if (b.hostname === "key-mismatch.example.com")
-      return json({ error: "key mismatch", reason: "key_mismatch" }, 400);
+    // The relay's order: H12 409, then the admin-only rule for auto, then the cert checks.
+    if (b.hostname.endsWith(".tcp.example.com") || db.tcpHostnames[svc.id] === b.hostname) return err(409, "hostname is a tcp host name");
+    if (db.customDomains.some((d) => d.hostname === b.hostname)) return err(409, "hostname already bound");
+    if (source === "auto") {
+      if (!holds("services:configure:any")) return err(403, "automatic certificates need an administrator; upload a certificate instead");
+      if (b.hostname.startsWith("*.")) return err(400, "a wildcard custom domain needs cert_source uploaded");
+      if (b.cert_pem || b.key_pem) return err(400, "cert_pem and key_pem are for cert_source uploaded; leave them out with auto");
+      const auto = db.customDomains.filter((d) => d.cert_source === "auto");
+      if (auto.length >= db.autoDomainCaps.global) return err(429, "the relay has as many custom domains with automatic certificates as it may (BURROW_ACME_CUSTOM_MAX); upload a certificate instead, or remove one");
+      const own = auto.filter((d) => db.services.find((x) => x.id === d.service_id)?.user_id === svc.user_id);
+      if (own.length >= db.autoDomainCaps.perUser) return err(429, "the owner of this service has as many custom domains with automatic certificates as they may (BURROW_ACME_CUSTOM_PER_USER); upload a certificate instead, or remove one");
+    } else {
+      if (!b.cert_pem || !b.key_pem) return err(400, "cert_pem and key_pem are required");
+      // Mock-validator (plan §Task 6 Step 1).
+      if (b.hostname === "san-mismatch.example.com")
+        return json({ error: "san_mismatch", reason: "san_mismatch" }, 400);
+      if (b.hostname === "expired.example.com")
+        return json({ error: "expired", reason: "expired" }, 400);
+      if (b.hostname === "key-mismatch.example.com")
+        return json({ error: "key mismatch", reason: "key_mismatch" }, 400);
+    }
 
     const now = Date.now();
-    const notAfter = new Date(now + 90 * 24 * 60 * 60 * 1000).toISOString();
-    const notBefore = new Date(now).toISOString();
-    const status: CustomDomain["status"] = "active";
+    const auto = source === "auto";
     const row: CustomDomain = {
       id: `dom_${Math.random().toString(36).slice(2, 9)}`,
       service_id: String(params.id),
       hostname: b.hostname,
-      cert_sha256: `mock_${b.hostname.replace(/\W/g, "_")}`,
-      not_before: notBefore,
-      not_after: notAfter,
+      cert_sha256: auto ? "" : `mock_${b.hostname.replace(/\W/g, "_")}`,
+      not_before: auto ? "0001-01-01T00:00:00Z" : new Date(now).toISOString(),
+      not_after: auto ? "0001-01-01T00:00:00Z" : new Date(now + 90 * 24 * 60 * 60 * 1000).toISOString(),
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-      status,
+      status: "active",
       status_updated_at: new Date().toISOString(),
+      cert_source: source,
+      cert_status: auto ? (db.behindProxy ? "not_needed" : "pending") : "ready",
     };
     db.customDomains.push(row);
     return json(row, 201);
@@ -2239,6 +2302,7 @@ export const handlers = [
   }),
   http.delete("/api/v1/services/:id/domains/:did", ({ request, params }) => {
     const g = gate(request); if (g) return g;
+    { const r = needReauth(); if (r) return r; }
     const i = db.customDomains.findIndex((x) => x.id === params.did && x.service_id === params.id);
     if (i < 0) return err(404, "domain not found");
     db.customDomains.splice(i, 1);

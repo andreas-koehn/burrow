@@ -1,9 +1,9 @@
 // test-only — never deploy this shape.
 //
-// The dashboard no longer manages custom domains, also on a relay with host
-// routing on (the harness relay sets BURROW_HTTP_PROXY_LISTEN=:8443). The
-// service page must not offer the tab, and the old /domains link must land on
-// the service.
+// Custom domains are not a tab of the service page, also on a relay with host
+// routing on (the harness relay sets BURROW_HTTP_PROXY_LISTEN=:8443). They are
+// the "Host names" card, with the Protocol card, of an http service (H13),
+// and the old /domains link must land on the service.
 import { test, expect } from "@playwright/test";
 import { AUTH_STORAGE_PATH } from "../../fixtures/auth";
 import { ensureReauth } from "../../fixtures/reauth";
@@ -21,6 +21,9 @@ test("13-custom-domains: no Custom domains tab, /domains redirects", async ({ pa
   await expect(page.getByRole("heading", { level: 1, name: "ai", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Access" })).toBeVisible();
   await expect(page.getByRole("tab", { name: /Custom domains/i })).toHaveCount(0);
+  // H13: the cards of an http service.
+  await expect(page.getByRole("region", { name: "Host names", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Protocol", exact: true })).toBeVisible();
 
   await page.goto(`/services/${ai.id}/domains`);
   await expect(page).toHaveURL(new RegExp(`/services/${ai.id}$`));

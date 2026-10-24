@@ -7,6 +7,11 @@ import { Button, ErrorNotice, FormField, Input, Switch } from "@/components/ds";
 import { CopyableCode } from "@/components/CopyableCode";
 import type { TcpAccessMode, TcpHostname } from "@/lib/contract";
 
+// A listener as the card says it: the 443 mux is ":443", the dedicated one by its address.
+function listenerText(l: string): string {
+  return l === "https" ? ":443" : l === "passthrough_listener" ? "the passthrough listener" : l;
+}
+
 /**
  * The host names that reach a tcp service through the relay's TLS passthrough listener: the one
  * the slug gives (shown to everyone who may configure the service) and a custom one, which only a
@@ -81,6 +86,17 @@ export function TcpHostnamePanel({ serviceId, mode }: { serviceId: string; mode:
               {data.hostnames.length === 0
                 ? <p className="muted small">No name is set: the relay has no domain for slug names.</p>
                 : data.hostnames.map((h) => <CopyableCode key={h} text={h} label={`Copy ${h}`} />)}
+              {/* Where those names reach the service: the relay's HTTPS port (the SNI mux) and/or its own listener. */}
+              {data.reachable_on !== undefined && data.reachable_on.length > 0 && (
+                <p className="small">Reachable on {data.reachable_on.map(listenerText).join(" and ")}.</p>
+              )}
+              {data.shadowed_by !== undefined && (
+                <ErrorNotice variant="warn" role="alert">
+                  {data.shadowed_by === "custom_domain"
+                    ? "A custom domain of an http service covers this name, so the relay answers it there: it is not reached on :443 as a TLS passthrough name. Remove the custom domain or use another name."
+                    : "The relay serves this name itself on :443 (its certificate, ACME or the dashboard's host), so it is not reached on :443 as a TLS passthrough name. Use another name."}
+                </ErrorNotice>
+              )}
             </>
           )}
           {showOnly && data && (

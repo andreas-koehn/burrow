@@ -136,6 +136,11 @@ export const PROTOCOL_LABEL: Record<string, string> = {
   rdp: "RDP",
   http: "HTTP",
   unknown: "Unknown",
+  // An http row: the protocol of the request.
+  h2: "HTTP/2",
+  "http/1.1": "HTTP/1.1",
+  grpc: "gRPC",
+  "grpc-web": "gRPC-Web",
 };
 
 /** The text of a protocol label; "" while none was recognised (or the relay predates it). */

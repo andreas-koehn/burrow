@@ -10,6 +10,8 @@ import { TcpAccessPanel } from "@/components/TcpAccessPanel";
 import { ApiKeysPanel } from "@/components/ApiKeysPanel";
 import { UpstreamCredentialsPanel } from "@/pages/UpstreamCredentials";
 import { ServiceClientPanel } from "@/components/ServiceClientPanel";
+import { HttpProtocolPanel } from "@/components/HttpProtocolPanel";
+import { CustomDomainsPanel } from "@/pages/CustomDomains";
 import { DeleteServiceDialog } from "@/components/DeleteServiceDialog";
 import { useCan } from "@/auth/useCan";
 import { P } from "@/auth/permissions";
@@ -268,6 +270,16 @@ export default function ServiceDetail() {
           },
         ]}
       />}
+      {/* HTTP/2, gRPC and host names: the relay lets the owner and the holder of :any change them. */}
+      {svc.type === "http" && canDelete && (
+        <>
+          <HttpProtocolPanel serviceId={svc.id} accessMode={svc.access_mode} />
+          <section className="card col gap-3" aria-labelledby="host-names-title">
+            <h2 id="host-names-title">Host names</h2>
+            <CustomDomainsPanel serviceId={svc.id} />
+          </section>
+        </>
+      )}
       {canDelete && (
         <section className="danger-zone" aria-labelledby="danger-zone-title">
           <h2 id="danger-zone-title" className="danger-zone-title">Danger zone</h2>
