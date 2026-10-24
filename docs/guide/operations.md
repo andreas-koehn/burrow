@@ -113,6 +113,68 @@ go build ./cmd/client
 
 Then restart `burrowd` with the new binary.
 
+### HTTP/2, gRPC and one port 443 {#upgrade-h2-grpc}
+
+This release (migration `0045_v0.13.0_http2_grpc`, shipped with v0.13.0 unless
+the tag is renamed) adds HTTP/2 end to end, gRPC through http services and TLS
+passthrough on the HTTPS port. See [gRPC and HTTP/2](/guide/grpc) and
+[One port 443](/guide/deploy#one-port-443). Before you upgrade:
+
+- **h2c is now on by default.** The plain-text dashboard listener and the
+  host-routed ingress accept prior-knowledge HTTP/2 (`BURROW_HTTP_H2C`, default
+  `true`). `Upgrade: h2c` stays refused. If nothing in front of the relay speaks
+  h2c, or you want the listeners to stay as they were, set
+  `BURROW_HTTP_H2C=false`. Do not publish the plain port beyond your proxy.
+- **Migration 0045 cannot be rolled back.** It adds columns to `services`,
+  `service_custom_domains` and `connection_logs`. Do not start an older image
+  on the upgraded database: a down migration would drop the columns and lose
+  the upstream protocol, TLS and gRPC cap settings, the cert source of custom
+  domains and the logged gRPC method and status. Take a backup before the
+  upgrade and restore it to go back.
+- **Upgrade clients before they choose an upstream protocol.** A client of this
+  release that is asked for `h2c`, `h2` or `https` (`burrow grpc`,
+  `--upstream-protocol`, an `https://` or `h2c://` target, `upstream_protocol`
+  in `burrow.yaml`) registers nothing against a relay that does not announce
+  the capability, and stops with "relay too old". Upgrade the relay first.
+  An older client against this relay is fine: the protocol is set in the
+  dashboard or API and the client only pipes bytes.
+- **Single-label and IP custom domains are refused.** Custom domain names are
+  now normalised (lower case, one trailing dot dropped) and validated: at least
+  two labels, letters, digits and hyphens, an IDN as punycode, no IP address.
+  A new or changed domain that breaks this gets 400. Check the names you
+  hold.
+- **One owner per host name.** A custom domain that equals or covers a tcp
+  service's host name, is, lies under or above `BURROW_TCP_DOMAIN`, or is one
+  of the relay's own names is refused (409), and so is a `tcp_hostname` a
+  custom domain covers or that lies under an ACME name. An apex custom domain
+  above a tcp host name is refused too. A row from before the checks keeps
+  working, with the http side winning the name; see `shadowed_by`. A
+  `BURROW_TCP_DOMAIN` that is an ACME name or a parent of one, or (with the
+  mux on) lies under the dashboard's host, stops the relay at start.
+- **gRPC on AI-controlled services is refused.** A gRPC, grpc-web or connect
+  call to a service where redaction, guardrails, routing with backends or the
+  anthropic section is switched on gets `PERMISSION_DENIED`. Serve gRPC from
+  a separate service.
+- **A trusted proxy must send PROXY v2 on 443.** With
+  `BURROW_TLS_PASSTHROUGH_ON_HTTPS` on, a peer in
+  `BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES` must begin every connection with a
+  PROXY v2 header, HTTPS and health checks included, and a header from any
+  other peer is refused. The hello wait is 5 seconds (2 when busy).
+- **`BURROW_TLS_PASSTHROUGH_ON_HTTPS` is off by default.** It needs the
+  dashboard listener to terminate TLS itself (ACME or a file certificate). It
+  also has its own budget: 4096 hellos in flight, 64 per source.
+  When the total budget is full a connection is handed to TLS unread, not
+  closed.
+- **New names to watch:** the metric `burrow_grpc_requests_total`, the audit
+  actions `service.http_settings.update` and `service.custom_domain.cert_failed`
+  (once per host name and hour), and `protocol` on every http connection-log
+  row (`h2`, `http/1.1`, `grpc`, `grpc-web`; it was empty).
+- **Custom domains on the dashboard listener.** A request whose `Host` is a
+  bound custom domain goes to that service on the dashboard listener as well
+  (relay-own names always go to the dashboard). This is on only while the
+  relay knows a name of its own: `BURROW_AUTH_DOMAIN`, ACME or a file
+  certificate. Uploaded certificates are served there too.
+
 ### Upgrading to v0.13.0 {#upgrade-v0-13-0}
 
 v0.13.0 makes TCP services first-class: access modes `open`, `ip` and

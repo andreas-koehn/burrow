@@ -41,7 +41,7 @@ One container. One domain. Automatic HTTPS.
 
 ::: info Path URLs and mTLS
 The only features not available on `/svc/<slug>/` URLs are mTLS and custom
-domains. Mutual TLS requires a dedicated TLS handshake on the opt-in
+domains (and so gRPC, which needs a host name; see [gRPC](/guide/grpc)). Mutual TLS requires a dedicated TLS handshake on the opt-in
 host-routed ingress (`BURROW_HTTP_PROXY_LISTEN`).
 :::
 
@@ -58,7 +58,7 @@ host-routed ingress (`BURROW_HTTP_PROXY_LISTEN`).
   | `443` | Dashboard, API, HTTP tunnels |
   | `7000` | Client control channel |
   | `9001` | Raw TCP tunnels (open only if you use them) |
-  | `8444` | TLS passthrough by host name (only with `BURROW_TLS_PASSTHROUGH_LISTEN`, see [TCP by host name](#tcp-by-host-name)) |
+  | `8444` | TLS passthrough by host name (only with `BURROW_TLS_PASSTHROUGH_LISTEN`, see [TCP by host name](#tcp-by-host-name)). Not needed with `BURROW_TLS_PASSTHROUGH_ON_HTTPS`, which shares `443` ([One port 443](#one-port-443)) |
 
 - A domain name you control (e.g. `burrow.insingo.com`).
 
@@ -280,6 +280,246 @@ version 2 to port 8444 instead of publishing the port, and set
 are in
 [Behind a proxy](/guide/remote-desktop-and-tcp#behind-a-proxy-coolify-and-traefik).
 Names that no TCP router matches still reach Coolify's HTTP routers.
+
+## HTTP/2 and gRPC {#http2-and-grpc}
+
+Visitors can speak HTTP/2 to the relay, which is what gRPC needs. Nothing to
+switch on:
+
+- **Over TLS** the dashboard listener and the host-routed ingress offer `h2`
+  and `http/1.1` by ALPN. A browser or a gRPC client picks `h2`. This holds for
+  ACME certificates and file certificates alike.
+- **Without TLS** (a proxy such as Traefik terminates TLS in front) both
+  listeners accept prior-knowledge HTTP/2, **h2c**, next to HTTP/1.1.
+  `BURROW_HTTP_H2C` controls it and defaults to `true`. Set it to `false` to
+  accept HTTP/1.1 only on the plain listeners; a client that then speaks h2c
+  gets a connection error.
+
+The `Upgrade: h2c` flavour of h2c stays refused with 505 whatever you set. A
+connection with no active stream is closed after 120 seconds, and a dead peer
+is found by an HTTP/2 ping.
+
+::: warning h2c and the proxy in front
+A plain listener that takes h2c trusts the network path to it, as it always
+did for HTTP/1.1: anything that can reach the port can talk to it. Do not
+publish the plain port (`8080`) beyond the proxy, and keep
+`BURROW_TRUSTED_PROXIES` to the proxy's address. h2c adds no new access, but
+if you do not run gRPC behind a proxy, `BURROW_HTTP_H2C=false` keeps the
+listener to what it spoke before.
+:::
+
+The same relay speaks to the **local service** by the service's upstream
+protocol (`http1`, `https`, `h2c` or `h2`). That is a per-service setting; see
+[gRPC](/guide/grpc). A gRPC client cannot use the `/svc/<slug>/` prefix, so a
+gRPC service needs a host name of its own, a custom domain.
+
+### Coolify and Traefik: gRPC {#traefik-grpc}
+
+Traefik terminates TLS. The dashboard keeps the router Coolify generated, to
+port `8080`. Each gRPC host name gets a router of its own to the same port,
+with the service scheme `h2c`, which is why the plain listener takes h2c:
+
+```yaml
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.burrow-grpc.rule=Host(`grpc.example.com`)
+      - traefik.http.routers.burrow-grpc.entrypoints=https
+      - traefik.http.routers.burrow-grpc.tls=true
+      - traefik.http.routers.burrow-grpc.tls.certresolver=letsencrypt
+      - traefik.http.routers.burrow-grpc.service=burrow-grpc
+      - traefik.http.services.burrow-grpc.loadbalancer.server.port=8080
+      - traefik.http.services.burrow-grpc.loadbalancer.server.scheme=h2c
+```
+
+Then, in Burrow:
+
+1. Add `grpc.example.com` as a custom domain of the http service with
+   `cert_source: auto`. Behind a proxy on a plain listener the relay needs no
+   certificate for it (`cert_status` is `not_needed`); Traefik holds it.
+2. Set the service's upstream protocol to `h2c` (or start the client with
+   `burrow grpc 50051`).
+3. Keep `BURROW_AUTH_DOMAIN` set, as Coolify does. The relay sends a request
+   to a custom domain's service by its `Host` header only when it knows a name
+   of its own (an auth domain, a certificate or ACME); without one the
+   dispatch stays off.
+
+`BURROW_TRUSTED_PROXIES` already covers Traefik in the Coolify compose file.
+
+::: warning Traefik's `readTimeout` can cut long gRPC streams
+Traefik v3 entrypoints have `transport.respondingTimeouts.readTimeout`, which
+bounds how long Traefik reads a request, a long client stream included. A
+streaming call that sends for longer than the value is reset. Check the
+default of your Traefik version and raise it, or set it to `0`, on the entry
+point that carries gRPC:
+
+```
+--entryPoints.https.transport.respondingTimeouts.readTimeout=0
+```
+
+`idleTimeout` and `writeTimeout` are separate settings; check them too for
+streams that stay quiet for long.
+:::
+
+### Where to set the deadline
+
+The relay adds nothing to a gRPC call without a deadline. To bound calls on
+the relay, set `grpc_max_duration_s` on the service (see
+[gRPC](/guide/grpc#deadlines)). A proxy in front may cut a call earlier; the
+caller then sees `UNAVAILABLE` from the proxy, not from Burrow.
+
+---
+
+## One port 443 {#one-port-443}
+
+By default TLS passthrough by host name needs a port of its own
+(`BURROW_TLS_PASSTHROUGH_LISTEN`, for example `:8444`). With
+`BURROW_TLS_PASSTHROUGH_ON_HTTPS=true` the relay shares the HTTPS port: the
+dashboard, `/svc/`, custom-domain http and gRPC services and the host names of
+tcp services all answer on `:443`. The default is `false`, because turning it
+on widens how tcp services can be reached.
+
+```yaml
+    ports:
+      - "443:443"
+    environment:
+      BURROW_ACME_DOMAIN: burrow.insingo.com
+      BURROW_TLS_PASSTHROUGH_ON_HTTPS: "true"
+      BURROW_TCP_DOMAIN: tcp.example.com   # optional; *.tcp.example.com in DNS
+```
+
+A tcp service with passthrough needs DNS only. Burrow holds no certificate for
+it, the service serves its own.
+
+### Routing order
+
+The relay reads the first TLS record of each connection (the ClientHello)
+without terminating TLS, and decides in this order:
+
+1. The hello offers ALPN `acme-tls/1`, or has no server name: terminate. ACME
+   keeps working.
+2. The name is one of the relay's own (the dashboard's host and every name
+   under the auth domain, the services domain, the ACME names, the DNS names
+   of `BURROW_HTTP_TLS_CERT`, `localhost`, IP addresses): terminate.
+3. A custom domain covers the name: terminate.
+4. The name belongs to a live `open` or `ip` tcp service (its slug name under
+   `BURROW_TCP_DOMAIN`, or its own host name): hand the connection to the
+   service raw, through the same accept checks as its port (mode, country
+   rules, bans, limits). The connection log row has protocol `tls` and the
+   SNI.
+5. Anything else: terminate.
+
+A hello that cannot be read is **not refused**. No SNI, an unknown name, a
+non-TLS first byte, a hello split over several TLS records or a malformed one
+is handed to the TLS terminator with the bytes replayed, so an HTTPS client
+works whatever it sends. Only a hello that does not arrive in time, a budget
+or a PROXY header violation closes a connection. A private tcp service is
+never reached by name.
+
+### Behind a proxy that sends PROXY v2
+
+`BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES` works as on the dedicated listener,
+and now applies to `:443` as well. From a listed address every connection must
+begin with a PROXY protocol v2 header that names the visitor, **HTTPS and
+health checks included**; one without it is closed. From any other address a
+header is refused. The visitor's address from the header then applies to
+terminated connections too, so the dashboard and http services see the
+visitor, not the proxy. The list is never taken from `BURROW_TRUSTED_PROXIES`.
+
+### Budgets and fall-through
+
+Connections that wait for their hello are bounded, separately from the
+dedicated listener: 4096 in total, 64 per untrusted source (an IPv4 address,
+or an IPv6 /48) and 1024 for trusted proxies. The wait is 5 seconds, or 2
+seconds while a budget is more than 75 % full. Over the per-source cap or the
+trusted budget a connection is closed with no byte and counted `busy` under
+`https-mux`. When the **total** budget is full, the connection is not closed:
+it goes straight to the TLS terminator without being read, so a flood of slow
+hellos cannot lock HTTPS out. Such a connection is terminated, never passed
+through; passthrough by name degrades under a flood, and HTTPS does not.
+The dedicated listener still closes such a connection.
+
+### With the dedicated listener
+
+Both can run together. `BURROW_TLS_PASSTHROUGH_LISTEN` stays useful for a
+second port, or for a proxy-only path. A tcp service is then reachable on
+`:443` and on the dedicated port, and `hostname_only` holds with either. The
+dedicated listener does not look at custom domains: a name a custom domain
+covers (see below) is terminated on `:443` and still reachable on the
+dedicated port. `GET /api/v1/services/{id}/tcp-hostname` reports where a name
+answers (`reachable_on`) and what shadows it (`shadowed_by`).
+
+### One owner per host name
+
+A name belongs to either an http service or a tcp service, never both:
+
+- `tcp_hostname` is refused (409) when a custom domain covers it, or when it
+  is, or lies under, an ACME name or another name the relay serves itself.
+- A custom domain is refused (409, `hostname is a tcp host name`) when it
+  equals a `tcp_hostname`, covers one, or is, lies under or above
+  `BURROW_TCP_DOMAIN`. It is also refused when it is a relay-own name or lies
+  under one.
+- Rows that exist from before these checks are resolved at run time in favour
+  of the http side: the relay terminates, never hands raw bytes to the wrong
+  owner, and logs a warning once per name.
+- A custom domain above a tcp host name (an apex `example.com` with
+  `rdp.example.com`) is refused as well: the mux would terminate that name.
+- The check runs inside the relay process. One relay per database is the
+  supported setup.
+
+### Configuration refusals
+
+The relay does not start when:
+
+- `BURROW_TLS_PASSTHROUGH_ON_HTTPS=true` and the dashboard listener does not
+  terminate TLS itself. It needs `BURROW_ACME_DOMAIN`, or
+  `BURROW_HTTP_TLS_CERT` with `BURROW_HTTP_TLS_KEY`. Behind a proxy that
+  terminates TLS, use `BURROW_TLS_PASSTHROUGH_LISTEN` instead.
+- `BURROW_TCP_DOMAIN` is the dashboard's host, the services host, an ACME name
+  or a parent of one.
+- `BURROW_TCP_DOMAIN` is under the dashboard's host while the mux is on: the
+  mux terminates every name under it, so no slug name would reach its
+  service.
+- The mux is on and a slug name under `BURROW_TCP_DOMAIN` is one of the relay's
+  own names, for example because `BURROW_HTTP_TLS_CERT` carries a wildcard
+  that covers it. A wildcard covers one label, so `*.example.com` and
+  `tcp.example.com` is fine.
+- `BURROW_HTTP_TLS_CERT` cannot be read.
+
+### Behind Coolify and Traefik
+
+Traefik owns `443` there, so Traefik is the mux and `BURROW_TLS_PASSTHROUGH_ON_HTTPS`
+stays off. HTTP and gRPC names are routed as in
+[Coolify and Traefik: gRPC](#traefik-grpc). Tcp host names use a TCP router
+with `HostSNI`, `tls.passthrough=true` and PROXY v2 to the dedicated listener,
+unchanged from before:
+
+```yaml
+    environment:
+      BURROW_TLS_PASSTHROUGH_LISTEN: ":8444"
+      BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES: 10.0.1.5   # Traefik, nothing wider
+    labels:
+      - traefik.tcp.routers.burrow-sni.entrypoints=https
+      - traefik.tcp.routers.burrow-sni.rule=HostSNI(`db.example.com`)
+      - traefik.tcp.routers.burrow-sni.tls.passthrough=true
+      - traefik.tcp.routers.burrow-sni.service=burrow-sni
+      - traefik.tcp.services.burrow-sni.loadbalancer.server.port=8444
+      - traefik.tcp.services.burrow-sni.loadbalancer.proxyProtocol.version=2
+```
+
+The details, and the newer `serversTransport` form of the PROXY setting, are
+in
+[Behind a proxy](/guide/remote-desktop-and-tcp#behind-a-proxy-coolify-and-traefik).
+
+**Alternative, advanced: Traefik passes all Burrow names through.** A TCP
+router with `HostSNIRegexp` for every Burrow name, `tls.passthrough=true` and
+PROXY v2 goes to Burrow's TLS listener, with ACME and the mux on. Burrow then
+terminates everything itself: h2, its own certificates by TLS-ALPN-01 (the
+`acme-tls/1` protocol passes through) and mTLS. HTTP-01 reaches Burrow only if
+Traefik also routes `/.well-known/acme-challenge/` for those names. List
+Traefik in `BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES`, and note that Coolify's
+Domains tab must not claim the same names.
+
+---
 
 ## 7. Testing without hitting Let's Encrypt rate limits
 

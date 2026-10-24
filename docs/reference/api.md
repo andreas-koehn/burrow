@@ -99,7 +99,7 @@ Three extension fields appear on operations:
 | `x-burrow-permission` | Who may call the operation: `kind` is `public` (no credentials), `self` (any signed-in caller), `needs` (one of `any_of`; with `every: true` all of them) or `dashboard` (a dashboard session with one of `any_of`; an automation token gets 403). It mirrors the relay's route table, and a test keeps the two equal. |
 | `x-burrow-destructive` | `true` marks an operation that is not a DELETE but removes or revokes something; MCP clients must confirm it. |
 
-`x-burrow-mcp: false` is set on login, logout, password confirmation (`/auth/reauth`) and password change; on the client sign-in endpoints (discovery, start, poll, and the sign-in request lookup, approval and denial in the dashboard); on downloads and exports (backup archive, audit, cost and connection-log export); on the event streams; on backup restore and its status poll; on approving tools of a tool source and changing their overrides (an agent must not approve tool text that may have been written to steer it, nor rename or reclassify tools); on creating and changing a tool source and on listing its tools (an agent must not point a source and its credential at another host, nor read the tool text that could steer it into doing so; the source list and a single source stay); on the OAuth consent request, its approval and its denial (an agent must not consent in a person's name); on every write that routes a credential to an address or turns off inspection: creating and changing a provider and its upstream, binding and removing a service's upstream credential, the SMTP settings, adding and changing a custom domain (it carries a TLS key), creating, changing, deleting, testing, pausing and resuming a webhook, the guardrail settings, the redaction settings and rules, a service's AI config (redaction, guardrails, inspector), the retention settings and a service's gateway-only switch (an agent must not re-route credentials or switch off inspection; the reads of all of these stay tools); on registering an OAuth client (an agent must not choose where authorization codes are sent); on the writes that widen access, grant privileges, mint a data-plane secret into the model's context or plant a lasting instruction: creating a service (it sets the access mode), a service's and a tunnel's access mode, a service's access policy (the roles that may reach it) and its IP/geo rules, the just-in-time IP grants of a tcp service (listing, adding and revoking), the tcp settings of a service (its PROXY protocol header and idle timeout), its custom tcp host name (it widens who can reach it), its tcp limits (bandwidth, daily volume and auto-ban settings) and lifting a tcp ban (the reads of all of these stay tools; banning a source by hand, which only narrows access, is a tool), changing a gateway key, minting a client token or a service API key, creating, changing and deleting users and roles, and creating and changing a synthetic model, whose `system_text` reaches other users' requests (minting an automation token stays a tool); and on the OpenAPI viewer.
+`x-burrow-mcp: false` is set on login, logout, password confirmation (`/auth/reauth`) and password change; on the client sign-in endpoints (discovery, start, poll, and the sign-in request lookup, approval and denial in the dashboard); on downloads and exports (backup archive, audit, cost and connection-log export); on the event streams; on backup restore and its status poll; on approving tools of a tool source and changing their overrides (an agent must not approve tool text that may have been written to steer it, nor rename or reclassify tools); on creating and changing a tool source and on listing its tools (an agent must not point a source and its credential at another host, nor read the tool text that could steer it into doing so; the source list and a single source stay); on the OAuth consent request, its approval and its denial (an agent must not consent in a person's name); on every write that routes a credential to an address or turns off inspection: creating and changing a provider and its upstream, binding and removing a service's upstream credential, the SMTP settings, adding and changing a custom domain (it carries a TLS key), and the `PUT` of a service's `http-settings` (it sets a trust anchor and can switch certificate verification off), creating, changing, deleting, testing, pausing and resuming a webhook, the guardrail settings, the redaction settings and rules, a service's AI config (redaction, guardrails, inspector), the retention settings and a service's gateway-only switch (an agent must not re-route credentials or switch off inspection; the reads of all of these stay tools); on registering an OAuth client (an agent must not choose where authorization codes are sent); on the writes that widen access, grant privileges, mint a data-plane secret into the model's context or plant a lasting instruction: creating a service (it sets the access mode), a service's and a tunnel's access mode, a service's access policy (the roles that may reach it) and its IP/geo rules, the just-in-time IP grants of a tcp service (listing, adding and revoking), the tcp settings of a service (its PROXY protocol header and idle timeout), its custom tcp host name (it widens who can reach it), its tcp limits (bandwidth, daily volume and auto-ban settings) and lifting a tcp ban (the reads of all of these stay tools; banning a source by hand, which only narrows access, is a tool), changing a gateway key, minting a client token or a service API key, creating, changing and deleting users and roles, and creating and changing a synthetic model, whose `system_text` reaches other users' requests (minting an automation token stays a tool); and on the OpenAPI viewer.
 
 A test (`TestRegistry_WritesAreClassified` in `internal/mcpserv`) holds the golden set of every write that is a tool: a write added later fails it until somebody adds it to the set or marks it `x-burrow-mcp: false`. Its message says why the write looks sensitive when its path has a segment such as `/inspector`, `/guardrails`, `/redaction`, `/retention`, `/ai-config`, `/upstream` or `/webhooks`, or its body has an address (`url`, `host`, `endpoint`, `uri` and their `_`-suffixed forms), a credential field (`token`, `api_key`, `secret`, a credential slot, a password) or redaction, guardrail or inspector settings; such a write in the set also needs a reason in an explicit allow list (today: the redaction, guardrail and webhook previews and the inspector replays).
 
@@ -127,7 +127,10 @@ The table below lists the major resource groups, their path prefixes, and what t
 | **connections** | `/api/v1/services/{id}/connections` | Live visitors and forwards of a tcp service; `DELETE` disconnects one |
 | **max-connections** | `/api/v1/services/{id}/max-connections` | Visitor cap of a tcp service (0 = default 32, at most 256) |
 | **tcp-settings** | `/api/v1/services/{id}/tcp-settings` | `GET`, `PUT`: PROXY protocol header (`""` or `v2`) and idle timeout (0, or 60 to 86400 s) of a tcp service. `GET` also returns `client_proxy_protocol` (the client sends the header by its own setting) and `client_proxy_supported` (`true`, `false`, or `null` while offline) |
-| **tcp-hostname** | `/api/v1/services/{id}/tcp-hostname` | `GET`, `PUT {tcp_hostname?, hostname_only?}`: the custom host name for TLS passthrough (`""` clears it), and whether the service is reached by host name only (no public port; needs the passthrough listener and a name). `GET` lists `hostnames`, and `passthrough`, `reachable` and `hostname_only`. Setting a name needs `services:configure:any`; a change asks for a recent password confirmation |
+| **domains** | `/api/v1/services/{id}/domains` | `GET`, `POST`, and `GET`, `PUT`, `DELETE` on `…/domains/{did}`: custom domains of an http service. Body `{hostname, cert_source?, cert_pem?, key_pem?}`; `cert_source` is `uploaded` (default, needs `cert_pem` and `key_pem`) or `auto` (no certificate; a wildcard, or a certificate sent with it, is 400). The object carries `cert_source` and `cert_status` (`ready`, `pending` or `not_needed`). Names are normalised (lower case, no trailing dot) and validated: a single label, an IP address or a non-punycode IDN is 400; a name that a tcp service uses or covers, is under `BURROW_TCP_DOMAIN`, or is one of the relay's own is 409. Writes ask for a recent password confirmation and are not MCP tools |
+| **http-settings** | `/api/v1/services/{id}/http-settings` | `GET`, `PUT`: `upstream_protocol` (`http1`, `https`, `h2c`, `h2`), `upstream_tls_verify`, `upstream_tls_server_name`, `upstream_tls_ca_pem` (write only; `GET` returns `upstream_tls_ca_sha256`) and `grpc_max_duration_s` (0, or 1 to 86400). `GET` also returns `client_upstream_protocol` (what a connected client chose, `""` for none) and `effective_upstream_protocol`. A partial body keeps the other fields; `""` clears the server name and the CA. http services only (409 for tcp). Permission `services:configure:own` or `any`, no recent-auth. The `PUT` is not an MCP tool |
+| **ingress** | `/api/v1/ingress/status` | `GET`: `h2c` (`BURROW_HTTP_H2C`), `https_passthrough` (`BURROW_TLS_PASSTHROUGH_ON_HTTPS`), `passthrough_listen` (`BURROW_TLS_PASSTHROUGH_LISTEN`, `""` for none) and `acme`. Permission `services:configure:own` or `any` |
+| **tcp-hostname** | `/api/v1/services/{id}/tcp-hostname` | `GET`, `PUT {tcp_hostname?, hostname_only?}`: the custom host name for TLS passthrough (`""` clears it), and whether the service is reached by host name only (no public port; needs the passthrough listener and a name). `GET` lists `hostnames`, and `passthrough`, `reachable`, `reachable_on` (`https` for the `:443` mux, and the dedicated listener's address; empty when not reachable), `shadowed_by` (`custom_domain` or `relay`, only while the mux runs and the http side wins a name) and `hostname_only`. A name that is, or lies under, an ACME name or another name the relay serves itself, or that a custom domain covers, is 409. Setting a name needs `services:configure:any`; a change asks for a recent password confirmation |
 | **tcp-limits** | `/api/v1/services/{id}/tcp-limits` | `GET`, `PUT`: `rate_limit_kbps` (0, or 64 to 10 000 000; per direction), `daily_bytes` (0, or 1 MiB to 2^50) and `autoban` (`enabled`, `short_s`, `count`, `window_min`, `ban_min`). A partial body keeps the other fields. `GET` also returns `usage_today` (`day`, `bytes_in`, `bytes_out`, `bytes`) and `quota_reached`. `PUT` asks for a recent password confirmation |
 | **tcp-bans** | `/api/v1/services/{id}/tcp-bans` | `GET` lists active bans (`source`, `until`, `reason`, `auto`, `created_at`); `POST {source, ban_min, note?}` bans a source by hand (201; an IPv6 address is banned as its /64; an active ban is extended, never shortened: 409 for a ban that would end sooner, lift it with `DELETE` first; 409 at 4096 bans); `DELETE ?source=` lifts a ban (204, or 404 when there is none; asks for a recent password confirmation) |
 | **geo** | `/api/v1/geo/status` | `enabled` (a country database is loaded), `configured`, `error`, `db_path`, `db_age_seconds` and `rules_not_enforced` (services with country rules that nothing enforces). The service's `ip-geo` route also returns `country_rules_enforced`, and refuses a `PUT` that adds a country while no database is loaded |
@@ -138,6 +141,11 @@ The table below lists the major resource groups, their path prefixes, and what t
 | **settings** | `/api/v1/settings/` | Admin settings: SMTP, retention, config |
 | **events** | `/api/v1/events` | Server-sent event stream for dashboard live refresh |
 | **metrics** | `/metrics` | Prometheus 0.0.4 scrape endpoint (`metrics:read` permission) |
+
+The connection-log rows (`GET /api/v1/connection-logs`, the `connection_logs_list`
+tool) of http services carry `protocol` (`grpc`, `grpc-web`, `h2` or
+`http/1.1`). The gRPC method and status are stored, but the REST list does not
+return `grpc_method` and `grpc_status` in this release.
 
 ---
 
@@ -251,6 +259,44 @@ holds it), and `proxy_protocol` (`v2`) and `idle_timeout_s` set the connection
 settings. The owner is the caller. Start the client later with `burrow tcp
 <port> --name rdp`. An http create is unchanged (`service_id` is required, and
 the tcp fields are refused).
+
+### Set the upstream protocol of an http service
+
+```sh
+curl -H "Authorization: Bearer bua_YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -X PUT https://burrow.insingo.com/api/v1/services/SERVICE_ID/http-settings \
+  -d '{"upstream_protocol":"h2c","grpc_max_duration_s":600}'
+```
+
+The answer is the settings after the change:
+
+```json
+{"upstream_protocol":"h2c","upstream_tls_verify":false,"upstream_tls_server_name":"","upstream_tls_ca_sha256":"","grpc_max_duration_s":600,"client_upstream_protocol":"","effective_upstream_protocol":"h2c"}
+```
+
+Errors: 400 for an unknown protocol, a cap outside 0 and 1 to 86400, a CA that
+is not PEM with a `CERTIFICATE` block of at most 64 KiB, or a server name that
+is an IP address; 409 for a tcp service. See [gRPC](/guide/grpc).
+
+### Add a custom domain without a certificate
+
+```sh
+curl -H "Authorization: Bearer bua_YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -X POST https://burrow.insingo.com/api/v1/services/SERVICE_ID/domains \
+  -d '{"hostname":"grpc.example.com","cert_source":"auto"}'
+```
+
+`cert_status` of the answer is `pending` while the relay obtains the
+certificate under ACME, then `ready`; `not_needed` behind a proxy that holds
+it. For `auto`, `cert_sha256` is empty and `not_before` and `not_after` are the
+zero time.
+
+### Which ingress features run
+
+`GET /api/v1/ingress/status` returns
+`{"h2c":true,"https_passthrough":false,"passthrough_listen":"","acme":false}`.
 
 ### Mint a client token
 

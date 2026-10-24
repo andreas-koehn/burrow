@@ -178,3 +178,5 @@ No separate admin tool is needed.
 
 - [Quickstart](/guide/quickstart) — get a tunnel running in under five minutes
 - [Deploy on a server](/guide/deploy) — production Docker Compose setup with ACME
+- [gRPC and HTTP/2](/guide/grpc) — expose a gRPC server, HTTP/2 and one port 443
+- [Burrow and ngrok](/guide/compare-ngrok) — how the features compare

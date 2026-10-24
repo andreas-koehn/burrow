@@ -322,11 +322,13 @@ tool source or approving its tools, registering an OAuth client, creating a
 service (it sets the access mode), a service's or tunnel's access mode, a
 tcp service's settings (its PROXY protocol header and idle timeout), its
 custom host name, its limits (bandwidth, daily volume, auto-ban) and lifting a
-ban, changing a gateway key, minting a client token or a
+ban, an http service's upstream settings (`PUT …/http-settings`: protocol, TLS
+verification, CA and gRPC cap, which set a trust anchor and can switch
+certificate verification off), changing a gateway key, minting a client token or a
 service API key, creating, changing and deleting users and roles, and
 creating or changing a synthetic model (its `system_text` reaches other
 users' requests). Their reads stay tools: an agent can read a tcp service's
-settings, host name, limits with today's usage, and its bans. **Banning a source
+settings, host name (with `reachable_on` and `shadowed_by`), limits with today's usage, and its bans, an http service's upstream settings (`serviceHttpSettingsGet`) and which ingress features the relay runs (`ingressStatusGet`, `GET /api/v1/ingress/status`). **Banning a source
 by hand stays a tool** (`serviceTcpBanCreate`, through the generic tools): it
 only narrows who can connect, for at most 30 days, and never affects a
 forward. Lifting a ban does not. Make these changes in the dashboard

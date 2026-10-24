@@ -406,21 +406,24 @@ Turn it on in the relay's environment:
 |----------|---------|
 | `BURROW_TLS_PASSTHROUGH_LISTEN` | The listener, for example `:8444`. Empty (default) = off. |
 | `BURROW_TCP_DOMAIN` | Optional. Every `open` or `ip` tcp service is then reachable as `<slug>.<domain>`. Needs a wildcard DNS record `*.tcp.example.com` pointing at the relay (or at the proxy in front of it). |
+| `BURROW_TLS_PASSTHROUGH_ON_HTTPS` | `true` shares the relay's HTTPS port (`:443`) with passthrough, see [On port 443](#on-port-443). Default `false`. |
 | `BURROW_TLS_PASSTHROUGH_TRUSTED_PROXIES` | Addresses allowed to send a PROXY v2 header. Default empty. See [Behind a proxy](#behind-a-proxy-coolify-and-traefik). |
 
 `BURROW_TCP_DOMAIN` must not be the dashboard's host or a parent of it, nor
-the services host.
+the services host, nor an ACME name or a parent of one.
 
 **Custom host names.** A service can also have a name of its own, for example
 `db.example.com`: `PUT /api/v1/services/{id}/tcp-hostname` with
 `{"tcp_hostname":"db.example.com"}`, or the **Host name** card in the
 dashboard. Setting a name needs `services:configure:any` (an administrator);
 an owner with `services:configure:own` can only clear it. A name is unique and
-must be a host name with at least two labels. The relay refuses names under
-the tcp domain, the dashboard's domain or the services domain, and names a
-custom domain already covers. A change asks for a recent password
+must be a host name with at least two labels. The relay refuses (400) names
+under the tcp domain, the dashboard's domain or the services domain, and
+refuses (409) a name that is, or lies under, an ACME name or another name the
+relay serves itself, and a name a custom domain already covers. A change asks for a recent password
 confirmation and is not an MCP tool. `GET` on the same route lists the names
-and says whether the service is `reachable` this way.
+and says whether the service is `reachable` this way, and where
+(`reachable_on`).
 
 **What is refused.** The connection is closed without a byte when:
 
@@ -446,6 +449,41 @@ way:** the client sends an X.224 request first and starts TLS afterwards, so
 there is no name in the first bytes. RDP and plain SSH stay on the port or on
 `burrow forward`.
 
+### On port 443 {#on-port-443}
+
+With `BURROW_TLS_PASSTHROUGH_ON_HTTPS=true` the relay's HTTPS port carries
+passthrough too, so a tcp service is reachable by its name on `:443`, next to
+the dashboard and the http services, without a port of its own. The relay
+peeks at the ClientHello: a name of a live `open` or `ip` tcp service goes to
+it raw, every other connection is terminated as before, and ACME
+(`acme-tls/1`) keeps working. The relay must terminate TLS on that port
+itself (ACME, or `BURROW_HTTP_TLS_CERT` and `BURROW_HTTP_TLS_KEY`); behind a
+proxy that terminates TLS, use the dedicated listener. The routing order, the
+budgets and the refusals are in [One port 443](/guide/deploy#one-port-443).
+
+Unlike the dedicated listener, `:443` **never closes** a connection because of
+what it sends: no SNI, an unknown name, plain HTTP or a hello split over
+several records is handed to the TLS terminator, so HTTPS keeps working. Only
+a hello that does not arrive in 5 seconds (2 when busy), a full budget for one
+source and a PROXY header violation close it.
+
+`GET /api/v1/services/{id}/tcp-hostname` answers where a name works:
+
+- `reachable_on`: a list of `https` (the `:443` mux, while at least one name is
+  not shadowed) and the address of the dedicated listener
+  (`BURROW_TLS_PASSTHROUGH_LISTEN`). It is empty when `reachable` is `false`.
+- `shadowed_by`: `custom_domain` or `relay`, present only while the mux runs,
+  when the http side owns a name of the service and wins it: a custom domain
+  of an http service covers the name, or the relay serves it itself (its
+  certificate or ACME names, the dashboard's host and names under it). The
+  mux terminates a shadowed name and logs a warning once. A shadowed name still
+  works on the dedicated listener. Rows that predate the write-time checks can
+  be shadowed; new ones are refused (409).
+
+A trusted proxy in front of `:443` must send PROXY v2 on every connection,
+HTTPS and health checks included (see
+[One port 443](/guide/deploy#one-port-443)).
+
 ### By port, by host name, or both
 
 An `open` or `ip` service is reached **by its port and by host name** by
@@ -457,7 +495,8 @@ and opens none: only a TLS client that names the host gets in. A service that
 needs no public port at all is `private` and reached with `burrow forward`.
 
 - It can be turned on only while the relay runs the passthrough listener
-  (`BURROW_TLS_PASSTHROUGH_LISTEN`) and the service has a name there: its
+  (`BURROW_TLS_PASSTHROUGH_LISTEN`) or the `:443` mux
+  (`BURROW_TLS_PASSTHROUGH_ON_HTTPS`) and the service has a name there: its
   slug name under `BURROW_TCP_DOMAIN`, or a custom host name. Otherwise the
   API answers 400 with the reason, and the only name of such a service
   cannot be cleared while it is on.
@@ -538,6 +577,10 @@ untrusted source (an IPv4 address, or an IPv6 /48). Trusted proxies have their
 own budget of 1024 and no per-source cap. When a budget is more than 75 % full
 the wait shrinks from 5 to 2 seconds. A connection over a cap is closed at
 once.
+
+These numbers are for the dedicated listener. The `:443` mux has a budget of
+its own (4096, 64 per untrusted source, 1024 for trusted proxies); see
+[One port 443](/guide/deploy#one-port-443).
 
 ---
 
