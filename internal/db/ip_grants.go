@@ -188,3 +188,26 @@ func (x *DB) SetServiceTCPSettings(ctx context.Context, id string, proxyProtocol
 	}
 	return notFoundIfNoRows(res, "set service tcp settings")
 }
+
+// ErrTCPHostnameTaken is what SetServiceTCPHostname returns when another
+// service holds the host name.
+var ErrTCPHostnameTaken = errors.New("db: tcp hostname is held by another service")
+
+// SetServiceTCPHostname sets the TLS passthrough host name of a tcp service;
+// "" clears it (NULL). The caller validates and normalises it.
+// ErrTCPHostnameTaken when another service holds it, ErrNotFound when no
+// service has the id.
+func (x *DB) SetServiceTCPHostname(ctx context.Context, id, hostname string) error {
+	var v sql.NullString
+	if hostname != "" {
+		v = sql.NullString{String: hostname, Valid: true}
+	}
+	res, err := x.sqlDB.ExecContext(ctx, `UPDATE services SET tcp_hostname=? WHERE id=?`, v, id)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrTCPHostnameTaken
+		}
+		return fmt.Errorf("set service tcp hostname: %w", err)
+	}
+	return notFoundIfNoRows(res, "set service tcp hostname")
+}

@@ -57,6 +57,8 @@ var openAPIOperationIDs = map[string]string{
 	"PUT /api/v1/services/{serviceID}/max-connections":                          "serviceMaxConnectionsUpdate",
 	"GET /api/v1/services/{serviceID}/tcp-settings":                             "serviceTcpSettingsGet",
 	"PUT /api/v1/services/{serviceID}/tcp-settings":                             "serviceTcpSettingsUpdate",
+	"GET /api/v1/services/{serviceID}/tcp-hostname":                             "serviceTcpHostnameGet",
+	"PUT /api/v1/services/{serviceID}/tcp-hostname":                             "serviceTcpHostnameUpdate",
 	"GET /api/v1/services/{serviceID}/connections":                              "serviceConnectionsList",
 	"DELETE /api/v1/services/{serviceID}/connections/{connID}":                  "serviceConnectionDelete",
 	"DELETE /api/v1/services/{serviceID}/cache/entries":                         "serviceCacheEntriesDelete",
@@ -282,6 +284,9 @@ var openAPIMCPDisabled = map[string]string{
 	// Nor change what a tcp service's target is told about its visitors (the
 	// PROXY header), nor cut its connections off (the idle timeout).
 	"serviceTcpSettingsUpdate": "PUT /api/v1/services/{serviceID}/tcp-settings",
+	// Nor give a tcp service a name it is reached by on the TLS passthrough
+	// listener.
+	"serviceTcpHostnameUpdate": "PUT /api/v1/services/{serviceID}/tcp-hostname",
 	// Nor change who may reach a service: its ip rules and its role list.
 	"serviceIpGeoUpdate":        "PUT /api/v1/services/{serviceID}/ip-geo",
 	"serviceAccessPolicyUpdate": "PUT /api/v1/services/{serviceID}/access-policy",
@@ -379,6 +384,7 @@ var openAPIRequestBodies = map[string]openAPIRequestBody{
 	"serviceIpGrantCreate":            {typ: oaType[ipGrantReq]()},
 	"serviceMaxConnectionsUpdate":     {typ: oaType[maxConnectionsReq]()},
 	"serviceTcpSettingsUpdate":        {typ: oaType[tcpSettingsReq]()},
+	"serviceTcpHostnameUpdate":        {typ: oaType[tcpHostnameReq]()},
 	"serviceUpstreamCredentialUpdate": {typ: oaType[putCredReq]()},
 	"serviceDomainCreate":             {typ: oaType[postDomainReq]()},
 	"serviceDomainUpdate":             {typ: oaType[putDomainReq]()},
@@ -506,6 +512,8 @@ var openAPIResponses = map[string]openAPIResponseBody{
 	"serviceConnectionsList":   {status: "200", typ: oaType[serviceConnectionResp](), list: true},
 	"serviceTcpSettingsGet":    {status: "200", typ: oaType[tcpSettingsResp]()},
 	"serviceTcpSettingsUpdate": {status: "200", typ: oaType[tcpSettingsResp]()},
+	"serviceTcpHostnameGet":    {status: "200", typ: oaType[tcpHostnameResp]()},
+	"serviceTcpHostnameUpdate": {status: "200", typ: oaType[tcpHostnameResp]()},
 	"serviceIpGrantCreate":     {status: "201", typ: oaType[ipGrantCreatedResp]()},
 	// The one answer that stays an exception: the handler writes the stored
 	// blob, a JSON object with no closed key set and no type to name. The nine

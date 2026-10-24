@@ -125,6 +125,10 @@ type Service struct {
 	// (migration 0042).
 	ProxyProtocol string
 	IdleTimeoutS  int
+	// TCPHostname is the host name a TLS client reaches the tcp service by
+	// through the relay's TLS passthrough listener (SNI), lower case; ""
+	// for none (NULL). Unique among services (migration 0042).
+	TCPHostname string
 }
 
 // ServiceAPIKey is a row of the service_api_keys table.

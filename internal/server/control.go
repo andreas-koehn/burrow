@@ -429,6 +429,8 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 		ServiceID: serviceID, accessMode: mode, created: svc.res.Created,
 	}
 	tn.setTCPSettings(svc.res.ProxyProtocol, svc.res.IdleTimeout)
+	tn.slug = svc.res.Slug
+	tn.setHostname(svc.res.TCPHostname)
 	if tr.ProxyProtocol == proto.ProxyProtocolV2 {
 		tn.clientProxy = proto.ProxyProtocolV2
 	}
@@ -624,6 +626,7 @@ func (s *Server) reconcileTCP(ctx context.Context, tn *Tunnel) error {
 		tn.limits.setMax(acc.MaxConnections)
 	}
 	tn.setTCPSettings(acc.ProxyProtocol, acc.IdleTimeout)
+	tn.setHostname(acc.Hostname)
 	if mode == TCPAccessIP {
 		p, err := compileTCPPolicy(acc)
 		if err != nil {

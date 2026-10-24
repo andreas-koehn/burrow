@@ -75,6 +75,11 @@ type Tunnel struct {
 	clientProxy string
 	// sweeping: a sweepIdle goroutine runs for the tunnel (under connMu).
 	sweeping bool
+	// slug is the tcp service's slug and sniName its own TLS passthrough
+	// host name (see passthrough.go); the slug never changes, the host name
+	// with RefreshTCPService.
+	slug    string
+	sniName atomic.Pointer[string]
 }
 
 // ClientSession is one authenticated client connection.

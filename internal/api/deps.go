@@ -47,6 +47,10 @@ type ServiceStore interface {
 	// protocol and the idle timeout of a tcp service (store.TCPSettings).
 	ServiceTCPSettings(ctx context.Context, callerID, callerRole, serviceID string) (store.TCPSettings, error)
 	SetServiceTCPSettings(ctx context.Context, callerID, callerRole, serviceID string, u store.TCPSettingsUpdate) (before, after store.TCPSettings, err error)
+	// ServiceTCPHostname and SetServiceTCPHostname read and change the TLS
+	// passthrough host name of a tcp service (store.TCPHostname).
+	ServiceTCPHostname(ctx context.Context, callerID, callerRole, serviceID string) (store.TCPHostname, error)
+	SetServiceTCPHostname(ctx context.Context, callerID, callerRole, serviceID, hostname string) (before, after store.TCPHostname, err error)
 	// DeleteService removes the service and returns its name. Owner or a
 	// holder of services:configure:any; store.ErrForbidden otherwise.
 	// store.ErrServiceHasProvider and store.ErrProviderInUse refuse it.
@@ -491,6 +495,13 @@ type Deps struct {
 	// gate's handoff. Every service address the API prints uses it. Empty
 	// keeps one host; approving a client sign-in then takes the password.
 	ServicesDomain string
+	// TCPDomain is BURROW_TCP_DOMAIN: every tcp service in mode open or ip
+	// is reached through the TLS passthrough listener as <slug>.<TCPDomain>.
+	// TLSPassthrough reports whether that listener runs
+	// (BURROW_TLS_PASSTHROUGH_LISTEN). Both only shape what the tcp-hostname
+	// route says and refuses.
+	TCPDomain      string
+	TLSPassthrough bool
 	// HostRouting reports whether the host-routed ingress is enabled. mTLS
 	// access mode needs it (a client certificate is checked during the TLS
 	// handshake of a dedicated host).

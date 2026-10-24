@@ -142,6 +142,13 @@ func (h *obsHook) fields(event string) []string {
 // when the test ends.
 func bootObsRelay(t *testing.T) *obsRelay {
 	t.Helper()
+	return bootObsRelayEnv(t, nil)
+}
+
+// bootObsRelayEnv is bootObsRelay with more environment: extra is set after
+// the relay's own variables, so it may also change them.
+func bootObsRelayEnv(t *testing.T, extra map[string]string) *obsRelay {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("runs the whole relay")
 	}
@@ -187,7 +194,13 @@ func bootObsRelay(t *testing.T) *obsRelay {
 		// certificate is checked against. Both are read once, at start.
 		"BURROW_UPSTREAM_KEY_OBS":           "sk-upstream-obs-0001",
 		"BURROW_CERT_VALIDATION_ROOTS_FILE": roots,
+		"BURROW_TLS_PASSTHROUGH_LISTEN":     "",
+		"BURROW_TCP_DOMAIN":                 "",
+		"BURROW_HTTP_PROXY_LISTEN":          "",
 	} {
+		t.Setenv(k, v)
+	}
+	for k, v := range extra {
 		t.Setenv(k, v)
 	}
 

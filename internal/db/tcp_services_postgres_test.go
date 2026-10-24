@@ -31,6 +31,7 @@ func TestTCPServices_Postgres(t *testing.T) {
 		checkMigration0041(t, x, "u-pg-tcpslug", "0041_v0.13.0_tcp_forwards.postgres.sql")
 	})
 	t.Run("tcp settings", func(t *testing.T) { checkServiceTCPSettings(t, x, "u-tcpset-pg") })
+	t.Run("tcp hostname", func(t *testing.T) { checkServiceTCPHostname(t, x, "u-tcphost-pg") })
 	t.Run("tcp complete tables", func(t *testing.T) { checkTCPCompleteTables(t, x, "u-tcptables-pg") })
 	t.Run("migration 0042 down and up", func(t *testing.T) {
 		checkMigration0029DownAndUp(t, x, "0042_v0.13.0_tcp_complete.postgres.sql")

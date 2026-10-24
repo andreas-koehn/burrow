@@ -276,6 +276,8 @@ func TestRegistry_CredentialRoutingAndInspectionWritesAreNotTools(t *testing.T) 
 		// told about its visitors (the source it may trust), and an idle
 		// timeout cuts connections off.
 		"serviceTcpSettingsUpdate",
+		// A TLS passthrough host name gives a tcp service a way in.
+		"serviceTcpHostnameUpdate",
 	} {
 		if _, ok := r.Lookup(id); ok {
 			t.Errorf("%s is a management tool", id)
@@ -286,7 +288,7 @@ func TestRegistry_CredentialRoutingAndInspectionWritesAreNotTools(t *testing.T) 
 		"serviceDomainsList", "serviceDomainGet", "webhooksList", "webhookDeliveriesList",
 		"guardrailSettingsGet", "redactionSettingsGet", "redactionRulesList", "serviceAiConfigGet",
 		"retentionSettingsGet", "redactionPreview", "guardrailPreview", "webhookPreview",
-		"serviceIpGeoGet", "serviceAccessPolicyGet", "automationTokenCreate", "serviceTcpSettingsGet",
+		"serviceIpGeoGet", "serviceAccessPolicyGet", "automationTokenCreate", "serviceTcpSettingsGet", "serviceTcpHostnameGet",
 		"aiModelsList", "gatewayKeysList", "usersList", "rolesList",
 	} {
 		if _, ok := r.Lookup(id); !ok {

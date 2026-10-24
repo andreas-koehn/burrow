@@ -1025,6 +1025,36 @@ func TestLoadServer_ServicesDomain(t *testing.T) {
 	}
 }
 
+// BURROW_TLS_PASSTHROUGH_LISTEN and BURROW_TCP_DOMAIN: both off by default;
+// the tcp domain is a host name of its own, not the dashboard's nor the
+// services host.
+func TestLoadServer_TLSPassthrough(t *testing.T) {
+	c, err := LoadServer(nil)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if c.TLSPassthroughListen != "" || c.TCPDomain != "" {
+		t.Fatalf("on by default: %q %q", c.TLSPassthroughListen, c.TCPDomain)
+	}
+	t.Setenv("BURROW_AUTH_DOMAIN", "burrow.example.com")
+	t.Setenv("BURROW_SERVICES_DOMAIN", "apps.example.com")
+	t.Setenv("BURROW_TLS_PASSTHROUGH_LISTEN", ":8444")
+	t.Setenv("BURROW_TCP_DOMAIN", " TCP.Example.com. ")
+	c, err = LoadServer(nil)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if c.TLSPassthroughListen != ":8444" || c.TCPDomain != "tcp.example.com" {
+		t.Fatalf("got %q %q", c.TLSPassthroughListen, c.TCPDomain)
+	}
+	for _, bad := range []string{"burrow.example.com", "apps.example.com", "https://tcp.example.com", "tcp.example.com:8444", "tcp", "*.tcp.example.com", "-x.example.com"} {
+		t.Setenv("BURROW_TCP_DOMAIN", bad)
+		if _, err := LoadServer(nil); err == nil {
+			t.Errorf("tcp domain %q accepted", bad)
+		}
+	}
+}
+
 // BURROW_OAUTH_GRANT_RPM: each OAuth grant's calls per minute at the tool
 // gateway; 120 by default, 0 turns it off, a negative value is refused.
 func TestLoadServer_OAuthGrantRPM(t *testing.T) {

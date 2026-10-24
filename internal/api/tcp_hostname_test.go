@@ -1,0 +1,116 @@
+package api
+
+// The TLS passthrough host name of a tcp service (tcp complete, E1): read
+// with the names it is reached by, changed on a route of its own that asks
+// for a recent confirmation, and told to the relay.
+
+import (
+	"encoding/json"
+	"net/http"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/store"
+)
+
+func decodeTCPHostname(t *testing.T, r *http.Response) tcpHostnameResp {
+	t.Helper()
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", r.StatusCode)
+	}
+	var s tcpHostnameResp
+	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestTCPHostname_GetAndPut(t *testing.T) {
+	a := newTCPAPI(t, func(d *Deps) {
+		d.TCPDomain, d.TLSPassthrough = "tcp.example.com", true
+		d.AuthDomain, d.ServicesDomain = "burrow.example.com", "apps.example.com"
+	})
+	a.svcs.tcpHostname = store.TCPHostname{Slug: "t0a1b2c3d4e", AccessMode: "open"}
+
+	got := decodeTCPHostname(t, a.c.get(t, "/api/v1/services/rdp/tcp-hostname"))
+	if got.TCPHostname != "" || !slices.Equal(got.Hostnames, []string{"t0a1b2c3d4e.tcp.example.com"}) || !got.Passthrough || !got.Reachable {
+		t.Fatalf("GET %+v", got)
+	}
+	got = decodeTCPHostname(t, a.c.put(t, "/api/v1/services/rdp/tcp-hostname", map[string]string{"tcp_hostname": "RDP.Example.com"}))
+	if got.TCPHostname != "rdp.example.com" ||
+		!slices.Equal(got.Hostnames, []string{"t0a1b2c3d4e.tcp.example.com", "rdp.example.com"}) || !got.Reachable {
+		t.Fatalf("PUT %+v", got)
+	}
+	if a.svcs.lastTCPHostname != "RDP.Example.com" {
+		t.Fatalf("store got %q", a.svcs.lastTCPHostname)
+	}
+	if refreshed, _ := a.relay.snapshot(); !slices.Equal(refreshed, []string{"rdp"}) {
+		t.Fatalf("relay told %v", refreshed)
+	}
+	// A private service has its names and is not reachable by them.
+	a.svcs.tcpHostname.AccessMode = "private"
+	if got := decodeTCPHostname(t, a.c.get(t, "/api/v1/services/rdp/tcp-hostname")); got.Reachable || len(got.Hostnames) != 2 {
+		t.Fatalf("private: %+v", got)
+	}
+	a.svcs.tcpHostname.AccessMode = "ip"
+	got = decodeTCPHostname(t, a.c.put(t, "/api/v1/services/rdp/tcp-hostname", map[string]string{"tcp_hostname": ""}))
+	if got.TCPHostname != "" || len(got.Hostnames) != 1 || !got.Reachable {
+		t.Fatalf("cleared: %+v", got)
+	}
+
+	for _, c := range []struct {
+		name string
+		body string
+		err  error
+		want int
+		text string
+	}{
+		{"no field", `{}`, nil, http.StatusBadRequest, "tcp_hostname is required"},
+		{"a field it does not know", `{"tcp_hostname": "a.example.com", "x": 1}`, nil, http.StatusBadRequest, "unknown"},
+		{"not json", `nope`, nil, http.StatusBadRequest, ""},
+		{"no host name", `{"tcp_hostname": "not a host"}`, store.ErrInvalidTCPHostname, http.StatusBadRequest, "host name"},
+		{"under the tcp domain", `{"tcp_hostname": "x.tcp.example.com"}`, nil, http.StatusBadRequest, "tcp.example.com"},
+		{"the tcp domain", `{"tcp_hostname": "TCP.example.com"}`, nil, http.StatusBadRequest, "tcp.example.com"},
+		{"the dashboard", `{"tcp_hostname": "burrow.example.com"}`, nil, http.StatusBadRequest, "burrow.example.com"},
+		{"under the dashboard", `{"tcp_hostname": "abc.burrow.example.com"}`, nil, http.StatusBadRequest, "burrow.example.com"},
+		{"the services host", `{"tcp_hostname": "apps.example.com"}`, nil, http.StatusBadRequest, "apps.example.com"},
+		{"taken", `{"tcp_hostname": "db.example.com"}`, store.ErrTCPHostnameTaken, http.StatusConflict, "another service"},
+		{"http service", `{"tcp_hostname": "a.example.com"}`, store.ErrServiceNotTCP, http.StatusConflict, "tcp services only"},
+		{"another user's", `{"tcp_hostname": "a.example.com"}`, store.ErrForbidden, http.StatusForbidden, ""},
+		{"missing", `{"tcp_hostname": "a.example.com"}`, db.ErrNotFound, http.StatusNotFound, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a.svcs.tcpHostnameErr = c.err
+			defer func() { a.svcs.tcpHostnameErr = nil }()
+			r := a.c.putRaw(t, "/api/v1/services/rdp/tcp-hostname", c.body)
+			body := readBody(t, r)
+			if r.StatusCode != c.want || !strings.Contains(body, c.text) {
+				t.Fatalf("status %d %s, want %d with %q", r.StatusCode, body, c.want, c.text)
+			}
+		})
+	}
+	if refreshed, _ := a.relay.snapshot(); len(refreshed) != 2 {
+		t.Fatalf("a refused write told the relay: %v", refreshed)
+	}
+	a.svcs.tcpHostnameErr = store.ErrServiceNotTCP
+	if r := a.c.get(t, "/api/v1/services/web/tcp-hostname"); r.StatusCode != http.StatusConflict {
+		t.Fatalf("GET http: %d", r.StatusCode)
+	}
+}
+
+// Without the passthrough listener a name reaches nothing, and without a
+// tcp domain the slug has no name.
+func TestTCPHostname_WithoutPassthrough(t *testing.T) {
+	a := newTCPAPI(t, nil)
+	a.svcs.tcpHostname = store.TCPHostname{Hostname: "rdp.example.com", Slug: "t0a1b2c3d4e", AccessMode: "open"}
+	got := decodeTCPHostname(t, a.c.get(t, "/api/v1/services/rdp/tcp-hostname"))
+	if got.Passthrough || got.Reachable || !slices.Equal(got.Hostnames, []string{"rdp.example.com"}) {
+		t.Fatalf("GET %+v", got)
+	}
+	if body := readBody(t, a.c.get(t, "/api/v1/services/rdp/tcp-hostname")); strings.Contains(body, "null") {
+		t.Fatalf("a null in %s", body)
+	}
+}

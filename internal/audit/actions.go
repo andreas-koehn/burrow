@@ -40,6 +40,7 @@ const (
 	ActionServiceIPGrantRevoke        = "service.ip_grant.revoke"
 	ActionServiceMaxConnectionsUpdate = "service.max_connections.update" // the cap on connected visitors of a tcp service
 	ActionServiceTCPSettingsUpdate    = "service.tcp_settings.update"    // the PROXY protocol or idle timeout of a tcp service
+	ActionServiceTCPHostnameUpdate    = "service.tcp_hostname.update"    // the TLS passthrough host name of a tcp service
 	ActionServiceConnectionClose      = "service.connection.close"       // a live connection of a tcp service was closed from the dashboard
 	ActionTCPForwardOpen              = "tcp.forward.open"               // a forward stream to a tcp service was opened (one per user and service a minute)
 	ActionServiceAccessPolicyUpdate   = "service.access_policy.update"
@@ -204,7 +205,7 @@ var AllActions = []string{
 	ActionServiceCreate, ActionServiceDelete,
 	ActionServiceAccessModeUpdate, ActionServiceSlugChange, ActionServiceGatewayOnlyUpdate, ActionServiceAccessPolicyUpdate,
 	ActionServiceTCPPortReclaimed, ActionServiceTCPAccessUpdate, ActionServiceIPGrantAdd, ActionServiceIPGrantRevoke,
-	ActionServiceMaxConnectionsUpdate, ActionServiceTCPSettingsUpdate, ActionServiceConnectionClose, ActionTCPForwardOpen,
+	ActionServiceMaxConnectionsUpdate, ActionServiceTCPSettingsUpdate, ActionServiceTCPHostnameUpdate, ActionServiceConnectionClose, ActionTCPForwardOpen,
 	ActionServiceAPIKeyCreate, ActionServiceAPIKeyRevoke,
 	ActionServiceAIConfigUpdate,
 	ActionAIProviderCreate, ActionAIProviderUpdate, ActionAIProviderDelete,

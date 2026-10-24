@@ -99,6 +99,18 @@ type ServerConfig struct {
 	// dashboard's origin. Empty (the default) keeps both on one host.
 	// Env: BURROW_SERVICES_DOMAIN.
 	ServicesDomain string `koanf:"services_domain"`
+	// TLSPassthroughListen is the TCP address of the TLS passthrough
+	// listener (e.g. ":8444"): it reads the server name of each TLS
+	// ClientHello without terminating TLS and hands the connection to the
+	// tcp service of that name (mode open or ip). Empty (the default)
+	// leaves it off.
+	// Env: BURROW_TLS_PASSTHROUGH_LISTEN.
+	TLSPassthroughListen string `koanf:"tls_passthrough_listen"`
+	// TCPDomain gives every tcp service the passthrough name
+	// <slug>.<TCPDomain> (it needs a wildcard DNS record). Empty: a tcp
+	// service is reached by its own host name only (tcp_hostname).
+	// Env: BURROW_TCP_DOMAIN.
+	TCPDomain string `koanf:"tcp_domain"`
 
 	// ----- v0.4.0 additions (Task 24) ---------------------------------------
 
@@ -504,6 +516,9 @@ func LoadServer(overrides map[string]any) (*ServerConfig, error) {
 	if err := cleanServicesDomain(&c); err != nil {
 		return nil, fmt.Errorf("invalid server config: %w", err)
 	}
+	if err := cleanTCPDomain(&c); err != nil {
+		return nil, fmt.Errorf("invalid server config: %w", err)
+	}
 	// ACME validation (v0.6.0).
 	if c.ACMEDomain != "" {
 		if c.ACMEEmail == "" {
@@ -543,6 +558,29 @@ func cleanServicesDomain(c *ServerConfig) error {
 	}
 	if c.ServicesDomain == dashboard {
 		return fmt.Errorf("services_domain must differ from the dashboard's host %q", dashboard)
+	}
+	return nil
+}
+
+// cleanTCPDomain trims and lower-cases tcp_domain, drops a trailing dot, and
+// refuses a value that is not a bare host name or that is the dashboard's
+// host or the services host: the names under it are the tcp services'.
+func cleanTCPDomain(c *ServerConfig) error {
+	c.TCPDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(c.TCPDomain)), ".")
+	if c.TCPDomain == "" {
+		return nil
+	}
+	if len(c.TCPDomain) > 253 || !hostNameRE.MatchString(c.TCPDomain) {
+		return fmt.Errorf("tcp_domain %q must be a host name such as tcp.example.com (no scheme, port, path or wildcard)", c.TCPDomain)
+	}
+	dashboard := strings.ToLower(strings.TrimSpace(c.AuthDomain))
+	if dashboard == "" {
+		if first, _, _ := strings.Cut(c.ACMEDomain, ","); first != "" {
+			dashboard = strings.ToLower(strings.TrimSpace(first))
+		}
+	}
+	if c.TCPDomain == dashboard || c.TCPDomain == c.ServicesDomain {
+		return fmt.Errorf("tcp_domain must differ from the dashboard's host and the services host")
 	}
 	return nil
 }

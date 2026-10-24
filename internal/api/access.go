@@ -200,6 +200,8 @@ var routeAccess = map[string]access{
 	"PUT /api/v1/services/{serviceID}/max-connections":                          needs(servicesConfigure...),
 	"GET /api/v1/services/{serviceID}/tcp-settings":                             needs(servicesConfigure...),
 	"PUT /api/v1/services/{serviceID}/tcp-settings":                             needs(servicesConfigure...),
+	"GET /api/v1/services/{serviceID}/tcp-hostname":                             needs(servicesConfigure...),
+	"PUT /api/v1/services/{serviceID}/tcp-hostname":                             needs(servicesConfigure...),
 	"GET /api/v1/services/{serviceID}/connections":                              needs(servicesConfigure...),
 	"DELETE /api/v1/services/{serviceID}/connections/{connID}":                  needs(servicesConfigure...),
 	"GET /api/v1/services/{serviceID}/ai-config":                                needs(aiConfigure...),

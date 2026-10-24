@@ -22,6 +22,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,6 +31,7 @@ import (
 	"github.com/ankoehn/burrow/internal/auth"
 	"github.com/ankoehn/burrow/internal/authz"
 	"github.com/ankoehn/burrow/internal/db"
+	"github.com/ankoehn/burrow/internal/tcpsniff"
 )
 
 var (
@@ -361,6 +363,98 @@ func (s *Store) SetServiceTCPSettings(ctx context.Context, callerID, callerRole,
 		e.SubjectID = serviceID
 		e.SubjectLabel = svc.Name
 		e.Payload = audit.MustJSON(map[string]TCPSettings{"from": before, "to": after})
+	})
+	return before, after, nil
+}
+
+// TCPHostname is a tcp service's TLS passthrough host name ("" for none)
+// with what decides whether it reaches the service: its slug (the other
+// name it has under BURROW_TCP_DOMAIN) and its access mode (a private
+// service has no names on the passthrough listener).
+type TCPHostname struct {
+	Hostname   string
+	Slug       string
+	AccessMode string
+}
+
+func tcpHostnameOf(svc db.Service) TCPHostname {
+	return TCPHostname{Hostname: svc.TCPHostname, Slug: svc.Subdomain, AccessMode: svc.AccessMode}
+}
+
+// NormalizeTCPHostname is the form a TLS passthrough host name is stored in:
+// tcpsniff.NormalizeHostname (lower case, no trailing dot), and at least two
+// labels of letters, digits and '-' whose last is not all digits, so that
+// it is a DNS name a certificate can be for, never an address or a
+// wildcard. ok is false for anything else.
+func NormalizeTCPHostname(s string) (string, bool) {
+	n, ok := tcpsniff.NormalizeHostname(strings.TrimSpace(s))
+	if !ok || strings.Contains(n, "_") {
+		return "", false
+	}
+	labels := strings.Split(n, ".")
+	if len(labels) < 2 {
+		return "", false
+	}
+	last := labels[len(labels)-1]
+	if strings.Trim(last, "0123456789") == "" {
+		return "", false
+	}
+	return n, true
+}
+
+// ServiceTCPHostname reads the TLS passthrough host name of a tcp service.
+// Same permission rule as SetServiceMaxConnections; ErrServiceNotTCP for any
+// other type.
+func (s *Store) ServiceTCPHostname(ctx context.Context, callerID, callerRole, serviceID string) (TCPHostname, error) {
+	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
+	if err != nil {
+		return TCPHostname{}, err
+	}
+	if svc.Type != "tcp" {
+		return TCPHostname{}, ErrServiceNotTCP
+	}
+	return tcpHostnameOf(svc), nil
+}
+
+// SetServiceTCPHostname sets the TLS passthrough host name of a tcp service
+// ("" clears it), stored in NormalizeTCPHostname form. It widens who can
+// reach the service (a client that names it on the passthrough listener),
+// so the API puts it behind a recent confirmation and off the MCP tools.
+// Same permission rule as SetServiceMaxConnections. ErrServiceNotTCP for
+// any other type, ErrInvalidTCPHostname for a name that is none,
+// ErrTCPHostnameTaken when another service holds it. Every write is
+// audited as service.tcp_hostname.update {from, to}.
+func (s *Store) SetServiceTCPHostname(ctx context.Context, callerID, callerRole, serviceID, hostname string) (before, after TCPHostname, err error) {
+	svc, err := s.canConfigure(ctx, callerID, callerRole, serviceID)
+	if err != nil {
+		return TCPHostname{}, TCPHostname{}, err
+	}
+	if svc.Type != "tcp" {
+		return TCPHostname{}, TCPHostname{}, ErrServiceNotTCP
+	}
+	name := ""
+	if hostname != "" {
+		var ok bool
+		if name, ok = NormalizeTCPHostname(hostname); !ok {
+			return TCPHostname{}, TCPHostname{}, ErrInvalidTCPHostname
+		}
+	}
+	before = tcpHostnameOf(svc)
+	if err := s.q.SetServiceTCPHostname(ctx, serviceID, name); err != nil {
+		if errors.Is(err, db.ErrTCPHostnameTaken) {
+			return TCPHostname{}, TCPHostname{}, ErrTCPHostnameTaken
+		}
+		return TCPHostname{}, TCPHostname{}, err
+	}
+	now, err := s.q.GetServiceByID(ctx, serviceID)
+	if err != nil {
+		return TCPHostname{}, TCPHostname{}, err
+	}
+	after = tcpHostnameOf(now)
+	s.emitAudit(withAuditDeadline(ctx), audit.ActionServiceTCPHostnameUpdate, func(e *audit.Event) {
+		e.SubjectID = serviceID
+		e.SubjectLabel = svc.Name
+		e.Payload = audit.MustJSON(map[string]string{"from": before.Hostname, "to": after.Hostname})
 	})
 	return before, after, nil
 }

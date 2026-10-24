@@ -52,6 +52,7 @@ import (
 	"github.com/ankoehn/burrow/internal/server"
 	"github.com/ankoehn/burrow/internal/store"
 	"github.com/ankoehn/burrow/internal/version"
+	"github.com/ankoehn/burrow/pkg/clientip"
 	"github.com/ankoehn/burrow/web"
 )
 
@@ -665,6 +666,11 @@ func newRootCmd() *cobra.Command {
 				// falls back to file certs exactly as before (unchanged).
 				GetCertificate: acmeGetCert(acmeMgr),
 				CertNames:      acmeCertNames(cfg, acmeMgr),
+				// tcp complete (E1): the TLS passthrough listener names
+				// every tcp service <slug>.<tcp domain>, and believes a
+				// PROXY protocol header from the trusted proxies only.
+				TCPDomain:      cfg.TCPDomain,
+				TrustedProxies: trustedPrefixes(cfg.TrustedProxies),
 			})
 			if err != nil {
 				return err
@@ -918,6 +924,14 @@ func newRootCmd() *cobra.Command {
 			if ingressPort != "" {
 				proxyOpts = append(proxyOpts, proxy.WithIngressPort(ingressPort))
 			}
+			// The host-routed ingress behind a proxy (Traefik) reads the
+			// visitor's address from X-Forwarded-For of a trusted peer, as
+			// the dashboard's /svc/ path does, so that ip rules, limits and
+			// logs see the visitor and not the proxy. On /svc/ the API's
+			// middleware has already put that address in RemoteAddr.
+			if len(cfg.TrustedProxies) > 0 {
+				proxyOpts = append(proxyOpts, proxy.WithTrustedProxies(clientip.BuildCIDRs(cfg.TrustedProxies)))
+			}
 			// When TLS is enabled, build the base config first so it can be
 			// passed to the proxy via WithTLSBase. The proxy's
 			// GetConfigForClient hook uses the base config as a template when
@@ -1112,6 +1126,9 @@ func newRootCmd() *cobra.Command {
 				ServicesDomain: cfg.ServicesDomain,
 				// mTLS is only offered while the host-routed ingress runs.
 				HostRouting: cfg.HTTPProxyListen != "",
+				// What the tcp-hostname route says and refuses.
+				TCPDomain:      cfg.TCPDomain,
+				TLSPassthrough: cfg.TLSPassthroughListen != "",
 				// feat/builtin-acme B3: single-origin /svc/{slug} tunnel routing.
 				// proxyHandler is the hoisted host-routing proxy. The router
 				// mounts /svc/{slug} + /svc/{slug}/* on it via ServicePathHandler only
@@ -1218,7 +1235,11 @@ func newRootCmd() *cobra.Command {
 			// Baseline: control listener (srv.Serve) + api server = 2.
 			// The proxy listener adds 1 when cfg.HTTPProxyListen is non-empty.
 			// The ACME :80 challenge+redirect listener adds 1 when ACME is on.
+			// The TLS passthrough listener adds 1 when it is configured.
 			senderCount := 2
+			if cfg.TLSPassthroughListen != "" {
+				senderCount++
+			}
 
 			// v0.6.0: when ACME is enabled, run a :80 listener that solves
 			// HTTP-01 challenges and redirects every other request to https://.
@@ -1286,6 +1307,11 @@ func newRootCmd() *cobra.Command {
 				stopSrv()
 			})
 			go func() { errc <- srv.Serve(srvCtx) }()
+			if cfg.TLSPassthroughListen != "" {
+				// TLS passthrough by SNI to tcp services (E1). It ends with
+				// the control listener: both carry tcp visitors.
+				go func() { errc <- srv.ListenPassthrough(srvCtx, cfg.TLSPassthroughListen) }()
+			}
 			go func() {
 				if acmeMgr != nil {
 					// Certs come from apiSrv.TLSConfig.GetCertificate (ACME),

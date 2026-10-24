@@ -1197,6 +1197,39 @@ components:
         idle_timeout_s:
           type: integer
           description: 0 (never) or 60 to 86400.
+    TcpHostname:
+      type: object
+      description: The TLS passthrough host names of a tcp service.
+      required: [tcp_hostname, hostnames, passthrough, reachable]
+      properties:
+        tcp_hostname:
+          type: string
+          description: The service's own host name, lower case; "" for none.
+        hostnames:
+          type: array
+          items: { type: string }
+          description: >
+            Every name the TLS passthrough listener knows the service by:
+            <slug>.<BURROW_TCP_DOMAIN> when a tcp domain is set, then
+            tcp_hostname when there is one.
+        passthrough:
+          type: boolean
+          description: The relay runs the TLS passthrough listener (BURROW_TLS_PASSTHROUGH_LISTEN).
+        reachable:
+          type: boolean
+          description: >
+            A TLS client that names one of hostnames reaches the service now:
+            the listener runs, the service has a name, and it is in mode open
+            or ip (a private service is never reached by name).
+    TcpHostnameInput:
+      type: object
+      description: The host name to set.
+      additionalProperties: false
+      required: [tcp_hostname]
+      properties:
+        tcp_hostname:
+          type: string
+          description: A host name such as rdp.example.com; "" clears it.
     Tunnel:
       type: object
       description: One live tunnel of the caller.
@@ -4096,6 +4129,67 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { description: The service is not a tcp service. }
+
+  /api/v1/services/{serviceID}/tcp-hostname:
+    get:
+      tags: [services]
+      operationId: serviceTcpHostnameGet
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      summary: Read the TLS passthrough host names of a tcp service
+      description: |
+        The service's own host name and every name the TLS passthrough
+        listener (`BURROW_TLS_PASSTHROUGH_LISTEN`) knows it by:
+        `<slug>.<BURROW_TCP_DOMAIN>` when a tcp domain is set, and
+        `tcp_hostname`. A TLS client whose ClientHello names one of them
+        reaches the service, through the same accept checks as its port,
+        while the service is in mode open or ip; a private service is never
+        reached this way.
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      responses:
+        '200':
+          description: The host names.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TcpHostname' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not a tcp service. }
+    put:
+      tags: [services]
+      operationId: serviceTcpHostnameUpdate
+      x-burrow-permission: {kind: needs, any_of: ["services:configure:own", "services:configure:any"]}
+      x-burrow-mcp: false
+      summary: Set the TLS passthrough host name of a tcp service
+      description: |
+        Sets `tcp_hostname` (a host name such as `rdp.example.com`), or
+        clears it with `""`. It is stored lower case without a trailing dot
+        and is unique among services; a name of the relay's own domains
+        (the tcp domain, the dashboard's domain and the names under them,
+        the services host) is refused. The relay applies it at once: the old
+        name stops reaching the service and the new one does. A new name
+        widens who can reach the service, so the route asks for a recent
+        confirmation. Audited as `service.tcp_hostname.update` with the name
+        before and after.
+
+        Not a tool of the management MCP server (`/mcp/burrow`): an agent steered by untrusted text must not widen access, grant privileges, mint data-plane secrets into its context or plant a lasting instruction.
+      parameters: [ { $ref: '#/components/parameters/PathServiceID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TcpHostnameInput' }
+      responses:
+        '200':
+          description: The host names after the change.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TcpHostname' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenOrReauth' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The service is not a tcp service, or another service has the host name. }
 
   /api/v1/services/{serviceID}/connections:
     get:

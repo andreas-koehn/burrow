@@ -511,6 +511,14 @@ func (*fullDepsStub) SetServiceTCPSettings(context.Context, string, string, stri
 	stubPanic("SetServiceTCPSettings")
 	return store.TCPSettings{}, store.TCPSettings{}, nil
 }
+func (*fullDepsStub) ServiceTCPHostname(context.Context, string, string, string) (store.TCPHostname, error) {
+	stubPanic("ServiceTCPHostname")
+	return store.TCPHostname{}, nil
+}
+func (*fullDepsStub) SetServiceTCPHostname(context.Context, string, string, string, string) (store.TCPHostname, store.TCPHostname, error) {
+	stubPanic("SetServiceTCPHostname")
+	return store.TCPHostname{}, store.TCPHostname{}, nil
+}
 func (*fullDepsStub) SetServiceMaxConnections(context.Context, string, string, string, int) (int, error) {
 	stubPanic("SetServiceMaxConnections")
 	return 0, nil

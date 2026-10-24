@@ -6,7 +6,9 @@ package server
 // client is told of it.
 //
 // A visitor is judged by the address its connection comes from
-// (RemoteAddr), never by anything it sends: there is no PROXY protocol. When
+// (RemoteAddr), never by anything it sends. The one exception is the TLS
+// passthrough listener (passthrough.go): there a PROXY protocol v2 header of
+// a trusted proxy (BURROW_TRUSTED_PROXIES) names the visitor. When
 // the relay runs in Docker with the userland proxy (published IPv6 ports to
 // an IPv4 container, some hairpin cases) that address is the bridge gateway
 // (172.17.0.1 or similar), not the visitor's: an allow entry for the gateway
@@ -106,6 +108,9 @@ type TCPAccess struct {
 	MaxConnections         int
 	ProxyProtocol          string
 	IdleTimeout            time.Duration
+	// Hostname is the service's own TLS passthrough host name
+	// (Resolved.TCPHostname), "" for none.
+	Hostname string
 }
 
 // TCPAccessLoader reads the access of a tcp service. The relay reads it when

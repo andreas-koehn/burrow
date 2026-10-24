@@ -77,6 +77,11 @@ type fakeServiceStore struct {
 	tcpSettingsErr error
 	lastTCPUpdate  store.TCPSettingsUpdate
 
+	// ServiceTCPHostname / SetServiceTCPHostname
+	tcpHostname     store.TCPHostname
+	tcpHostnameErr  error
+	lastTCPHostname string
+
 	// last args captured for inspection
 	lastMode   string
 	lastHeader string
@@ -147,6 +152,18 @@ func (f *fakeServiceStore) SetServiceTCPSettings(_ context.Context, _, _, _ stri
 		f.tcpSettings.IdleTimeoutS = *u.IdleTimeoutS
 	}
 	return before, f.tcpSettings, nil
+}
+func (f *fakeServiceStore) ServiceTCPHostname(_ context.Context, _, _, _ string) (store.TCPHostname, error) {
+	return f.tcpHostname, f.tcpHostnameErr
+}
+func (f *fakeServiceStore) SetServiceTCPHostname(_ context.Context, _, _, _, h string) (store.TCPHostname, store.TCPHostname, error) {
+	if f.tcpHostnameErr != nil {
+		return store.TCPHostname{}, store.TCPHostname{}, f.tcpHostnameErr
+	}
+	f.lastTCPHostname = h
+	before := f.tcpHostname
+	f.tcpHostname.Hostname, _ = store.NormalizeTCPHostname(h)
+	return before, f.tcpHostname, nil
 }
 func (f *fakeServiceStore) DeleteService(_ context.Context, _, _, _ string) (string, error) {
 	return "", nil

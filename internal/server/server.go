@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/ankoehn/burrow/internal/db"
 	"github.com/ankoehn/burrow/internal/proto"
+	"github.com/ankoehn/burrow/internal/tcpsniff"
 )
 
 // TokenAuthenticator validates a client's plaintext token, returning its user id.
@@ -75,6 +77,9 @@ type Resolved struct {
 	// byte for that long; 0 is never.
 	ProxyProtocol string
 	IdleTimeout   time.Duration
+	// TCPHostname is the tcp service's own TLS passthrough host name
+	// (services.tcp_hostname), "" for none.
+	TCPHostname string
 }
 
 // TCPPortHold is a service's hold on a public port.
@@ -307,6 +312,15 @@ type Options struct {
 	// takes none (it closes such a stream, as an older relay does) and does
 	// not announce proto.CapForward.
 	Forwards ForwardAuthorizer
+	// TCPDomain is BURROW_TCP_DOMAIN: when set, the TLS passthrough listener
+	// (ServePassthrough) knows every tcp service in mode open or ip as
+	// <slug>.<TCPDomain> as well as by its own host name. Empty: by its own
+	// host name only.
+	TCPDomain string
+	// TrustedProxies are the addresses (BURROW_TRUSTED_PROXIES) whose PROXY
+	// protocol v2 header the TLS passthrough listener believes. Anyone else
+	// who sends one is closed.
+	TrustedProxies []netip.Prefix
 }
 
 // Server is the burrowd relay control server.
@@ -341,6 +355,14 @@ type Server struct {
 	// the failed auth_requests on the control port.
 	refusals  *refusalSampler
 	authFails *authFailures
+	// The bounds of the TLS passthrough listener's hello read (see
+	// passthrough.go), and the connections that wait for their hello now
+	// (under peekMu), in all and per address.
+	helloTimeout         time.Duration
+	peekMax, peekPerPeer int
+	peekMu               sync.Mutex
+	peekTotal            int
+	peekBy               map[string]int
 }
 
 // New validates options and loads the TLS keypair.
@@ -366,6 +388,13 @@ func New(o Options) (*Server, error) {
 	if o.PortMax == 0 {
 		o.PortMax = 9100
 	}
+	if o.TCPDomain != "" {
+		d, ok := tcpsniff.NormalizeHostname(o.TCPDomain)
+		if !ok {
+			return nil, fmt.Errorf("server: TCPDomain %q is no host name", o.TCPDomain)
+		}
+		o.TCPDomain = d
+	}
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	if o.GetCertificate != nil {
 		tlsCfg.GetCertificate = o.GetCertificate
@@ -382,6 +411,8 @@ func New(o Options) (*Server, error) {
 		refusals:  &refusalSampler{log: o.Logger},
 		authFails: newAuthFailures(),
 		idleTick:  defaultIdleTick,
+
+		helloTimeout: defaultHelloTimeout, peekMax: defaultPeekMax, peekPerPeer: defaultPeekPerPeer,
 	}
 	s.ports = newPortAllocator(o.PortMin, o.PortMax)
 	return s, nil

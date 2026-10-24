@@ -87,6 +87,14 @@ var (
 	ErrInvalidIdleTimeout   = errors.New("store: idle_timeout_s must be 0 (never) or 60 to 86400")
 )
 
+// ErrInvalidTCPHostname: a TLS passthrough host name that is no DNS name
+// of two labels or more (see NormalizeTCPHostname). ErrTCPHostnameTaken:
+// another service holds it.
+var (
+	ErrInvalidTCPHostname = errors.New("store: tcp_hostname must be a host name such as rdp.example.com")
+	ErrTCPHostnameTaken   = errors.New("store: tcp_hostname is used by another service")
+)
+
 // ErrNameRequired is returned by CreateAPIKey when the name argument is empty
 // (maps to HTTP 400 in the API layer).
 var ErrNameRequired = errors.New("store: name is required")
