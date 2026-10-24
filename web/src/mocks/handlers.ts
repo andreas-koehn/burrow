@@ -106,7 +106,9 @@ function tcpSettingsOf(id: string): TcpSettings {
 }
 function tcpHostnameOf(svc: ServiceRow): TcpHostname {
   const custom = db.tcpHostnames[svc.id] ?? "";
-  const hostnames = [...(svc.slug ? [`${svc.slug}.tcp.example.com`] : []), ...(custom ? [custom] : [])];
+  // The relay's rule: a custom name under the tcp domain is no name of the service (those are the slugs').
+  const underDomain = custom === "tcp.example.com" || custom.endsWith(".tcp.example.com");
+  const hostnames = [...(svc.slug ? [`${svc.slug}.tcp.example.com`] : []), ...(custom && !underDomain ? [custom] : [])];
   return {
     tcp_hostname: custom, hostnames, passthrough: db.tlsPassthrough,
     reachable: db.tlsPassthrough && svc.access_mode !== "private" && hostnames.length > 0,

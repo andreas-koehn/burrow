@@ -193,6 +193,15 @@ describe("tcp service page: host name only", () => {
     expect(card).toHaveTextContent(/no host name/i);
   });
 
+  it("does not count a custom name under the tcp domain, as the relay does not", async () => {
+    addTcp({ slug: "" });
+    db.tcpHostnames.svc_rdp01 = "db.tcp.example.com";
+    mount();
+    const card = await region("Host name");
+    expect(await within(card).findByRole("switch", { name: "Host name only" })).toBeDisabled();
+    expect(card).toHaveTextContent(/needs a host name/i);
+  });
+
   it("cannot turn the port off while no name reaches the service", async () => {
     addTcp({ slug: "" });
     mount();

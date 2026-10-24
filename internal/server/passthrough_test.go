@@ -751,8 +751,8 @@ func TestPassthrough_AClosingTunnelIsNeverPicked(t *testing.T) {
 	if tn := r.srv.passthroughTunnel("app.example.com"); tn != nil {
 		t.Fatal("the closing tunnel was picked by name")
 	}
-	if tn, ok := r.srv.LookupTunnelByServiceID("svc-app"); ok {
-		t.Fatalf("the closing tunnel was found by service: %p", tn)
+	if tn, ok := r.srv.routeTunnelByServiceID("svc-app"); ok {
+		t.Fatalf("the closing tunnel was routed to by service: %p", tn)
 	}
 	// A new registration in the window is the one picked.
 	c2 := r.client(nil)
@@ -764,8 +764,11 @@ func TestPassthrough_AClosingTunnelIsNeverPicked(t *testing.T) {
 	if tn == nil || tn == old {
 		t.Fatalf("picked %p, old %p", tn, old)
 	}
+	if got, ok := r.srv.routeTunnelByServiceID("svc-app"); !ok || got != tn {
+		t.Fatal("the new tunnel is not routed to by service")
+	}
 	if got, ok := r.srv.LookupTunnelByServiceID("svc-app"); !ok || got != tn {
-		t.Fatal("the new tunnel is not found by service")
+		t.Fatal("the lookup does not prefer the serving tunnel")
 	}
 }
 
@@ -810,7 +813,7 @@ func TestPassthrough_ATunnelOfAClosedSessionIsNeverPicked(t *testing.T) {
 	if got := r.srv.passthroughTunnel("gone.example.com"); got != nil {
 		t.Fatal("a tunnel of a closed session was picked by name")
 	}
-	if _, ok := r.srv.LookupTunnelByServiceID("svc-gone"); ok {
-		t.Fatal("a tunnel of a closed session was found by service")
+	if _, ok := r.srv.routeTunnelByServiceID("svc-gone"); ok {
+		t.Fatal("a tunnel of a closed session was routed to by service")
 	}
 }

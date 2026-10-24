@@ -341,12 +341,18 @@ func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn, source string) {
 	}
 	started := time.Now()
 	streamID := uuid.NewString()
-	stream, err := tun.sess.Pending().Await(streamID, tcpPairTimeout, func() error {
-		return tun.sess.SendControl(proto.MsgNewConnection, proto.NewConnection{
-			TunnelID: tun.ID, StreamID: streamID, SourceIP: visitor.RemoteAddr().String(),
-			DestAddr: visitor.LocalAddr().String(), ProxyProtocol: tun.tcpSettings().proxyProtocol,
+	// A visitor that came before the client was answered waits for that;
+	// told of earlier, the client would drop it (an unknown tunnel id).
+	var stream *yamux.Stream
+	err := errTunnelNotReady
+	if tun.waitReady(tcpPairTimeout) {
+		stream, err = tun.sess.Pending().Await(streamID, tcpPairTimeout, func() error {
+			return tun.sess.SendControl(proto.MsgNewConnection, proto.NewConnection{
+				TunnelID: tun.ID, StreamID: streamID, SourceIP: visitor.RemoteAddr().String(),
+				DestAddr: visitor.LocalAddr().String(), ProxyProtocol: tun.tcpSettings().proxyProtocol,
+			})
 		})
-	})
+	}
 	if tun.limits != nil {
 		tun.limits.paired()
 	}
@@ -391,6 +397,10 @@ func (s *Server) bridgeVisitor(tun *Tunnel, visitor net.Conn, source string) {
 	}
 	s.tcpTraffic(tun, visitor, c, started, c.in.Load(), c.out.Load(), observe.OutcomeClean, reason)
 }
+
+// errTunnelNotReady: the client was not answered with the tunnel's id in
+// time, or the tunnel stopped serving while a visitor waited for that.
+var errTunnelNotReady = errors.New("the tunnel was not confirmed to its client in time")
 
 // guarded is the home side of a connection as the pipe uses it: under the
 // service's guard (bandwidth and daily volume) when it has one.

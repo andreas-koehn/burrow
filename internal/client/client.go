@@ -359,11 +359,18 @@ func (c *Client) connectOnce(ctx context.Context) error {
 			if env.Type == proto.MsgTunnelRegisterResp {
 				break
 			}
+			if env.Type == proto.MsgError {
+				// The relay could not take the registration: no answer
+				// follows. The session ends and the client connects again.
+				var pe proto.Error
+				_ = proto.DecodePayload(env, &pe)
+				return fmt.Errorf("register failed: %s", displayText(pe.Message, 300))
+			}
 			c.controlFrame(ysess, env)
 		}
 		var rr proto.TunnelRegisterResponse
-		if env.Type != proto.MsgTunnelRegisterResp || proto.DecodePayload(env, &rr) != nil {
-			return fmt.Errorf("register failed: %s", rr.Error)
+		if proto.DecodePayload(env, &rr) != nil {
+			return fmt.Errorf("register failed: the relay's answer could not be read")
 		}
 		if !rr.OK {
 			re := newRefused(stageRegister, rr.Code, rr.Error)

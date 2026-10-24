@@ -663,13 +663,11 @@ func (s *Server) countGuard(g *tcpGuard, c *liveConn, in, out uint64) {
 // its volume. Forwards stay (see countGuard).
 func (s *Server) quotaReached(g *tcpGuard) {
 	s.log.Info("tcp service reached its daily volume", "service_id", g.serviceID, "bytes", g.used(), "limit", g.limit.Load())
-	tn, ok := s.LookupTunnelByServiceID(g.serviceID)
-	if !ok || tn.IsHTTP {
-		return
-	}
-	for _, c := range tn.liveConns() {
-		if c.kind != ConnKindForward {
-			c.closeWith(TCPRefusedQuota)
+	for _, tn := range s.tunnelsOfService(g.serviceID) {
+		for _, c := range tn.liveConns() {
+			if c.kind != ConnKindForward {
+				c.closeWith(TCPRefusedQuota)
+			}
 		}
 	}
 }
@@ -770,7 +768,7 @@ func (s *Server) BanTCPSource(serviceID, source string, until time.Time, reason 
 		s.log.Warn("tcp service has its maximum of bans in memory; the ban applies once the relay reads it again", "service_id", serviceID)
 		return
 	}
-	if tn, ok := s.LookupTunnelByServiceID(serviceID); ok && !tn.IsHTTP {
+	for _, tn := range s.tunnelsOfService(serviceID) {
 		s.closeBanned(tn, source)
 	}
 }

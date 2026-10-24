@@ -42,14 +42,19 @@ type tcpHostnameReq struct {
 	HostnameOnly *bool   `json:"hostname_only"`
 }
 
-// tcpHostnames are the names the passthrough listener knows the service by.
+// tcpHostnames are the names the passthrough listener knows the service by,
+// by the relay's rule (server.passthroughNames): <slug>.<tcp domain>, and
+// the custom name unless it is the tcp domain or under it (a name stored
+// there before the domain was set never routes: those names are the
+// slugs').
 func (d Deps) tcpHostnames(h store.TCPHostname) []string {
 	out := []string{}
-	if d.TCPDomain != "" && h.Slug != "" {
-		out = append(out, h.Slug+"."+d.TCPDomain)
+	dom := strings.ToLower(strings.TrimSuffix(d.TCPDomain, "."))
+	if dom != "" && h.Slug != "" && !strings.Contains(h.Slug, ".") {
+		out = append(out, h.Slug+"."+dom)
 	}
-	if h.Hostname != "" {
-		out = append(out, h.Hostname)
+	if n := h.Hostname; n != "" && (dom == "" || (n != dom && !strings.HasSuffix(n, "."+dom))) {
+		out = append(out, n)
 	}
 	return out
 }

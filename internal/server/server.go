@@ -985,19 +985,58 @@ func (s *Server) Tunnels() []*Tunnel {
 	return out
 }
 
-// LookupTunnelByServiceID finds a live tunnel of any type that serves the
-// service. The proxy must not use it: only LookupHTTPTunnelByServiceID finds
-// what may be reached over HTTP.
+// LookupTunnelByServiceID finds a tunnel of any type of the service: one
+// that serves it when there is one, else one that is ending (its session is
+// going away). The proxy must not use it: only LookupHTTPTunnelByServiceID
+// finds what may be reached over HTTP. Routing a new connection uses
+// routeTunnelByServiceID; enforcement over the live connections uses
+// tunnelsOfService.
 func (s *Server) LookupTunnelByServiceID(serviceID string) (*Tunnel, bool) {
-	if serviceID == "" {
-		return nil, false
+	var ending *Tunnel
+	for _, tn := range s.serviceTunnels(serviceID, true) {
+		if tn.serving() {
+			return tn, true
+		}
+		if ending == nil {
+			ending = tn
+		}
 	}
-	for _, cs := range s.reg.Sessions() {
-		for _, tn := range s.reg.snapshotTunnels(cs) {
-			if tn.ServiceID == serviceID && tn.serving() {
-				return tn, true
-			}
+	return ending, ending != nil
+}
+
+// routeTunnelByServiceID is the tcp tunnel a new connection to the service
+// goes to: one that serves it (not ending, its session open). One whose
+// client has not been answered yet is returned too; the bridge waits for
+// that (Tunnel.waitReady).
+func (s *Server) routeTunnelByServiceID(serviceID string) (*Tunnel, bool) {
+	for _, tn := range s.tunnelsOfService(serviceID) {
+		if !tn.IsHTTP && tn.serving() {
+			return tn, true
 		}
 	}
 	return nil, false
+}
+
+// tunnelsOfService are every tunnel of the service, an ending one too: a
+// ban, a recheck, a close or the connection list must reach the live
+// bridges of a tunnel whose session is going away.
+func (s *Server) tunnelsOfService(serviceID string) []*Tunnel {
+	return s.serviceTunnels(serviceID, false)
+}
+
+// serviceTunnels are the tunnels of the service, http ones only when
+// withHTTP.
+func (s *Server) serviceTunnels(serviceID string, withHTTP bool) []*Tunnel {
+	if serviceID == "" {
+		return nil
+	}
+	var out []*Tunnel
+	for _, cs := range s.reg.Sessions() {
+		for _, tn := range s.reg.snapshotTunnels(cs) {
+			if tn.ServiceID == serviceID && (withHTTP || !tn.IsHTTP) {
+				out = append(out, tn)
+			}
+		}
+	}
+	return out
 }

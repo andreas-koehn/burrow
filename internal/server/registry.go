@@ -49,6 +49,11 @@ type Tunnel struct {
 	// name skip it, so a registration that claims the service meanwhile is
 	// the one found.
 	ended atomic.Bool
+	// readyC is closed once the client has been answered with the tunnel's
+	// id (registerTCP); before that a new_connection for it would be dropped
+	// by the client. nil: ready from the start (tunnels made elsewhere).
+	readyC    chan struct{}
+	readyOnce sync.Once
 
 	// ServiceID is the stable service identity from ServiceResolver (http)
 	// or TCPServiceResolver (tcp); "" for a tunnel without a service.
@@ -292,6 +297,40 @@ func (t *Tunnel) serving() bool {
 		return false
 	}
 	return t.sess == nil || t.sess.Yamux == nil || !t.sess.Yamux.IsClosed()
+}
+
+// markReady says the client knows the tunnel: visitors may be told of now.
+func (t *Tunnel) markReady() {
+	if t.readyC != nil {
+		t.readyOnce.Do(func() { close(t.readyC) })
+	}
+}
+
+// waitReady waits up to d for the client to know the tunnel; false when it
+// does not in time, or the tunnel stops serving meanwhile.
+func (t *Tunnel) waitReady(d time.Duration) bool {
+	if t.readyC == nil {
+		return true
+	}
+	select {
+	case <-t.readyC:
+		return t.serving()
+	default:
+	}
+	var closed <-chan struct{}
+	if t.sess != nil && t.sess.Yamux != nil {
+		closed = t.sess.Yamux.CloseChan()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-t.readyC:
+		return t.serving()
+	case <-closed:
+		return false
+	case <-timer.C:
+		return false
+	}
 }
 
 func (r *Registry) AddTunnel(cs *ClientSession, t *Tunnel) {

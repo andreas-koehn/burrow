@@ -293,11 +293,15 @@ func (cs *ClientSession) forwardViews() []ForwardView {
 // visitors of its public port and the forward streams to it. nil when no
 // tunnel serves it.
 func (s *Server) ServiceConnections(serviceID string) []ConnView {
-	tn, ok := s.LookupTunnelByServiceID(serviceID)
-	if !ok || tn.IsHTTP {
+	// Every tunnel of the service, an ending one too: its bridges are live.
+	tns := s.tunnelsOfService(serviceID)
+	if len(tns) == 0 {
 		return nil
 	}
-	conns := tn.liveConns()
+	var conns []*liveConn
+	for _, tn := range tns {
+		conns = append(conns, tn.liveConns()...)
+	}
 	out := make([]ConnView, 0, len(conns))
 	for _, c := range conns {
 		out = append(out, c.view())
@@ -309,18 +313,16 @@ func (s *Server) ServiceConnections(serviceID string) []ConnView {
 // reports whether there was one of that id. Its connection-log row is
 // written when its goroutine sees it end.
 func (s *Server) CloseServiceConnection(serviceID, connID string) bool {
-	tn, ok := s.LookupTunnelByServiceID(serviceID)
-	if !ok || tn.IsHTTP {
-		return false
+	for _, tn := range s.tunnelsOfService(serviceID) {
+		tn.connMu.Lock()
+		c := tn.conns[connID]
+		tn.connMu.Unlock()
+		if c != nil {
+			c.closeWith(ConnLogReasonClosedByDashboard)
+			return true
+		}
 	}
-	tn.connMu.Lock()
-	c := tn.conns[connID]
-	tn.connMu.Unlock()
-	if c == nil {
-		return false
-	}
-	c.closeWith(ConnLogReasonClosedByDashboard)
-	return true
+	return false
 }
 
 // endStream ends a yamux stream for both directions at once: Close alone
@@ -386,7 +388,7 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 		refuse(proto.CodeInternal, errTCPLookup)
 		return
 	}
-	tn, ok := s.LookupTunnelByServiceID(target.ServiceID)
+	tn, ok := s.routeTunnelByServiceID(target.ServiceID)
 	if !ok || tn.IsHTTP {
 		refuse(proto.CodeOffline, fmt.Sprintf("the service %q is offline: no client serves it now", target.Name))
 		return
@@ -409,12 +411,17 @@ func (s *Server) handleForward(cs *ClientSession, st *yamux.Stream, env proto.En
 
 	started := time.Now()
 	streamID := uuid.NewString()
-	home, err := tn.sess.Pending().Await(streamID, tcpPairTimeout, func() error {
-		return tn.sess.SendControl(proto.MsgNewConnection, proto.NewConnection{
-			TunnelID: tn.ID, StreamID: streamID, SourceIP: "forward:" + cs.RemoteAddr,
-			DestAddr: cs.LocalAddr, ProxyProtocol: tn.tcpSettings().proxyProtocol,
+	// Before its client knows the tunnel, a forward waits (as a visitor does).
+	var home *yamux.Stream
+	err = errTunnelNotReady
+	if tn.waitReady(tcpPairTimeout) {
+		home, err = tn.sess.Pending().Await(streamID, tcpPairTimeout, func() error {
+			return tn.sess.SendControl(proto.MsgNewConnection, proto.NewConnection{
+				TunnelID: tn.ID, StreamID: streamID, SourceIP: "forward:" + cs.RemoteAddr,
+				DestAddr: cs.LocalAddr, ProxyProtocol: tn.tcpSettings().proxyProtocol,
+			})
 		})
-	})
+	}
 	if tn.limits != nil {
 		tn.limits.pairedForward(target.Owner)
 	}
@@ -542,11 +549,14 @@ func (s *Server) RecheckForwards(ctx context.Context, serviceID string) int {
 		return 0
 	}
 	s.forwardEpoch.Add(1)
-	tn, ok := s.LookupTunnelByServiceID(serviceID)
-	if !ok || tn.IsHTTP {
+	var conns []*liveConn
+	for _, tn := range s.tunnelsOfService(serviceID) {
+		conns = append(conns, tn.liveConns()...)
+	}
+	if len(conns) == 0 {
 		return 0
 	}
-	return s.recheck(ctx, tn.liveConns())
+	return s.recheck(ctx, conns)
 }
 
 // RecheckUserForwards is RecheckForwards for every live forward of one user,

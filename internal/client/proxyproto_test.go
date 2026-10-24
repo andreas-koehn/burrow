@@ -235,6 +235,9 @@ func TestProxyProtocol_TheServicesSettingAndForwards(t *testing.T) {
 	fo.Forwards = []ForwardSpec{{Target: "rdp", Addr: "127.0.0.1:0"}}
 	fo.Observer = fobs
 	start(t, fo)
+	if !waitTrue(func() bool { st, ok := fobs.last(); return ok && st.Connected }, 5*time.Second) {
+		t.Fatal("the forwarder did not connect")
+	}
 	conn := echoOnce(t, fobs.addr(t), "rdp bytes")
 	defer conn.Close()
 	hdrs, errs := target.headers()
@@ -283,6 +286,11 @@ func TestProxyProtocol_OffWritesNothing(t *testing.T) {
 	fo.Forwards = []ForwardSpec{{Target: "plain", Addr: "127.0.0.1:0"}}
 	fo.Observer = fobs
 	start(t, fo)
+	// The forward listener is up before the session: a connection made
+	// before it is closed by the client (no session to forward on).
+	if !waitTrue(func() bool { st, ok := fobs.last(); return ok && st.Connected }, 5*time.Second) {
+		t.Fatal("the forwarder did not connect")
+	}
 	conn := echoOnce(t, fobs.addr(t), "hello")
 	defer conn.Close()
 	if b := <-got; string(b) != "hello" {

@@ -449,6 +449,7 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 	tn := &Tunnel{
 		ID: uuid.NewString(), Name: tr.Name, Type: tr.Type, LocalAddr: tr.LocalAddr, sess: cs,
 		ServiceID: serviceID, accessMode: mode, created: svc.res.Inserted,
+		readyC: make(chan struct{}),
 	}
 	tn.setTCPSettings(svc.res.ProxyProtocol, svc.res.IdleTimeout)
 	if serviceID != "" {
@@ -533,7 +534,11 @@ func (s *Server) registerTCP(reg *Registry, cs *ClientSession, tr proto.TunnelRe
 		}
 		resp.Ignored = ignoredOptions(tr)
 	}
-	_ = cs.SendControl(proto.MsgTunnelRegisterResp, resp)
+	if err := cs.SendControl(proto.MsgTunnelRegisterResp, resp); err == nil {
+		// The client knows the tunnel's id now: visitors that waited for
+		// this (port, passthrough, forward) are told of from here on.
+		tn.markReady()
+	}
 	// The service changed while this registration read it: read it again,
 	// now that RefreshTCPService can find the tunnel. A new mode ends the
 	// session the client was just answered on, and it registers again.

@@ -50,7 +50,8 @@ export function TcpHostnamePanel({ serviceId, mode }: { serviceId: string; mode:
     },
     onError: (e: unknown) => setOnlyErr(e instanceof ApiError ? e.message : "Couldn't change how the service is reached."),
   });
-  // The port may go only while a name reaches the service; it may always come back.
+  // The port may go only while a name reaches the service; it may always come back. `hostnames` is the
+  // relay's own rule (a legacy custom name under the tcp domain is not in it), so this matches the relay.
   const canOnly = !!data && data.passthrough && data.hostnames.length > 0;
   const showOnly = !!data && ((data.passthrough && mode !== "private") || data.hostname_only);
 

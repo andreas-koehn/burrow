@@ -185,3 +185,20 @@ func TestTCPHostname_HostnameOnly(t *testing.T) {
 		t.Fatalf("relay told %v", refreshed)
 	}
 }
+
+// A custom name stored under BURROW_TCP_DOMAIN before the domain was set
+// never routes (those names are the slugs'): it is no name of the service,
+// as the relay sees it, so it neither makes it reachable nor allows host
+// name only.
+func TestTCPHostname_ALegacyNameUnderTheTCPDomainDoesNotCount(t *testing.T) {
+	a := newTCPAPI(t, func(d *Deps) { d.TCPDomain, d.TLSPassthrough = "tcp.example.com", true })
+	a.svcs.tcpHostname = store.TCPHostname{Hostname: "db.tcp.example.com", AccessMode: "open"}
+	got := decodeTCPHostname(t, a.c.get(t, "/api/v1/services/rdp/tcp-hostname"))
+	if len(got.Hostnames) != 0 || got.Reachable || got.TCPHostname != "db.tcp.example.com" {
+		t.Fatalf("GET %+v", got)
+	}
+	r := a.c.putRaw(t, "/api/v1/services/rdp/tcp-hostname", `{"hostname_only": true}`)
+	if body := readBody(t, r); r.StatusCode != http.StatusBadRequest || !strings.Contains(body, "host name") {
+		t.Fatalf("hostname_only: %d %s", r.StatusCode, body)
+	}
+}

@@ -134,8 +134,9 @@ func startFakeRelay(t *testing.T, answer func(proto.TunnelRegister) proto.Tunnel
 
 // startFakeRelayWith is startFakeRelay with before, which may write to the
 // control stream before a registration is answered (a relay that tells of a
-// visitor of a tunnel registered a moment ago).
-func startFakeRelayWith(t *testing.T, answer func(proto.TunnelRegister) proto.TunnelRegisterResponse, before func(w io.Writer, reg proto.TunnelRegister)) *fakeRelay {
+// visitor of a tunnel registered a moment ago); when it returns true it has
+// answered itself and answer is not used.
+func startFakeRelayWith(t *testing.T, answer func(proto.TunnelRegister) proto.TunnelRegisterResponse, before func(w io.Writer, reg proto.TunnelRegister) bool) *fakeRelay {
 	t.Helper()
 	dir := t.TempDir()
 	if err := devcert.Generate(dir, true); err != nil {
@@ -195,8 +196,8 @@ func startFakeRelayWith(t *testing.T, answer func(proto.TunnelRegister) proto.Tu
 					case proto.MsgTunnelRegister:
 						var reg proto.TunnelRegister
 						_ = proto.DecodePayload(env, &reg)
-						if before != nil {
-							before(stream, reg)
+						if before != nil && before(stream, reg) {
+							continue
 						}
 						_ = proto.WriteMessage(stream, proto.MsgTunnelRegisterResp, answer(reg))
 					case proto.MsgPing:
@@ -794,10 +795,11 @@ func TestClient_AVisitorDuringRegistrationIsServed(t *testing.T) {
 	}()
 	relay := startFakeRelayWith(t, func(reg proto.TunnelRegister) proto.TunnelRegisterResponse {
 		return proto.TunnelRegisterResponse{OK: true, TunnelID: "t-" + reg.Name, RemotePort: 9000}
-	}, func(w io.Writer, reg proto.TunnelRegister) {
+	}, func(w io.Writer, reg proto.TunnelRegister) bool {
 		if reg.Name == "b" {
 			_ = proto.WriteMessage(w, proto.MsgNewConnection, proto.NewConnection{TunnelID: "t-a", StreamID: "st1", SourceIP: "198.51.100.7:1"})
 		}
+		return false
 	})
 	obs := &recObserver{}
 	c := relay.client(obs,
@@ -816,5 +818,23 @@ func TestClient_AVisitorDuringRegistrationIsServed(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if n := obs.count("state:connecting"); n != 1 {
 		t.Fatalf("the session was dropped: %v", obs.snapshot())
+	}
+}
+
+// A relay that answers a registration with an error frame (one it could
+// not read) ends the session: the client reconnects, as it always did,
+// instead of waiting for an answer that never comes.
+func TestClient_AnErrorFrameForARegistrationReconnects(t *testing.T) {
+	relay := startFakeRelayWith(t, func(reg proto.TunnelRegister) proto.TunnelRegisterResponse {
+		return proto.TunnelRegisterResponse{OK: true, TunnelID: "t-" + reg.Name, RemotePort: 9000}
+	}, func(w io.Writer, _ proto.TunnelRegister) bool {
+		_ = proto.WriteMessage(w, proto.MsgError, proto.Error{Message: "bad tunnel_register", Code: proto.CodeBadRequest})
+		return true
+	})
+	obs := &recObserver{}
+	c := relay.client(obs, TunnelSpec{Name: "a", Type: "tcp", LocalAddr: "127.0.0.1:1", Access: "open"})
+	runUntilDone(t, c)
+	if !waitTrue(func() bool { return obs.count("state:connecting") >= 2 }, 5*time.Second) {
+		t.Fatalf("the client waits for ever after an error frame: %v", obs.snapshot())
 	}
 }
