@@ -622,9 +622,9 @@ func yamuxConfig() *yamux.Config {
 }
 
 // Capabilities are what this relay announces to a client it lets in
-// (proto.Cap… for a relay): tcp_access when it keeps tcp services, whose
-// access modes it then applies, and forward when it also takes forward
-// streams to them.
+// (proto.Cap… for a relay): upstream_protocol when it keeps http services,
+// tcp_access when it keeps tcp services, whose access modes it then applies,
+// and forward when it also takes forward streams to them.
 func (s *Server) Capabilities() []string {
 	var out []string
 	if _, ok := s.opts.Services.(TCPServiceResolver); ok {
@@ -632,6 +632,9 @@ func (s *Server) Capabilities() []string {
 		if s.opts.Forwards != nil {
 			out = append(out, proto.CapForward)
 		}
+	}
+	if s.opts.Services != nil {
+		out = append(out, proto.CapUpstreamProtocol)
 	}
 	return out
 }

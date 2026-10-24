@@ -54,7 +54,38 @@ const (
 	CapTCPAccess = "tcp_access"
 	// CapForward: the relay accepts forward streams to private tcp services.
 	CapForward = "forward"
+	// CapUpstreamProtocol: the relay applies TunnelRegister.UpstreamProtocol
+	// to an http tunnel and speaks that protocol to the local service. A
+	// client that wants anything but UpstreamHTTP1 from a relay without it
+	// fails the registration: an older relay speaks HTTP/1.1 whatever the
+	// client asked.
+	CapUpstreamProtocol = "upstream_protocol"
 )
+
+// The protocols the relay speaks to the local service of an http tunnel
+// (TunnelRegister.UpstreamProtocol, the service's upstream_protocol). The
+// relay does the TLS and HTTP/2 framing over the tunnel stream; the client
+// pipes bytes, whatever the protocol.
+const (
+	// UpstreamHTTP1 is HTTP/1.1 in plain text: the default.
+	UpstreamHTTP1 = "http1"
+	// UpstreamHTTPS is HTTP/1.1 over TLS (ALPN http/1.1).
+	UpstreamHTTPS = "https"
+	// UpstreamH2C is HTTP/2 in plain text, by prior knowledge.
+	UpstreamH2C = "h2c"
+	// UpstreamH2 is HTTP/2 over TLS (ALPN h2 only).
+	UpstreamH2 = "h2"
+)
+
+// ValidUpstreamProtocol reports whether s names one of the Upstream…
+// protocols.
+func ValidUpstreamProtocol(s string) bool {
+	switch s {
+	case UpstreamHTTP1, UpstreamHTTPS, UpstreamH2C, UpstreamH2:
+		return true
+	}
+	return false
+}
 
 // Envelope wraps every control message with its type and an optional correlation ID.
 type Envelope struct {
@@ -118,6 +149,15 @@ type TunnelRegister struct {
 	// --proxy-protocol flag), whatever the service's setting. The relay only
 	// shows it; it changes nothing on the relay. Optional.
 	ProxyProtocol string `json:"proxy_protocol,omitempty"`
+	// UpstreamProtocol (http only) is the protocol the relay speaks to the
+	// local service, one of the Upstream… constants, when the client's own
+	// configuration names one (burrow.yaml upstream_protocol, the
+	// --upstream-protocol flag, burrow grpc). It applies to this tunnel in
+	// place of the service's stored setting and is not stored. A relay that
+	// announces CapUpstreamProtocol refuses an unknown value (CodeBadRequest);
+	// an older relay ignores the field. Optional: "" leaves the service's
+	// setting.
+	UpstreamProtocol string `json:"upstream_protocol,omitempty"`
 }
 
 // TunnelRegisterResponse is the server's reply to a TunnelRegister message.

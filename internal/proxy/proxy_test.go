@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,11 +50,50 @@ func (denyChecker) Allow(_ context.Context, _ *proxy.Resolved, _ *http.Request) 
 // For each call to DialTunnelStream it creates a net.Pipe and runs the upstream
 // handler on the server side. This lets a real httptest.Server act as the
 // tunnel upstream without requiring actual network addresses.
+//
+// The local server speaks HTTP/1.1 by default. With h2c it also takes HTTP/2
+// by prior knowledge; with tlsConfig it serves TLS (HTTP/1.1, and HTTP/2 when
+// the config's NextProtos offer h2), as a local service of the upstream
+// protocols h2c, https and h2 does. Set them before the first dial.
 type fakeDialer struct {
 	mu            sync.Mutex
 	tunnels       map[string]*proxy.Resolved // subdomain → metadata
 	upstream      http.Handler               // the "local" server the tunnel wraps
 	lastServiceID string                     // last serviceID passed to DialTunnelStreamByServiceID
+	h2c           bool
+	tlsConfig     *tls.Config
+	// opened and closed count the tunnel streams the proxy dialled and the
+	// ones it closed.
+	opened, closed atomic.Int64
+}
+
+// serve runs the local server on the tunnel stream's far end and returns the
+// near end for the proxy.
+//
+// The stream is a net.Pipe for HTTP/1.1. For h2c and TLS it is a loopback TCP
+// connection: a yamux stream buffers what is written to it (its window),
+// net.Pipe does not, and a TLS peer that sends an alert while the other is
+// still writing its flight would wait for good.
+func (d *fakeDialer) serve() net.Conn {
+	proxyConn, serverConn := net.Pipe()
+	if d.h2c || d.tlsConfig != nil {
+		proxyConn, serverConn = loopbackPair()
+	}
+	srv := &http.Server{Handler: d.upstream}
+	var ln net.Listener = &singleConnListener{conn: serverConn}
+	var protos http.Protocols
+	protos.SetHTTP1(true)
+	switch {
+	case d.tlsConfig != nil:
+		protos.SetHTTP2(true)
+		ln = tls.NewListener(ln, d.tlsConfig)
+	case d.h2c:
+		protos.SetUnencryptedHTTP2(true)
+	}
+	srv.Protocols = &protos
+	go func() { _ = srv.Serve(ln) }()
+	d.opened.Add(1)
+	return &countedConn{Conn: proxyConn, closed: &d.closed}
 }
 
 func newFakeDialer(upstream http.Handler) *fakeDialer {
@@ -97,18 +137,9 @@ func (d *fakeDialer) DialTunnelStream(_ context.Context, subdomain string) (net.
 	if !ok {
 		return nil, proxy.ErrNotFound
 	}
-	// Create a net.Pipe: proxyConn is handed to the proxy's Transport,
-	// serverConn is driven by the upstream handler.
-	proxyConn, serverConn := net.Pipe()
-	go func() {
-		// Serve exactly one HTTP/1.1 request on the server side.
-		srv := &http.Server{Handler: d.upstream}
-		// httptest.Server wraps a listener; we instead serve a single conn.
-		// Use http.Serve with a one-shot listener.
-		ln := &singleConnListener{conn: serverConn}
-		_ = srv.Serve(ln)
-	}()
-	return proxyConn, nil
+	// A net.Pipe: one end is handed to the proxy's Transport, the other is
+	// driven by the upstream handler on a one-shot listener.
+	return d.serve(), nil
 }
 
 func (d *fakeDialer) DialTunnelStreamByServiceID(_ context.Context, serviceID string) (net.Conn, error) {
@@ -120,16 +151,37 @@ func (d *fakeDialer) DialTunnelStreamByServiceID(_ context.Context, serviceID st
 	for sub, res := range d.tunnels {
 		if res.ServiceID == serviceID {
 			_ = sub // found it; use the upstream handler
-			proxyConn, serverConn := net.Pipe()
-			go func() {
-				srv := &http.Server{Handler: d.upstream}
-				ln := &singleConnListener{conn: serverConn}
-				_ = srv.Serve(ln)
-			}()
-			return proxyConn, nil
+			return d.serve(), nil
 		}
 	}
 	return nil, proxy.ErrNotFound
+}
+
+// loopbackPair is the two ends of a loopback TCP connection.
+func loopbackPair() (net.Conn, net.Conn) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		panic(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			accepted <- nil
+			return
+		}
+		accepted <- c
+	}()
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		panic(err)
+	}
+	s := <-accepted
+	if s == nil {
+		panic("loopback accept failed")
+	}
+	return c, s
 }
 
 // deadDialer is a StreamDialer that always returns ErrNotFound.

@@ -543,7 +543,21 @@ func (a proxyDialerAdapter) Lookup(ctx context.Context, sub string) (*proxy.Reso
 	if svc.MTLSCAPEM != "" {
 		r.MTLSCAPEM = []byte(svc.MTLSCAPEM)
 	}
+	applyUpstream(r, svc, tn)
 	return r, nil
+}
+
+// applyUpstream sets the upstream protocol and TLS settings of the service
+// svc served by tn on r (HTTP/2 and gRPC, H4): the protocol the client named
+// at registration when it named one, else the stored setting.
+func applyUpstream(r *proxy.Resolved, svc db.Service, tn *server.Tunnel) {
+	r.UpstreamProtocol = server.EffectiveUpstreamProtocol(tn, svc.UpstreamProtocol)
+	r.UpstreamClientSet = tn.ClientUpstreamProtocol() != ""
+	r.UpstreamTLSVerify = svc.UpstreamTLSVerify
+	r.UpstreamTLSServerName = svc.UpstreamTLSServerName
+	if svc.UpstreamTLSCAPEM != "" {
+		r.UpstreamTLSCAPEM = []byte(svc.UpstreamTLSCAPEM)
+	}
 }
 
 // DialTunnelStream implements proxy.StreamDialer.DialTunnelStream.
@@ -614,6 +628,7 @@ func (a proxyDialerAdapter) lookupByServiceID(ctx context.Context, serviceID str
 	if svc.MTLSCAPEM != "" {
 		r.MTLSCAPEM = []byte(svc.MTLSCAPEM)
 	}
+	applyUpstream(r, svc, tn)
 	return r, nil
 }
 

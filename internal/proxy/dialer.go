@@ -74,6 +74,21 @@ type Resolved struct {
 	IPBlockCIDRs     []string
 	IPAllowCountries []string
 	IPBlockCountries []string
+	// The upstream protocol and its TLS settings (HTTP/2 and gRPC, H2–H4).
+	// UpstreamProtocol is the effective protocol, one of the proto.Upstream…
+	// constants: the one the tunnel's client named at registration, else
+	// the service's stored setting. "" (and any unknown value) is
+	// proto.UpstreamHTTP1, the behaviour of the releases before.
+	// UpstreamClientSet says the client named it.
+	UpstreamProtocol  string
+	UpstreamClientSet bool
+	// UpstreamTLSVerify, UpstreamTLSCAPEM and UpstreamTLSServerName apply
+	// to https and h2: verification is off unless UpstreamTLSVerify is set
+	// or a CA is (which verifies against that CA only); the server name
+	// defaults to the host of LocalHost.
+	UpstreamTLSVerify     bool
+	UpstreamTLSCAPEM      []byte
+	UpstreamTLSServerName string
 }
 
 // StreamDialer is the interface that the proxy uses to:

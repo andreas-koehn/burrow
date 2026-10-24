@@ -287,3 +287,55 @@ func TestProxyProtocolFields(t *testing.T) {
 		t.Errorf("ProxyProtocolV2 = %q", ProxyProtocolV2)
 	}
 }
+
+// An http register may name the upstream protocol, and a relay of this round
+// announces upstream_protocol (HTTP/2 and gRPC, H4). Both are optional:
+// without them the bytes are what they were, and an older relay reads its own
+// fields of a new register.
+func TestUpstreamProtocolFields(t *testing.T) {
+	if CapUpstreamProtocol != "upstream_protocol" {
+		t.Fatalf("capability name changed: %q", CapUpstreamProtocol)
+	}
+	if UpstreamHTTP1 != "http1" || UpstreamHTTPS != "https" || UpstreamH2C != "h2c" || UpstreamH2 != "h2" {
+		t.Fatalf("protocol names changed: %q %q %q %q", UpstreamHTTP1, UpstreamHTTPS, UpstreamH2C, UpstreamH2)
+	}
+	for _, c := range []struct {
+		name string
+		val  any
+		want string
+	}{
+		{"http register without a protocol", TunnelRegister{Name: "web", Type: "http", LocalAddr: "127.0.0.1:3000"},
+			`{"name":"web","type":"http","remote_port":0,"local_addr":"127.0.0.1:3000"}`},
+		{"http register with a protocol", TunnelRegister{Name: "api", Type: "http", LocalAddr: "127.0.0.1:50051", UpstreamProtocol: UpstreamH2C},
+			`{"name":"api","type":"http","remote_port":0,"local_addr":"127.0.0.1:50051","upstream_protocol":"h2c"}`},
+		{"capability", AuthResponse{OK: true, SessionID: "s", Capabilities: []string{CapUpstreamProtocol}},
+			`{"ok":true,"session_id":"s","capabilities":["upstream_protocol"]}`},
+	} {
+		b, err := json.Marshal(c.val)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != c.want {
+			t.Errorf("%s:\n got %s\nwant %s", c.name, b, c.want)
+		}
+	}
+	raw, _ := json.Marshal(TunnelRegister{Name: "api", Type: "http", LocalAddr: "x", UpstreamProtocol: UpstreamH2})
+	var oldReg oldTunnelRegister
+	if err := DecodePayload(Envelope{Payload: raw}, &oldReg); err != nil || oldReg != (oldTunnelRegister{"api", "http", 0, "x"}) {
+		t.Errorf("older relay: %+v %v", oldReg, err)
+	}
+	var tr TunnelRegister
+	if err := DecodePayload(Envelope{Payload: json.RawMessage(`{"name":"web","type":"http","remote_port":0,"local_addr":"x"}`)}, &tr); err != nil || tr.UpstreamProtocol != "" {
+		t.Errorf("older client's register: %+v %v", tr, err)
+	}
+	for _, s := range []string{UpstreamHTTP1, UpstreamHTTPS, UpstreamH2C, UpstreamH2} {
+		if !ValidUpstreamProtocol(s) {
+			t.Errorf("%q not valid", s)
+		}
+	}
+	for _, s := range []string{"", "HTTP1", "http2", "grpc", "h3"} {
+		if ValidUpstreamProtocol(s) {
+			t.Errorf("%q valid", s)
+		}
+	}
+}

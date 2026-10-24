@@ -623,19 +623,20 @@ func TestControl_StoreFailuresAreNoFailedSignIns(t *testing.T) {
 	}
 }
 
-// The relay announces tcp_access when it keeps tcp services, and nothing
-// otherwise; forward comes with the forward streams.
+// The relay announces tcp_access when it keeps tcp services, and not
+// otherwise; forward comes with the forward streams, upstream_protocol with
+// http services.
 func TestControl_RelayCapabilities(t *testing.T) {
 	a := newAccessRelay(t, 19511, 19511, nil)
 	conn, ar := a.dial("secret", "")
 	_ = conn.Close()
-	if !ar.OK || !slices.Equal(ar.Capabilities, []string{proto.CapTCPAccess}) {
+	if !ar.OK || !slices.Equal(ar.Capabilities, []string{proto.CapTCPAccess, proto.CapUpstreamProtocol}) {
 		t.Fatalf("relay with tcp services: %+v", ar)
 	}
 	old := newObservedRelay(t, 19512, nil)
 	conn, ar = old.dial("secret", "")
 	_ = conn.Close()
-	if !ar.OK || ar.Capabilities != nil {
+	if !ar.OK || !slices.Equal(ar.Capabilities, []string{proto.CapUpstreamProtocol}) {
 		t.Fatalf("relay without tcp services: %+v", ar)
 	}
 	refused, ar := old.dial("", "")

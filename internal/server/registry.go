@@ -85,6 +85,10 @@ type Tunnel struct {
 	// itself (TunnelRegister.ProxyProtocol), for the dashboard.
 	settings    atomic.Pointer[tcpSettings]
 	clientProxy string
+	// clientUpstream is the upstream protocol an http tunnel's client named
+	// at registration (TunnelRegister.UpstreamProtocol), "" for none: it
+	// applies in place of the service's setting (http_upstream.go).
+	clientUpstream string
 	// sweeping: a sweepIdle goroutine runs for the tunnel (under connMu).
 	sweeping bool
 	// slug is the tcp service's slug and sniName its own TLS passthrough

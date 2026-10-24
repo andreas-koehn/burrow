@@ -134,6 +134,10 @@ type Proxy struct {
 	// observer is told of every request that reached a service, when it is
 	// over. nil = nobody is told. Wired via WithObserver.
 	observer Observer
+
+	// upstreamTLS keeps each service's upstream TLS configuration while its
+	// tunnel and settings stay the same (upstream.go).
+	upstreamTLS upstreamTLSCache
 }
 
 // Observer receives one observe.Traffic for each request that reached an http
@@ -510,14 +514,14 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 	// transport closes a connection that becomes idle instead of keeping it
 	// until the next request, which never comes. Keep-alives stay on, so the
 	// request the app sees carries no "Connection: close".
-	tr := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return p.dialer.DialTunnelStreamByServiceID(ctx, capturedServiceID)
-		},
-		DisableCompression: true,
-		ForceAttemptHTTP2:  false,
-	}
-	defer tr.CloseIdleConnections()
+	//
+	// The transport speaks the service's upstream protocol (upstream.go);
+	// for http1 it is the transport of the releases before.
+	up := p.newUpstreamTransport(r, res, upstreamHost, func(ctx context.Context) (net.Conn, error) {
+		return p.dialer.DialTunnelStreamByServiceID(ctx, capturedServiceID)
+	})
+	defer up.done()
+	scheme := up.scheme
 
 	rp := &httputil.ReverseProxy{
 		FlushInterval: -1,
@@ -532,14 +536,14 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 				pr.Out.Header.Set("X-Forwarded-Port", ingressPort)
 			}
 			pr.Out.URL = &url.URL{
-				Scheme:   "http",
+				Scheme:   scheme,
 				Host:     upstreamHost,
 				Path:     pr.In.URL.Path,
 				RawQuery: pr.In.URL.RawQuery,
 			}
 			pr.Out.Host = upstreamHost
 		},
-		Transport: tr,
+		Transport: up.rt,
 		// v0.5.1 P2.3: status mapping in ErrorHandler.
 		//
 		// Precedence: closed_error > closed_idle > closed_clean.
@@ -550,6 +554,9 @@ func (p *Proxy) serveCustomDomain(w http.ResponseWriter, r *http.Request, host, 
 		// ≥500 status code (ErrorHandler is NOT called in that case).
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			p.log.Warn("proxy custom domain upstream error", "host", host, "err", err)
+			if IsUpstreamTLSError(err) {
+				ost.reason = ReasonUpstreamTLS
+			}
 			if errors.Is(err, context.DeadlineExceeded) {
 				logStatus = StatusClosedIdle
 			} else {
@@ -699,24 +706,14 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 	// transport closes a connection that becomes idle instead of keeping it
 	// until the next request, which never comes. Keep-alives stay on, so the
 	// request the app sees carries no "Connection: close".
-	tr := &http.Transport{
-		// DialContext ignores the addr argument: we always connect to the
-		// tunnel stream of the resolved service. The Transport calls this for each
-		// new connection: once per proxied request, since this transport
-		// serves one request and is not used again.
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			conn, err := p.dialer.DialTunnelStreamByServiceID(ctx, res.ServiceID)
-			if err != nil {
-				return nil, err
-			}
-			return conn, nil
-		},
-		DisableCompression: true,
-		// HTTP/2 to upstream is not applicable: tunnels speak HTTP/1.1
-		// to the local server they wrap. Disable to avoid surprises.
-		ForceAttemptHTTP2: false,
-	}
-	defer tr.CloseIdleConnections()
+	//
+	// The transport speaks the service's upstream protocol (upstream.go);
+	// for http1 it is the transport of the releases before.
+	up := p.newUpstreamTransport(r, res, upstreamHost, func(ctx context.Context) (net.Conn, error) {
+		return p.dialer.DialTunnelStreamByServiceID(ctx, res.ServiceID)
+	})
+	defer up.done()
+	scheme := up.scheme
 
 	// Step 3: build a per-request ReverseProxy.
 	//
@@ -764,7 +761,7 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 
 			// Rewrite destination.
 			pr.Out.URL = &url.URL{
-				Scheme:   "http",
+				Scheme:   scheme,
 				Host:     upstreamHost,
 				Path:     pr.In.URL.Path,
 				RawQuery: pr.In.URL.RawQuery,
@@ -780,7 +777,7 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 			}
 		},
 
-		Transport: tr,
+		Transport: up.rt,
 
 		// v0.5.1 P2.3: status mapping in ErrorHandler.
 		//
@@ -792,6 +789,9 @@ func (p *Proxy) serveResolved(w http.ResponseWriter, r *http.Request, res *Resol
 		// ≥500 status code (ErrorHandler is NOT called in that case).
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			p.log.Warn("proxy upstream error", "subdomain", label, "err", err)
+			if IsUpstreamTLSError(err) {
+				ost.reason = ReasonUpstreamTLS
+			}
 			if errors.Is(err, context.DeadlineExceeded) {
 				logStatus = StatusClosedIdle
 			} else {
@@ -1053,7 +1053,8 @@ func (p *Proxy) GetConfigForClient(hello *tls.ClientHelloInfo) (*tls.Config, err
 //     closed_error > closed_idle > closed_clean, enforced by the
 //     ErrorHandler closure and post-ServeHTTP 5xx promotion in
 //     serveResolved / serveCustomDomain.
-//   - Reason is always empty.
+//   - Reason is ReasonUpstreamTLS when the TLS handshake with the local
+//     service failed, and empty otherwise.
 func (p *Proxy) recordOnClose(
 	r *http.Request,
 	res *Resolved,
@@ -1100,6 +1101,7 @@ func (p *Proxy) recordOnClose(
 		BytesIn:         rc.bytes(),
 		BytesOut:        ww.bytes(),
 		Status:          *status,
+		Reason:          ost.reason,
 	}
 	// SQLSink.Record spawns its own goroutine + uses context.WithoutCancel,
 	// so passing r.Context() is safe even if the handler has already
@@ -1175,6 +1177,7 @@ func (p *Proxy) observe(r *http.Request, res *Resolved, sourceIP string, started
 type obsState struct {
 	rejected   string // an observe.Rejected… value when the request was refused
 	clientGone bool   // the visitor hung up before the upstream answered
+	reason     string // the connection-log reason (ReasonUpstreamTLS), "" for none
 }
 
 // visitorGone reports whether a failed upstream round trip is the visitor's

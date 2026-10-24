@@ -751,6 +751,11 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 					s.refused(reg, cs, tr, proto.CodeInternal)
 					continue
 				}
+				if tr.UpstreamProtocol != "" && !proto.ValidUpstreamProtocol(tr.UpstreamProtocol) {
+					_ = cs.SendControl(proto.MsgTunnelRegisterResp, proto.TunnelRegisterResponse{OK: false, Error: errUpstreamProtocol(tr.UpstreamProtocol), Code: proto.CodeBadRequest})
+					s.refused(reg, cs, tr, proto.CodeBadRequest)
+					continue
+				}
 				res, rerr := s.resolveHTTP(cs, tr)
 				if rerr != nil {
 					refused := refusalResponse("resolve service: ", rerr)
@@ -762,7 +767,7 @@ func (s *Server) RunControlLoop(stream io.ReadWriteCloser, reg *Registry, cs *Cl
 				tn := &Tunnel{
 					ID: uuid.NewString(), Name: tr.Name, Type: tr.Type, LocalAddr: tr.LocalAddr, sess: cs,
 					IsHTTP: true, Subdomain: subdomain, ServiceID: serviceID,
-					accessMode: res.AccessMode, created: res.Created,
+					accessMode: res.AccessMode, created: res.Created, clientUpstream: tr.UpstreamProtocol,
 				}
 				reg.AddTunnel(cs, tn)
 				if err := s.opts.Tunnels.SaveTunnel(context.Background(), cs.UserID, tn); err != nil {

@@ -464,7 +464,7 @@ func TestForward_ARelayWithoutForwardsClosesTheStream(t *testing.T) {
 	with := newForwardRelay(t, 19526, nil)
 	conn, ar = with.dial("secret", "")
 	_ = conn.Close()
-	if !slices.Equal(ar.Capabilities, []string{proto.CapTCPAccess, proto.CapForward}) {
+	if !slices.Equal(ar.Capabilities, []string{proto.CapTCPAccess, proto.CapForward, proto.CapUpstreamProtocol}) {
 		t.Fatalf("capabilities %v", ar.Capabilities)
 	}
 }
