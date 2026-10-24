@@ -447,11 +447,40 @@ func (c *Chain) ServeHTTP(w http.ResponseWriter, r *http.Request, svc Service, p
 // AI controls cannot run on it.
 const msgGRPCOnAIControls = "this service applies AI controls (redaction, guardrails, routing or the anthropic section) that cannot run on gRPC; remove them or serve gRPC from a separate service"
 
-// aiControlsBody reports whether cfg has a section that must read, judge or
-// rewrite each request body: such a service cannot take a gRPC-like call.
+// aiControlsBody reports whether cfg has a control switched on that must
+// read, judge or rewrite each request body: such a service cannot take a
+// gRPC-like call. A section that is there but off does not count (the
+// dashboard saves every section). It is made of the same switches the chain
+// itself goes by, so the two cannot drift; cfg.Guardrails is the effective
+// one (the loader merges the global settings in).
 func aiControlsBody(cfg ServiceAIConfig) bool {
-	return cfg.Redaction != nil || cfg.Guardrails != nil || cfg.Routing != nil || cfg.Anthropic != nil
+	return redactionOn(cfg) || requestGuardrailsOn(cfg) || answerGuardrailsOn(cfg) ||
+		judgeOn(cfg) || routingOn(cfg) || anthropicOn(cfg)
 }
+
+// redactionOn: the request body is redacted.
+func redactionOn(cfg ServiceAIConfig) bool { return cfg.Redaction != nil && cfg.Redaction.Enabled }
+
+// requestGuardrailsOn: the request patterns run on the body.
+func requestGuardrailsOn(cfg ServiceAIConfig) bool {
+	return cfg.Guardrails != nil && cfg.Guardrails.Enabled
+}
+
+// answerGuardrailsOn: the answer patterns run on the answer.
+func answerGuardrailsOn(cfg ServiceAIConfig) bool {
+	return cfg.Guardrails != nil && cfg.Guardrails.Answers.Enabled
+}
+
+// judgeOn: the judge model checks the request (and maybe the answer).
+func judgeOn(cfg ServiceAIConfig) bool { return cfg.Guardrails != nil && cfg.Guardrails.Judge.Enabled }
+
+// routingOn: a routing policy with backends picks the upstream.
+func routingOn(cfg ServiceAIConfig) bool { return cfg.Routing != nil && len(cfg.Routing.Backends) > 0 }
+
+// anthropicOn: the stored anthropic section is switched on. No step of the
+// chain reads it any more (see AnthropicConfig); a service that switched it
+// on asked for Anthropic handling, which a gRPC call would not get.
+func anthropicOn(cfg ServiceAIConfig) bool { return cfg.Anthropic != nil && cfg.Anthropic.Enabled }
 
 // injectCredential strips the visitor's credential header and puts the
 // upstream's real one on r (spec B.3). It does nothing when no injector is
@@ -694,7 +723,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// An upload (audio) is no text: its bytes are not rewritten or read for
 	// patterns, and the inspector omits it.
 	upload := isUpload(r)
-	if cfg.Redaction != nil && cfg.Redaction.Enabled && c.Redact != nil && len(body) > 0 && !upload {
+	if redactionOn(cfg) && c.Redact != nil && len(body) > 0 && !upload {
 		var err error
 		redactedBody, redactDrop, redactHits, err = c.Redact.Apply(body, redact.ScopeRequestBody)
 		if err != nil {
@@ -730,7 +759,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	var judgeMark *inspector.JudgeMark     // the judge's word, for the inspector entry
 	// A request that carries WithoutGuardrails (the judge's own call) skips
 	// both tiers and the answer guard.
-	guarded := cfg.Guardrails != nil && cfg.Guardrails.Enabled && !GuardrailsSkipped(r.Context())
+	guarded := requestGuardrailsOn(cfg) && !GuardrailsSkipped(r.Context())
 	// A gateway key's system text is written by the app's side: it is
 	// checked like the app's own text (a model's system text is the
 	// operator's and is not). It is put into the body at step 5b, only on
@@ -1017,7 +1046,7 @@ func (c *Chain) run(w http.ResponseWriter, r *http.Request, svc Service, proxyHa
 	// actual upstream-pick into the proxy Director. For now we log
 	// the decision so operators can see the strategy firing.
 	// ---------------------------------------------------------------
-	if cfg.Routing != nil && c.Router != nil && len(cfg.Routing.Backends) > 0 {
+	if routingOn(cfg) && c.Router != nil {
 		rc := route.RouteContext{
 			Kind:           string(kind),
 			Model:          extractModelFromBody(redactedBody),
@@ -1512,7 +1541,7 @@ func (c *Chain) answerInspection(r *http.Request, kind Kind, cfg ServiceAIConfig
 	if g == nil || r.Method != http.MethodPost || GuardrailsSkipped(r.Context()) {
 		return "", false, false
 	}
-	patterns = c.Guardrails != nil && g.Answers.Enabled
+	patterns = c.Guardrails != nil && answerGuardrailsOn(cfg)
 	if !patterns && !judgesAnswers {
 		return "", false, false
 	}

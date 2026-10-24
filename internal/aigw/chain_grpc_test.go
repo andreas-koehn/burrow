@@ -207,8 +207,8 @@ func TestChain_GRPCRefusedWhereAIControlsApply(t *testing.T) {
 	sections := map[string]aigw.ServiceAIConfig{
 		"redaction":  {Redaction: &aigw.RedactionConfig{Enabled: true}},
 		"guardrails": {Guardrails: &guardrails.Settings{Enabled: true, Action: guardrails.ActionRefuse403}},
-		"routing":    {Routing: &route.Policy{}},
-		"anthropic":  {Anthropic: &aigw.AnthropicConfig{}},
+		"routing":    {Routing: &route.Policy{Backends: []route.Backend{{}}}},
+		"anthropic":  {Anthropic: &aigw.AnthropicConfig{Enabled: true}},
 		"with inspector too": {Inspector: &aigw.InspectorConfig{Enabled: true},
 			Redaction: &aigw.RedactionConfig{Enabled: true}},
 	}
@@ -265,5 +265,57 @@ func TestChain_GRPCClassesBypass(t *testing.T) {
 	}
 	if n := len(ring.List(inspector.ListQuery{})); n != 1 {
 		t.Fatalf("%d entries; want the JSON request only", n)
+	}
+}
+
+// Only a control that is switched on refuses gRPC: a section that is there
+// but off (as the dashboard saves the whole config) does not. Each switch in
+// turn: redaction, request guardrails, answer guardrails, the judge, routing
+// with backends, the anthropic section.
+func TestChain_GRPCRefusedOnlyWhereControlsAreOn(t *testing.T) {
+	off := func() aigw.ServiceAIConfig {
+		return aigw.ServiceAIConfig{
+			Cache:      &exact.Settings{},
+			Redaction:  &aigw.RedactionConfig{},
+			Guardrails: &guardrails.Settings{Action: guardrails.ActionLogOnly},
+			Inspector:  &aigw.InspectorConfig{},
+			Routing:    &route.Policy{Strategy: "single"},
+			Anthropic:  &aigw.AnthropicConfig{},
+		}
+	}
+	on := map[string]func(*aigw.ServiceAIConfig){
+		"redaction":          func(c *aigw.ServiceAIConfig) { c.Redaction.Enabled = true },
+		"request guardrails": func(c *aigw.ServiceAIConfig) { c.Guardrails.Enabled = true },
+		"answer guardrails":  func(c *aigw.ServiceAIConfig) { c.Guardrails.Answers.Enabled = true },
+		"judge":              func(c *aigw.ServiceAIConfig) { c.Guardrails.Judge.Enabled = true },
+		"routing":            func(c *aigw.ServiceAIConfig) { c.Routing.Backends = []route.Backend{{}} },
+		"anthropic":          func(c *aigw.ServiceAIConfig) { c.Anthropic.Enabled = true },
+	}
+	chain := aigw.NewChain(nil, nil, nil, nil, guardrails.NewEngine(), inspector.NewManager(), nil, nil, testLog())
+	call := func(cfg aigw.ServiceAIConfig) (*httptest.ResponseRecorder, bool) {
+		called := false
+		upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.Header().Set("Grpc-Status", "0")
+			w.WriteHeader(200)
+		})
+		req := httptest.NewRequest("POST", "https://abc.example.com/pkg.S/M", strings.NewReader(string(grpcMsg("x"))))
+		req.Header.Set("Content-Type", "application/grpc")
+		rec := httptest.NewRecorder()
+		chain.ServeHTTP(rec, req, aigw.Service{ID: "svc", AIConfig: cfg}, upstream)
+		return rec, called
+	}
+	if rec, called := call(off()); !called || rec.Header().Get("Grpc-Status") != "0" {
+		t.Fatalf("every section off: upstream called %v, grpc-status %q", called, rec.Header().Get("Grpc-Status"))
+	}
+	for name, set := range on {
+		t.Run(name, func(t *testing.T) {
+			cfg := off()
+			set(&cfg)
+			rec, called := call(cfg)
+			if called || rec.Header().Get("Grpc-Status") != "7" {
+				t.Fatalf("upstream called %v, grpc-status %q", called, rec.Header().Get("Grpc-Status"))
+			}
+		})
 	}
 }

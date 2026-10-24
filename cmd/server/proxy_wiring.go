@@ -595,7 +595,12 @@ func (a proxyDialerAdapter) lookupByServiceID(ctx context.Context, serviceID str
 		// Offline, unless the row is missing, or hidden: a gateway-only
 		// service must answer like a missing one, connected or not.
 		svc, err := a.st.ServiceByID(ctx, serviceID)
-		if err != nil || (hideGatewayOnly && svc.GatewayOnly) {
+		switch {
+		case errors.Is(err, db.ErrNotFound):
+			return nil, proxy.ErrNotFound
+		case err != nil:
+			return nil, fmt.Errorf("proxy lookup by service id: service by id: %w", err)
+		case hideGatewayOnly && svc.GatewayOnly:
 			return nil, proxy.ErrNotFound
 		}
 		return nil, proxy.ErrTunnelOffline

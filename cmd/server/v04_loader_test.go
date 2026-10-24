@@ -195,3 +195,43 @@ func TestDispatchMetered_GlobalGuardrailsWithoutAIConfig(t *testing.T) {
 		t.Fatalf("global answers block: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// A config the dashboard saved whole (every section there, the cache on,
+// redaction and guardrails off) serves gRPC; switching a body control on
+// refuses it with PERMISSION_DENIED.
+func TestDecodedDashboardConfig_GRPC(t *testing.T) {
+	const blob = `{
+	  "cache": {"enabled": true, "ttl_seconds": 300},
+	  "redaction": {"enabled": false, "redact_for_logs_only": false, "rule_ids": [], "presidio_enabled": false},
+	  "guardrails": {"enabled": false, "action": "log_only"},
+	  "inspector": {"enabled": false, "max_requests": 100},
+	  "routing": {"strategy": "single", "model_alias": "", "header_name": "X-Burrow-Model", "paused": false}
+	}`
+	chain := aigw.NewChain(nil, nil, nil, nil, guardrails.NewEngine(), nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	serve := func(raw string) string {
+		cfg, err := decodeServiceAIConfig([]byte(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Guardrails = guardrails.Effective(cfg.Guardrails, guardrails.DefaultSettings)
+		req := httptest.NewRequest("POST", "https://svc.example.com/pkg.S/M", strings.NewReader("\x00\x00\x00\x00\x00"))
+		req.Header.Set("Content-Type", "application/grpc")
+		rec := httptest.NewRecorder()
+		chain.ServeHTTP(rec, req, aigw.Service{ID: "svc", AIConfig: cfg}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Grpc-Status", "0")
+			w.WriteHeader(200)
+		}))
+		return rec.Header().Get("Grpc-Status")
+	}
+	if got := serve(blob); got != "0" {
+		t.Fatalf("dashboard-saved config: grpc-status %q, want the call served", got)
+	}
+	for _, c := range []struct{ name, from, to string }{
+		{"redaction", `"redaction": {"enabled": false`, `"redaction": {"enabled": true`},
+		{"guardrails", `"guardrails": {"enabled": false`, `"guardrails": {"enabled": true`},
+	} {
+		if got := serve(strings.Replace(blob, c.from, c.to, 1)); got != "7" {
+			t.Errorf("%s on: grpc-status %q, want 7", c.name, got)
+		}
+	}
+}

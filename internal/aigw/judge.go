@@ -115,7 +115,7 @@ type judgement struct {
 // endpoint.
 func judgeFormat(r *http.Request, kind Kind, cfg ServiceAIConfig) (guardrails.JudgeSettings, string, bool) {
 	g := cfg.Guardrails
-	if g == nil || !g.Judge.Enabled || r.Method != http.MethodPost || GuardrailsSkipped(r.Context()) {
+	if !judgeOn(cfg) || r.Method != http.MethodPost || GuardrailsSkipped(r.Context()) {
 		return guardrails.JudgeSettings{}, "", false
 	}
 	format := answerFormat(kind, r.URL.Path)
