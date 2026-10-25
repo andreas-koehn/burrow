@@ -60,6 +60,35 @@ cd test/e2e && npx playwright test
 task e2e:down                 # tear the stack down when finished
 ```
 
+### gRPC end to end — real binaries, grpc-go
+
+`test/grpce2e` is a Go module of its own, so `google.golang.org/grpc` never
+enters the main module. It builds `burrowd` and `burrow` from this checkout
+(or takes `BURROW_E2E_BURROWD` and `BURROW_E2E_BURROW`), starts two relays on
+127.0.0.1 with SQLite in a temp directory, and drives a grpc-go client against
+grpc-go services behind real clients:
+
+- h2c through the plain listener, directly and behind a TLS-terminating proxy
+  that forwards h2c (the Traefik `scheme=h2c` recipe): health, unary, 1000
+  interleaved bidi messages, 200 trailers-only replies;
+- gRPC over TLS (ALPN h2) on the relay's own listener by a custom domain with
+  an uploaded certificate;
+- deadlines and `grpc_max_duration_s`; `api_key` in metadata, ip denial,
+  offline tunnel, AI controls → the gRPC codes;
+- the 443 mux: dashboard over h2, gRPC and raw TLS passthrough by SNI on one
+  port; a private tcp service and `acme-tls/1` hellos are terminated;
+- upstream `h2` and `https` with TLS verification off, on, CA and server name;
+- connection-log rows (`grpc_method`, `grpc_status`) and
+  `burrow_grpc_requests_total`.
+
+```sh
+cd test/grpce2e && go test -count=1 ./...
+```
+
+`BURROW_E2E_KEEP=1` keeps the run directory with the relay and client logs
+(it sits in `bin/grpce2e-*`, and is always kept when a test fails). CI runs
+the module in the `e2e-grpc` job.
+
 ### Manual (Tier 3) — human walkthrough
 
 ```sh
@@ -85,6 +114,7 @@ test/
   e2e/           Tier-2 Playwright: playwright.config.ts, package.json, run.sh
                    fixtures/, spec/<feature>/
   manual/        Tier-3: RUNBOOK.md, smoke-user.sh
+  grpce2e/       gRPC end to end (own go.mod, grpc-go): go test ./...
 ```
 
 ## Harness profiles

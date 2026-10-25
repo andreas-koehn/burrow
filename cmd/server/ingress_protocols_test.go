@@ -279,4 +279,24 @@ func TestIngressMTLSVhostNegotiatesH2(t *testing.T) {
 	if resp.ProtoMajor != 2 || resp.StatusCode != 200 || string(b) != "mtls-ok" {
 		t.Fatalf("mtls h2: %s %d %q", resp.Proto, resp.StatusCode, b)
 	}
+
+	// A client without a certificate is refused over h2 as well: the vhost
+	// demands one in the handshake, so the h2 connection never carries a
+	// request to the service.
+	if vh.ClientAuth != tls.RequireAndVerifyClientCert {
+		t.Fatalf("mtls clone ClientAuth = %v, want RequireAndVerifyClientCert", vh.ClientAuth)
+	}
+	// Raw TLS offering h2 only, as an HTTP/2 client does: in TLS 1.3 the
+	// client finishes its side of the handshake, and its first read gets the
+	// server's certificate_required alert. (An http.Client's error text for
+	// the same refusal depends on timing, so it is not matched.)
+	nc, err := tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true, ServerName: s.hostname, NextProtos: []string{"h2"}}) //nolint:gosec // test cert
+	if err == nil {
+		defer nc.Close()
+		_ = nc.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, err = nc.Read(make([]byte, 1))
+	}
+	if err == nil || !strings.Contains(err.Error(), "certificate required") {
+		t.Fatalf("no-cert client over h2: %v, want the certificate_required alert", err)
+	}
 }
