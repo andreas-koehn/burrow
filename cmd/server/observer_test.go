@@ -272,7 +272,13 @@ func TestObserver_Traffic(t *testing.T) {
 	// upstream error of a model.
 	o.ObserveTraffic(observe.Traffic{Kind: observe.TrafficHTTP, ServiceID: "svc-ai", Method: "POST", Status: 502, Outcome: observe.OutcomeError, KeyService: true})
 	o.ObserveTraffic(observe.Traffic{Kind: observe.TrafficHTTP, ServiceID: "svc1", Method: "POST", Status: 502, Outcome: observe.OutcomeError})
+	// A failed gRPC call is no model request either: gRPC bypasses the AI
+	// gateway, and the relay may have answered it itself (H4, deadline).
+	o.ObserveTraffic(observe.Traffic{Kind: observe.TrafficHTTP, ServiceID: "svc-ai", Method: "POST", Status: 200, Outcome: observe.OutcomeError, KeyService: true, GRPC: true, GRPCStatus: &unavailable})
 	wantLines(t, expo(t, rec), `burrow_ai_upstream_errors_total{service="svc-ai",status="5xx"} 1`)
+	if strings.Contains(expo(t, rec), `burrow_ai_upstream_errors_total{service="svc-ai",status="2xx"}`) {
+		t.Fatal("a failed gRPC call was counted as an upstream error of a model")
+	}
 	up := em.named("ai.upstream_error")
 	if len(up) != 1 || up[0]["service_id"] != "svc-ai" || up[0]["status"] != 502 || up[0]["error"] != "http_502" {
 		t.Fatalf("ai.upstream_error events: %v", up)

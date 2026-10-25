@@ -97,13 +97,18 @@ type grpcWriter struct {
 	contentType string // the request's, echoed in a trailers-only reply
 	web         bool   // the call is grpc-web
 
-	started  bool          // a response is passing through
-	denied   bool          // a refusal is held for finish
-	status   int           // the held refusal's HTTP status
-	code     grpcwire.Code // and its gRPC code
-	body     []byte        // the start of its body
-	held     int           // bytes of its body seen
-	finished bool
+	started bool // a response is passing through
+	// trailersOnly: the passing response carried grpc-status in its headers
+	// (a trailers-only reply). Until a body byte passes it is not flushed,
+	// so the HTTP/2 server sends it as one HEADERS frame with END_STREAM.
+	trailersOnly bool
+	wrote        atomic.Bool   // a body byte passed
+	denied       bool          // a refusal is held for finish
+	status       int           // the held refusal's HTTP status
+	code         grpcwire.Code // and its gRPC code
+	body         []byte        // the start of its body
+	held         int           // bytes of its body seen
+	finished     bool
 
 	cancel func()      // cancels the request's context
 	timer  *time.Timer // cuts a held refusal short
@@ -154,6 +159,7 @@ func (g *grpcWriter) WriteHeader(code int) {
 		return
 	case code == http.StatusOK || g.Header().Get("Grpc-Status") != "":
 		g.start()
+		g.trailersOnly = g.Header().Get("Grpc-Status") != ""
 		g.ResponseWriter.WriteHeader(code)
 		return
 	}
@@ -180,6 +186,9 @@ func (g *grpcWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	g.start()
+	if len(p) > 0 {
+		g.wrote.Store(true)
+	}
 	n, err := g.ResponseWriter.Write(p)
 	if g.frames != nil {
 		g.frames.feed(p[:n])
@@ -187,12 +196,19 @@ func (g *grpcWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Flush implements http.Flusher; a held refusal is not flushed.
+// Flush implements http.Flusher; a held refusal is not flushed, nor is a
+// trailers-only reply before a body byte passed.
 func (g *grpcWriter) Flush() { _ = g.FlushError() }
 
 // FlushError is the form of Flush http.ResponseController asks for.
+//
+// ReverseProxy (FlushInterval -1) flushes the headers on a timer goroutine
+// while it copies the body. For a trailers-only reply that flush could win
+// the race against the end of the handler; the HTTP/2 server then sends the
+// headers without END_STREAM and ends the stream with an empty DATA frame,
+// which gRPC clients read as a stream without trailers (INTERNAL).
 func (g *grpcWriter) FlushError() error {
-	if g.denied {
+	if g.denied || (g.trailersOnly && !g.wrote.Load()) {
 		return nil
 	}
 	g.start()
@@ -402,7 +418,21 @@ func (p *Proxy) prepareUpstream(w http.ResponseWriter, r *http.Request, res *Res
 		return r, release, true
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), d+grpcDeadlineSlack)
+	ctx = context.WithValue(ctx, callDeadlineKey{}, time.Now().Add(d))
 	return r.WithContext(ctx), cancel, true
+}
+
+// callDeadlineKey holds when a gRPC call's own timeout (the grpc-timeout
+// sent upstream, without the relay's slack) runs out.
+type callDeadlineKey struct{}
+
+// callDeadlinePassed reports whether the call's own timeout has run out. A
+// grpc-go server resets the stream (RST_STREAM CANCEL) the moment the
+// grpc-timeout it was sent passes, before the relay's deadline fires; that
+// error is the deadline, not an outage.
+func callDeadlinePassed(ctx context.Context) bool {
+	at, ok := ctx.Value(callDeadlineKey{}).(time.Time)
+	return ok && !time.Now().Before(at)
 }
 
 // callTimeout is a call's timeout from its grpc-timeout header and the
@@ -420,14 +450,15 @@ func callTimeout(h http.Header, maxDuration time.Duration) (time.Duration, bool)
 	return d, has
 }
 
-// answerDeadline answers a gRPC call whose relay deadline passed before the
-// upstream answered with DEADLINE_EXCEEDED (H8), and reports whether it did:
-// false for any other request or error.
+// answerDeadline answers a gRPC call whose relay deadline, or its own
+// grpc-timeout, passed before the upstream answered with DEADLINE_EXCEEDED
+// (H8), and reports whether it did: false for any other request or error.
 func answerDeadline(w http.ResponseWriter, r *http.Request, err error) bool {
 	if !grpcwire.Classify(r).GRPCShaped() {
 		return false
 	}
-	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(r.Context().Err(), context.DeadlineExceeded) {
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(r.Context().Err(), context.DeadlineExceeded) &&
+		!callDeadlinePassed(r.Context()) {
 		return false
 	}
 	grpcwire.WriteTrailersOnly(w, r.Header.Get("Content-Type"), grpcwire.CodeDeadlineExceeded, msgDeadline)

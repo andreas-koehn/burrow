@@ -12,12 +12,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/ankoehn/burrow/internal/api"
+	"github.com/ankoehn/burrow/internal/grpcwire"
 	"github.com/ankoehn/burrow/internal/proto"
 	"github.com/ankoehn/burrow/internal/proxy"
 )
@@ -571,6 +573,50 @@ func TestGRPC_MaxDurationCap(t *testing.T) {
 		}
 		streamsClosed(t, d)
 	})
+
+	// A grpc-go server resets the stream (RST_STREAM CANCEL) the moment the
+	// grpc-timeout it was sent runs out, a second before the relay's own
+	// deadline. That reset is the deadline passing, not an outage: the
+	// caller gets DEADLINE_EXCEEDED, not UNAVAILABLE. A reset before the
+	// deadline stays UNAVAILABLE.
+	for _, c := range []struct {
+		name  string
+		after func(timeout time.Duration) time.Duration
+		code  string
+	}{
+		{"the service resets at its deadline", func(d time.Duration) time.Duration { return d }, "4"},
+		{"the service resets before its deadline", func(time.Duration) time.Duration { return 0 }, "14"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			local := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				d, err := grpcwire.ParseTimeout(r.Header.Get("Grpc-Timeout"))
+				if err != nil {
+					t.Errorf("upstream grpc-timeout %q: %v", r.Header.Get("Grpc-Timeout"), err)
+				}
+				time.Sleep(c.after(d))
+				panic(http.ErrAbortHandler) // RST_STREAM, no response
+			})
+			d := newFakeDialer(local)
+			d.h2c = true
+			d.register("app", &proxy.Resolved{ServiceID: "s1", AccessMode: "open", LocalHost: "127.0.0.1:1",
+				UpstreamProtocol: proto.UpstreamH2C, GRPCMaxDuration: 300 * time.Millisecond})
+			logs := &connLogRec{}
+			ts, client := grpcFront(t, proxy.New(d, openChecker{}, authDomain, testLog(), proxy.WithConnLogSink(logs)), "h2c")
+			resp, err := client.Do(grpcRequest(t, ts, "app", "/pkg.Slow/Call", strings.NewReader(string(grpcFrame("x")))))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if got := resp.Header.Get("Grpc-Status"); got != c.code {
+				t.Fatalf("grpc-status %q (%s), want %s", got, resp.Header.Get("Grpc-Message"), c.code)
+			}
+			e := logs.last(t)
+			if e.Status != proxy.StatusClosedError || e.GRPCStatus == nil || strconv.Itoa(*e.GRPCStatus) != c.code {
+				t.Errorf("row %+v", e)
+			}
+		})
+	}
 }
 
 // The idle timeout, a test seam (0 in production), does not apply to gRPC

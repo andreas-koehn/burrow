@@ -457,8 +457,10 @@ func (o *observer) ObserveTraffic(e observe.Traffic) {
 		if o.perMinute.allow("access.denied\x00" + e.ServiceID + "\x00" + e.RejectReason) {
 			o.publish("access.denied", map[string]any{"ServiceID": e.ServiceID, "Reason": e.RejectReason, "IP": e.SourceIP})
 		}
-	case e.Outcome == observe.OutcomeError && e.KeyService && !e.ClientGone:
-		// Where the proxy writes its ai.upstream_error audit entry.
+	case e.Outcome == observe.OutcomeError && e.KeyService && !e.ClientGone && !e.GRPC:
+		// Where the proxy writes its ai.upstream_error audit entry. A gRPC
+		// call is no model request: it bypasses the AI gateway, and an error
+		// code may be the relay's own answer (H4, a deadline).
 		o.upstreamError(e.ServiceID, e.ServiceID, e.Status, 0)
 	}
 }
