@@ -182,6 +182,31 @@ passthrough on the HTTPS port. See [gRPC and HTTP/2](/guide/grpc) and
   (relay-own names always go to the dashboard). This is on only while the
   relay knows a name of its own: `BURROW_AUTH_DOMAIN`, ACME or a file
   certificate. Uploaded certificates are served there too.
+- **A wildcard file certificate makes the names under it the relay's.** With
+  `BURROW_HTTP_TLS_CERT` (no ACME), every DNS name of the certificate is a
+  relay name, and a wildcard SAN (`*.example.com`) covers one label under it.
+  A custom domain such as `grpc.example.com` under that wildcard can no
+  longer be changed (PUT) or created again (409), and on the dashboard
+  listener its requests reach the dashboard, not the service. Before the
+  upgrade, list your custom domains against the certificate's names. Then
+  either move such a domain to a name the certificate does not cover, or
+  replace the certificate with one that names only the relay's own hosts
+  (the dashboard, the services domain) and upload the domain's own
+  certificate with it.
+- **The tcp domain may not be a parent of the services domain.** A
+  `BURROW_TCP_DOMAIN` that is `BURROW_SERVICES_DOMAIN` or a parent of it stops
+  the relay at start, with ACME or without. Pick a tcp domain beside the
+  services domain (`tcp.example.com` next to `apps.example.com`).
+- **gRPC calls are metered.** On a service with an AI config (where the
+  chain's controls are off, so gRPC is served), each gRPC, grpc-web or
+  Connect call writes a usage row: the count and its bytes, no tokens. Day
+  limits on requests and bytes count these calls, and they appear in the
+  usage and cost views.
+- **Run the gRPC end-to-end tests before you deploy from `develop`.** CI runs
+  the `e2e-grpc` job on `main` and on pull requests only. Before a deploy from
+  another branch, run them locally: `cd test/grpce2e && go test -count=1
+  ./...` (they build both binaries and need no Docker). See
+  `test/README.md`.
 
 ### Upgrading to v0.13.0 {#upgrade-v0-13-0}
 

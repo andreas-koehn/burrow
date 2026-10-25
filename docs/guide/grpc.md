@@ -212,7 +212,9 @@ is kept.
 
 - **An offline tunnel** (the service exists, its client is not connected) is
   `UNAVAILABLE`, not `UNIMPLEMENTED`, so clients retry or wait. An unknown
-  host or path is `UNIMPLEMENTED`.
+  host or path is `UNIMPLEMENTED`, on the dashboard listener too for a host
+  that is no bound custom domain (never, or no longer); when the relay could
+  not look the host up, the call gets `UNAVAILABLE`.
 - **`burrow_login`** answers a gRPC call with `UNAUTHENTICATED` and "this
   service needs a browser sign-in; use access mode api_key for gRPC". The mode
   stays allowed for a service that serves browsers and gRPC both.
@@ -255,9 +257,12 @@ request or answer guardrails, routing with backends or the anthropic section is
 
 A section that is present but switched off does not count. A service with only
 the inspector, the cache or nothing serves gRPC unbuffered. Such calls skip
-the chain: no body limit, no meter, no inspection, and **the inspector never
-records gRPC calls**. The service's upstream credential is still added as a
-header, and the rate limit and quota still count each call.
+the chain's body work: no body limit, no token metering, no inspection, and
+**the inspector never records gRPC calls**. The service's upstream credential
+is still added as a header, and the rate limit and quota still count each
+call. Each call still writes a usage row with its count and bytes (no
+tokens), so day limits on requests and bytes include gRPC calls and the usage
+and cost views show them.
 
 ## Observability
 

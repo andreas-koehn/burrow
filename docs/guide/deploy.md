@@ -345,22 +345,34 @@ Then, in Burrow:
    to a custom domain's service by its `Host` header only when it knows a name
    of its own (an auth domain, a certificate or ACME); without one the
    dispatch stays off.
+4. Lift Traefik's read timeout on the entry point that carries gRPC (see
+   below). In Coolify it is one more line in the proxy's command (the
+   server's Proxy configuration), then restart the proxy:
+
+   ```yaml
+   - '--entrypoints.https.transport.respondingTimeouts.readTimeout=0'
+   ```
 
 `BURROW_TRUSTED_PROXIES` already covers Traefik in the Coolify compose file.
 
-::: warning Traefik's `readTimeout` can cut long gRPC streams
-Traefik v3 entrypoints have `transport.respondingTimeouts.readTimeout`, which
-bounds how long Traefik reads a request, a long client stream included. A
-streaming call that sends for longer than the value is reset. Check the
-default of your Traefik version and raise it, or set it to `0`, on the entry
-point that carries gRPC:
+::: warning Traefik's `readTimeout` cuts client and bidi streams after 60 s
+Traefik v3 entry points have `transport.respondingTimeouts.readTimeout`, the
+longest time Traefik reads a request, body included. Its default is **60
+seconds** (`DefaultReadTimeout` in Traefik's `pkg/config/static`, checked at
+v3.7.16), and over HTTP/2 it applies to each stream. A client-streaming or
+bidi call that keeps sending for more than 60 seconds is reset; unary and
+server-streaming calls, whose request ends at once, are not affected.
 
-```
---entryPoints.https.transport.respondingTimeouts.readTimeout=0
-```
+`readTimeout=0` removes the bound, or set a value above your longest stream
+(`=3600s`). The trade-off: the setting is per entry point, so it also lifts
+the bound for every other router on it (the dashboard, other apps), and a
+slow or stalled client can then hold a request open longer. A separate entry
+point (its own port) for gRPC keeps the 60 s for everything else. Burrow
+still bounds calls on its side with `grpc_max_duration_s`, and HTTP/2 pings
+find dead peers.
 
-`idleTimeout` and `writeTimeout` are separate settings; check them too for
-streams that stay quiet for long.
+`idleTimeout` (default 180 s) closes connections without a stream;
+`writeTimeout` is 0 (no bound) by default.
 :::
 
 ### Where to set the deadline
