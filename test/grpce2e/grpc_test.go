@@ -633,20 +633,49 @@ func TestUpstream_TLSProtocols(t *testing.T) {
 	})
 }
 
-// (h) connection-log rows and the Prometheus counter of gRPC calls.
-func TestZZ_ObservabilityOfCalls(t *testing.T) {
-	svcs, err := e.plain.api.services()
-	if err != nil {
+// (h) connection-log rows and the Prometheus counter of gRPC calls. The test
+// makes every call it looks for itself, so it holds in any order
+// (-shuffle=on).
+func TestGRPC_ObservabilityOfCalls(t *testing.T) {
+	api := e.plain.api
+	id := startGRPCService(t, e.plain, "g-obs", "grpc", e.grpcPlain.addr)
+	addAutoDomain(t, e.plain, id, "obs.p.test")
+	cc := dialH2C(t, e.plain.http, "obs.p.test")
+	// OK: unary, bidi, health.
+	checkHealthUnaryBidi(t, cc, "h2c")
+	// DEADLINE_EXCEEDED (4): the relay's cap.
+	api.must(t, 200, "PUT", "/services/"+id+"/http-settings", map[string]any{"grpc_max_duration_s": 1})
+	wantCode(t, "capped call", sleepCall(ctxT(t, 20*time.Second), cc, 3003), codes.DeadlineExceeded)
+	// UNAUTHENTICATED (16): api_key without a key.
+	api.must(t, 204, "PUT", "/services/"+id+"/access-mode", map[string]string{"access_mode": "api_key"})
+	if err := eventually(10*time.Second, func() error {
+		if _, err := unary(ctxT(t, 5*time.Second), cc, "nokey"); status.Code(err) != codes.Unauthenticated {
+			return fmt.Errorf("no key: %v", err)
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
-	ids := map[string]string{}
-	for _, s := range svcs {
-		ids[s.Name] = s.ID
+	// PERMISSION_DENIED (7): the ip rule (checked before the access mode).
+	api.must(t, 204, "PUT", "/services/"+id+"/ip-geo", map[string]any{"enabled": true, "block_cidrs": []string{"127.0.0.0/8"}})
+	if err := eventually(10*time.Second, func() error {
+		if _, err := unary(ctxT(t, 5*time.Second), cc, "blocked"); status.Code(err) != codes.PermissionDenied {
+			return fmt.Errorf("blocked: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
+	// UNAVAILABLE (14): native gRPC to an HTTP/1.1 upstream (H4).
+	h1 := startGRPCService(t, e.plain, "w-obs", "http", e.grpcPlain.addr)
+	addAutoDomain(t, e.plain, h1, "obs-h1.p.test")
+	_, err := unary(ctxT(t, 5*time.Second), dialH2C(t, e.plain.http, "obs-h1.p.test"), "x")
+	wantCode(t, "gRPC to an http1 upstream", err, codes.Unavailable)
+
 	find := func(t *testing.T, id, method string, code int, rowStatus string) {
 		t.Helper()
 		if err := eventually(10*time.Second, func() error {
-			for _, r := range e.plain.api.connLogs(t, id) {
+			for _, r := range api.connLogs(t, id) {
 				if r.GRPCMethod == method && r.GRPCStatus != nil && *r.GRPCStatus == code && r.Protocol == "grpc" && (rowStatus == "" || r.Status == rowStatus) {
 					return nil
 				}
@@ -656,28 +685,27 @@ func TestZZ_ObservabilityOfCalls(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	find(t, ids["g-h2c"], "/e2e.Echo/Unary", 0, "closed_clean")
-	find(t, ids["g-h2c"], "/e2e.Echo/Bidi", 0, "closed_clean")
-	find(t, ids["g-h2c"], "/grpc.health.v1.Health/Check", 0, "")
-	find(t, ids["g-key"], "/e2e.Echo/Unary", 16, "")
-	find(t, ids["g-ip"], "/e2e.Echo/Unary", 7, "")
-	// An offline service has no tunnel to log against: its UNAVAILABLE
-	// refusals write no row, as offline HTTP requests never did.
-	find(t, ids["g-h2"], "/e2e.Echo/Unary", 14, "closed_error")
-	find(t, ids["g-ai"], "/e2e.Echo/Unary", 7, "")
+	find(t, id, "/e2e.Echo/Unary", 0, "closed_clean")
+	find(t, id, "/e2e.Echo/Bidi", 0, "closed_clean")
+	find(t, id, "/grpc.health.v1.Health/Check", 0, "")
+	find(t, id, "/e2e.Echo/Sleep", 4, "closed_error")
+	find(t, id, "/e2e.Echo/Unary", 16, "rejected")
+	find(t, id, "/e2e.Echo/Unary", 7, "rejected")
+	find(t, h1, "/e2e.Echo/Unary", 14, "closed_error")
 
-	b := e.plain.api.must(t, 200, "GET", "/metrics", nil)
-	var samples []string
+	b := api.must(t, 200, "GET", "/metrics", nil)
+	got := map[string]bool{}
 	for _, l := range strings.Split(string(b), "\n") {
-		if strings.HasPrefix(l, "burrow_grpc_requests_total{") {
-			samples = append(samples, l)
+		for _, svc := range []string{id, h1} {
+			if strings.HasPrefix(l, `burrow_grpc_requests_total{service="`+svc+`",code="`) {
+				code := strings.TrimPrefix(l, `burrow_grpc_requests_total{service="`+svc+`",code="`)
+				got[code[:strings.Index(code, `"`)]] = true
+			}
 		}
 	}
-	all := strings.Join(samples, "\n")
-	for _, code := range []string{`code="OK"`, `code="UNAUTHENTICATED"`, `code="PERMISSION_DENIED"`, `code="UNAVAILABLE"`, `code="DEADLINE_EXCEEDED"`} {
-		if !strings.Contains(all, code) {
-			t.Errorf("burrow_grpc_requests_total has no sample with %s:\n%s", code, all)
+	for _, code := range []string{"OK", "DEADLINE_EXCEEDED", "UNAUTHENTICATED", "PERMISSION_DENIED", "UNAVAILABLE"} {
+		if !got[code] {
+			t.Errorf("burrow_grpc_requests_total has no sample for these services with code %s (got %v)", code, got)
 		}
 	}
-	t.Logf("burrow_grpc_requests_total samples:\n%s", all)
 }

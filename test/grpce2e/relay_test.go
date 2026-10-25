@@ -131,7 +131,30 @@ type relayOpts struct {
 	dashCert *leaf
 }
 
+// startRelay starts burrowd on ports that were free a moment ago. burrowd
+// binds them itself, so another process may take one in between: then the
+// relay stops with "address already in use", and it is started again on
+// new ports (at most three times).
 func startRelay(e *env, o relayOpts) (*relay, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		r, err := startRelayOnce(e, o)
+		if err == nil {
+			return r, nil
+		}
+		lastErr = err
+		if r != nil {
+			r.stop()
+		}
+		if !strings.Contains(err.Error(), "address already in use") {
+			return r, err
+		}
+		_ = os.RemoveAll(filepath.Join(e.dir, o.name))
+	}
+	return nil, lastErr
+}
+
+func startRelayOnce(e *env, o relayOpts) (*relay, error) {
 	dir := filepath.Join(e.dir, o.name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err

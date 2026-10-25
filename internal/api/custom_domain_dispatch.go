@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+
+	"github.com/ankoehn/burrow/internal/grpcwire"
 )
 
 // CustomDomainSwitch is the host dispatch of the dashboard listener (H10):
@@ -18,7 +20,10 @@ import (
 //     without a lookup, even when an old custom-domain row (from before the
 //     H12 checks) has the name.
 //  2. A bound custom domain goes to site.
-//  3. Anything else, and a failed lookup (logged), goes to router.
+//  3. Anything else, and a failed lookup (logged), goes to router; a
+//     gRPC-shaped request there gets a trailers-only reply instead of the
+//     router's HTML or JSON: UNIMPLEMENTED for a host that is not bound
+//     (never, or no longer), UNAVAILABLE when the lookup failed.
 //
 // The decision is made on Host, not on the TLS server name, for three
 // reasons. Behind a proxy that terminates TLS (Traefik) there is no server
@@ -54,6 +59,14 @@ func CustomDomainSwitch(owns func(string) bool, bound func(ctx context.Context, 
 				r2.Host = net.JoinHostPort(host, port)
 			}
 			site.ServeHTTP(w, r2)
+			return
+		}
+		if grpcwire.Classify(r).GRPCShaped() {
+			code, msg := grpcwire.CodeUnimplemented, "no service is bound to this host name"
+			if err != nil {
+				code, msg = grpcwire.CodeUnavailable, "the host name could not be looked up; try again"
+			}
+			grpcwire.WriteTrailersOnly(w, r.Header.Get("Content-Type"), code, msg)
 			return
 		}
 		router.ServeHTTP(w, r)

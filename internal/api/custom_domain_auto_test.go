@@ -406,3 +406,43 @@ func TestCustomDomainSwitch_Precedence(t *testing.T) {
 		t.Errorf("site saw Host %v, want %v", siteHosts, want)
 	}
 }
+
+// A gRPC call to a host that is no bound custom domain (never bound, or
+// deleted) gets a trailers-only UNIMPLEMENTED, and one whose lookup failed
+// UNAVAILABLE (retryable), instead of the router's HTML or JSON. Other
+// requests and the relay's own names keep going to the router.
+func TestCustomDomainSwitch_GRPCOnAnUnboundHost(t *testing.T) {
+	owns := relaynames.New([]string{"burrow.example.com"}, "").Owns
+	lookup := func(_ context.Context, host string) (bool, error) {
+		if host == "broken.example.com" {
+			return false, errors.New("db down")
+		}
+		return host == "grpc.example.com", nil
+	}
+	site := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "site") })
+	router := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "router") })
+	h := CustomDomainSwitch(owns, lookup, site, router, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	for _, c := range []struct {
+		host, ct, body, status string
+	}{
+		{"unknown.example.com", "application/grpc", "", "12"},
+		{"unknown.example.com", "application/grpc-web+proto", "", "12"},
+		{"broken.example.com", "application/grpc", "", "14"},
+		{"grpc.example.com", "application/grpc", "site", ""},
+		{"unknown.example.com", "application/json", "router", ""},
+		{"burrow.example.com", "application/grpc", "router", ""},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/pkg.S/M", nil)
+		req.Host = c.host
+		req.Header.Set("Content-Type", c.ct)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Body.String() != c.body || rec.Header().Get("Grpc-Status") != c.status {
+			t.Errorf("%s %s: body %q grpc-status %q, want %q %q", c.host, c.ct, rec.Body.String(), rec.Header().Get("Grpc-Status"), c.body, c.status)
+		}
+		if c.status != "" && (rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != c.ct) {
+			t.Errorf("%s: %d %q, want a trailers-only 200 echoing the content type", c.host, rec.Code, rec.Header().Get("Content-Type"))
+		}
+	}
+}

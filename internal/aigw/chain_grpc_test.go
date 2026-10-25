@@ -46,9 +46,11 @@ func (o *countObserver) ObserveModelRequest(observe.ModelRequest) { o.n.Add(1) }
 // A gRPC call on a service with the inspector (and nothing that must
 // rewrite or judge the body) goes to the upstream unbuffered (H6): its first
 // message arrives while the caller still holds the call open. Nothing of the
-// chain's body work runs: no capture, no usage row, no observer event. The
-// rate limit still counts the call, and the upstream credential is put on
-// it.
+// chain's body work runs: no capture, no observer event. The call still
+// writes one usage row (count and bytes, no tokens, the service and key), so
+// the day limits and the usage views see it (final review: a caller could
+// otherwise dodge the daily quotas with a gRPC content type). The rate limit
+// still counts the call, and the upstream credential is put on it.
 func TestChain_GRPCBypassesTheBufferedPath(t *testing.T) {
 	redactEngine, err := redact.NewEngine(nil)
 	if err != nil {
@@ -76,7 +78,8 @@ func TestChain_GRPCBypassesTheBufferedPath(t *testing.T) {
 		})
 	}
 	svc := aigw.Service{
-		ID: "svc-grpc",
+		ID:       "svc-grpc",
+		APIKeyID: "key-grpc",
 		AIConfig: aigw.ServiceAIConfig{
 			Inspector: &aigw.InspectorConfig{Enabled: true, MaxRequests: 10},
 			Cache:     &exact.Settings{},
@@ -176,8 +179,16 @@ func TestChain_GRPCBypassesTheBufferedPath(t *testing.T) {
 	if ring := mgr.Get("svc-grpc"); ring != nil && len(ring.List(inspector.ListQuery{})) != 0 {
 		t.Error("the inspector recorded a gRPC call")
 	}
-	if n := len(meter.all()); n != 0 {
-		t.Errorf("%d usage rows for a gRPC call", n)
+	rows := meter.all()
+	if len(rows) != 1 {
+		t.Fatalf("%d usage rows for one gRPC call, want 1", len(rows))
+	}
+	u := rows[0]
+	if u.ServiceID != "svc-grpc" || u.APIKeyID != "key-grpc" || u.TokensIn != 0 || u.TokensOut != 0 ||
+		u.BytesIn != int64(len(grpcMsg(text))) || u.BytesOut != int64(len(grpcMsg("echo:"+text))) ||
+		u.UpstreamStatus != http.StatusOK || u.CacheHit {
+		t.Errorf("usage row %+v, want svc-grpc/key-grpc, no tokens, bytes %d in %d out, status 200",
+			u, len(grpcMsg(text)), len(grpcMsg("echo:"+text)))
 	}
 	if obs.n.Load() != 0 {
 		t.Error("the chain's observer was told of a gRPC call")
@@ -195,6 +206,9 @@ func TestChain_GRPCBypassesTheBufferedPath(t *testing.T) {
 	}
 	if upstreamCalls.Load() != 1 {
 		t.Errorf("upstream called %d times", upstreamCalls.Load())
+	}
+	if n := len(meter.all()); n != 1 {
+		t.Errorf("%d usage rows after a refused call, want still 1", n)
 	}
 }
 

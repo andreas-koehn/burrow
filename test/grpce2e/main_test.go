@@ -3,6 +3,7 @@ package grpce2e
 import (
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -195,7 +196,9 @@ func startStandInProxy() (func(), error) {
 		// and an empty body when it wins the race with the end of the
 		// handler. Streams (no Content-Length) are flushed at once anyway.
 	}
-	port, err := freePort()
+	// Listen first and serve that listener: no window in which another
+	// process could take a port picked and released before.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
@@ -203,13 +206,12 @@ func startStandInProxy() (func(), error) {
 	in.SetHTTP1(true)
 	in.SetHTTP2(true)
 	srv := &http.Server{
-		Addr:              fmt.Sprintf("127.0.0.1:%d", port),
 		Handler:           rp,
 		TLSConfig:         &tls.Config{Certificates: []tls.Certificate{tc}},
 		Protocols:         &in,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	e.proxyAddr = srv.Addr
-	go func() { _ = srv.ListenAndServeTLS("", "") }()
+	e.proxyAddr = ln.Addr().String()
+	go func() { _ = srv.ServeTLS(ln, "", "") }()
 	return func() { _ = srv.Close() }, nil
 }

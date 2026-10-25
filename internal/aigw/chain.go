@@ -61,6 +61,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ankoehn/burrow/internal/aimeter"
@@ -415,14 +416,24 @@ func (c *Chain) ServeHTTP(w http.ResponseWriter, r *http.Request, svc Service, p
 	// the anthropic section) the bypass would switch them all off, so such a
 	// call is refused with PERMISSION_DENIED instead. The inspector and the
 	// caches only watch or save work; a service with nothing else keeps the
-	// bypass, and its gRPC calls are not recorded.
+	// bypass, and its gRPC calls are not recorded by the inspector.
+	//
+	// The bypass is still metered (final review): run() writes a usage row
+	// for every request of a service with an AI config, the day limits are
+	// counted from those rows, and the content type is the caller's. So the
+	// call writes one row with its count and bytes (no tokens), as run()
+	// would. A service without an AI config meters no request, gRPC or not.
 	if cls := grpcwire.Classify(r); cls.Streaming() {
 		if aiControlsBody(svc.AIConfig) {
 			grpcwire.WriteTrailersOnly(w, r.Header.Get("Content-Type"), grpcwire.CodePermissionDenied, msgGRPCOnAIControls)
 			return
 		}
 		c.injectCredential(r, svc)
-		httpduplex.Serve(w, r, proxyHandler)
+		if IsAIPassThrough(svc.AIConfig) {
+			httpduplex.Serve(w, r, proxyHandler)
+			return
+		}
+		c.serveMeteredBypass(w, r, svc, proxyHandler)
 		return
 	}
 
@@ -2259,3 +2270,69 @@ func (r *replayRecorder) Write(p []byte) (int, error) {
 	return r.body.Write(p)
 }
 func (r *replayRecorder) Flush() {}
+
+// serveMeteredBypass serves a gRPC-like call unbuffered, as the bypass does,
+// and then writes its usage row: the bytes the call carried each way, no
+// tokens, the upstream's status, and the service and key attribution of
+// run()'s rows. It is not reported to the observer (no model request).
+func (c *Chain) serveMeteredBypass(w http.ResponseWriter, r *http.Request, svc Service, proxyHandler http.Handler) {
+	started := time.Now()
+	body := &countingBody{ReadCloser: r.Body}
+	if r.Body != nil && r.Body != http.NoBody {
+		r.Body = body
+	}
+	cw := &countingWriter{ResponseWriter: w}
+	httpduplex.Serve(cw, r, proxyHandler)
+	status := cw.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	ev := observe.ModelRequest{ServiceID: svc.ID, APIKeyID: svc.APIKeyID}
+	c.recordMeter(r.Context(), &ev, svc, KindUnknown, 0, 0, body.n.Load(), cw.n.Load(), false, false, status, nil, time.Since(started), 0)
+}
+
+// countingBody counts the bytes read from a request body. The transport may
+// read it on its own goroutine, hence the atomic.
+type countingBody struct {
+	io.ReadCloser
+	n atomic.Int64
+}
+
+func (b *countingBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	b.n.Add(int64(n))
+	return n, err
+}
+
+// countingWriter counts the response bytes and notes the status. Flush and
+// Unwrap keep http.ResponseController working through it (full duplex,
+// flushing), and Header is the inner map, so trailers pass.
+type countingWriter struct {
+	http.ResponseWriter
+	n      atomic.Int64
+	status int
+}
+
+func (w *countingWriter) WriteHeader(code int) {
+	if w.status == 0 && code >= 200 {
+		w.status = code
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(p)
+	w.n.Add(int64(n))
+	return n, err
+}
+
+func (w *countingWriter) Flush() { _ = w.FlushError() }
+
+func (w *countingWriter) FlushError() error {
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *countingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

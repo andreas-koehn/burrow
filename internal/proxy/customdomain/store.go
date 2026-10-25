@@ -64,13 +64,28 @@ type Store struct {
 	db  DBStore
 	mu  sync.RWMutex
 	mem map[string]*Cert // lowercase hostname → parsed cert
+	// neg remembers names that are no custom domain until the time given,
+	// so that host dispatch (every Host header the relay does not own) and
+	// handshakes for unknown names do not each cost a database query. Any
+	// write clears it (InvalidateHostname); a failed lookup is not kept.
+	neg map[string]time.Time
+	gen uint64 // bumped by every write: a miss read before it is not kept
+	now func() time.Time
 }
+
+// negativeTTL is how long a miss is remembered, negativeMax how many.
+const (
+	negativeTTL = 5 * time.Second
+	negativeMax = 4096
+)
 
 // New constructs a Store backed by db.
 func New(db DBStore) *Store {
 	return &Store{
 		db:  db,
 		mem: make(map[string]*Cert),
+		neg: make(map[string]time.Time),
+		now: time.Now,
 	}
 }
 
@@ -82,9 +97,14 @@ func (s *Store) LookupBySNI(ctx context.Context, sni string) (Cert, bool, error)
 
 	s.mu.RLock()
 	c, ok := s.mem[sni]
+	until, missed := s.neg[sni]
+	gen := s.gen
 	s.mu.RUnlock()
 	if ok {
 		return *c, true, nil
+	}
+	if missed && s.now().Before(until) {
+		return Cert{}, false, nil
 	}
 
 	// Cache miss: fetch from DB.
@@ -93,6 +113,7 @@ func (s *Store) LookupBySNI(ctx context.Context, sni string) (Cert, bool, error)
 		return Cert{}, false, err
 	}
 	if !found {
+		s.rememberMiss(sni, gen)
 		return Cert{}, false, nil
 	}
 
@@ -123,11 +144,40 @@ func (s *Store) LookupBySNI(ctx context.Context, sni string) (Cert, bool, error)
 // InvalidateHostname evicts the cache entry for the given hostname so the next
 // lookup re-reads from the database. Call this from INSERT / UPDATE / DELETE
 // API handlers.
+//
+// It also forgets every remembered miss: the name may be bound now, and a
+// wildcard domain covers names other than its own.
 func (s *Store) InvalidateHostname(hostname string) {
 	hostname = strings.ToLower(hostname)
 	s.mu.Lock()
 	delete(s.mem, hostname)
+	clear(s.neg)
+	s.gen++
 	s.mu.Unlock()
+}
+
+// rememberMiss notes that name is no custom domain for negativeTTL. When the
+// map is full, expired entries go first, and all of them if none expired. A
+// miss read before a write (gen moved on) is not kept: the write may have
+// bound the name.
+func (s *Store) rememberMiss(name string, gen uint64) {
+	now := s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if gen != s.gen {
+		return
+	}
+	if len(s.neg) >= negativeMax {
+		for k, until := range s.neg {
+			if !now.Before(until) {
+				delete(s.neg, k)
+			}
+		}
+		if len(s.neg) >= negativeMax {
+			clear(s.neg)
+		}
+	}
+	s.neg[name] = now.Add(negativeTTL)
 }
 
 // CertCallback returns a tls.Config.GetCertificate function. On every TLS

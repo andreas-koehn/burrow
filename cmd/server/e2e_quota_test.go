@@ -381,3 +381,56 @@ func TestE2EQuota_DayQuota(t *testing.T) {
 		t.Errorf("429 body.error is empty (body=%q)", body)
 	}
 }
+
+// A gRPC-like call skips the AI chain's buffered path, but it is metered
+// like any request of a service with an AI config (final review): with a
+// day cap of one request, the first call (application/connect+json, which
+// any caller may send) is served and the second is refused. Before, the
+// bypass wrote no usage row and the day cap never filled.
+func TestE2EQuota_DayQuotaCountsGRPCBypass(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip e2e in -short")
+	}
+	s := bootE2EStack(t, withE2EQuota())
+	s.setUpstreamHandler(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/connect+json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	seedRateLimit(t, s, db.RateLimit{
+		Scope: "service", Subject: s.serviceID, Dimension: "rpm", Lim: 1, Burst: 1, Window: "day",
+	})
+	// An AI config with nothing that rewrites the body: the gRPC bypass.
+	if _, err := s.db.ExecContext(context.Background(),
+		`INSERT INTO service_ai_config(service_id, config) VALUES(?, ?)`,
+		s.serviceID, `{"inspector":{"enabled":true,"max_requests":10}}`,
+	); err != nil {
+		t.Fatalf("seed service_ai_config: %v", err)
+	}
+
+	hc := s.visitorClient(t)
+	call := func() (int, string) {
+		req, _ := http.NewRequest(http.MethodPost, "https://"+s.hostWithPort()+"/pkg.Chat/Talk", strings.NewReader(`{"q":"hi"}`))
+		req.Header.Set("Content-Type", "application/connect+json")
+		resp, err := hc.Do(req)
+		must(t, err, "POST")
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	if code, body := call(); code != http.StatusOK {
+		t.Fatalf("first call: %d %q, want 200", code, body)
+	}
+	var rows, bytesIn int
+	if err := s.db.QueryRowContext(context.Background(),
+		`SELECT COUNT(*), COALESCE(SUM(bytes_in),0) FROM usage_events WHERE service_id = ?`, s.serviceID).Scan(&rows, &bytesIn); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || bytesIn != len(`{"q":"hi"}`) {
+		t.Fatalf("usage_events after one gRPC-like call: %d rows, %d bytes in; want 1 row, %d bytes", rows, bytesIn, len(`{"q":"hi"}`))
+	}
+	if code, body := call(); code != http.StatusTooManyRequests {
+		t.Fatalf("second call over the day cap: %d %q, want 429", code, body)
+	}
+}
