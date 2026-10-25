@@ -151,6 +151,13 @@ passthrough on the HTTPS port. See [gRPC and HTTP/2](/guide/grpc) and
   working, with the http side winning the name; see `shadowed_by`. A
   `BURROW_TCP_DOMAIN` that is an ACME name or a parent of one, or (with the
   mux on) lies under the dashboard's host, stops the relay at start.
+- **Automatic certificates for custom domains are for administrators, and
+  capped.** `cert_source: auto` needs `services:configure:any` (403 for
+  `:own`, who upload a certificate). At most `BURROW_ACME_CUSTOM_MAX` (default
+  100) auto domains on the relay and `BURROW_ACME_CUSTOM_PER_USER` (default 10)
+  per service owner; `0` allows none; over a cap the write gets 429. A name
+  under another service's wildcard custom domain, or a wildcard over another
+  service's name, is refused (409).
 - **gRPC on AI-controlled services is refused.** A gRPC, grpc-web or connect
   call to a service where redaction, guardrails, routing with backends or the
   anthropic section is switched on gets `PERMISSION_DENIED`. Serve gRPC from
@@ -167,8 +174,9 @@ passthrough on the HTTPS port. See [gRPC and HTTP/2](/guide/grpc) and
   closed.
 - **New names to watch:** the metric `burrow_grpc_requests_total`, the audit
   actions `service.http_settings.update` and `service.custom_domain.cert_failed`
-  (once per host name and hour), and `protocol` on every http connection-log
-  row (`h2`, `http/1.1`, `grpc`, `grpc-web`; it was empty).
+  (once per host name and hour), `protocol` on every http connection-log
+  row (`h2`, `http/1.1`, `grpc`, `grpc-web`; it was empty), and
+  `grpc_method` and `grpc_status` on gRPC rows (REST list and exports).
 - **Custom domains on the dashboard listener.** A request whose `Host` is a
   bound custom domain goes to that service on the dashboard listener as well
   (relay-own names always go to the dashboard). This is on only while the

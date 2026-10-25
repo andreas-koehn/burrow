@@ -127,7 +127,7 @@ The table below lists the major resource groups, their path prefixes, and what t
 | **connections** | `/api/v1/services/{id}/connections` | Live visitors and forwards of a tcp service; `DELETE` disconnects one |
 | **max-connections** | `/api/v1/services/{id}/max-connections` | Visitor cap of a tcp service (0 = default 32, at most 256) |
 | **tcp-settings** | `/api/v1/services/{id}/tcp-settings` | `GET`, `PUT`: PROXY protocol header (`""` or `v2`) and idle timeout (0, or 60 to 86400 s) of a tcp service. `GET` also returns `client_proxy_protocol` (the client sends the header by its own setting) and `client_proxy_supported` (`true`, `false`, or `null` while offline) |
-| **domains** | `/api/v1/services/{id}/domains` | `GET`, `POST`, and `GET`, `PUT`, `DELETE` on `…/domains/{did}`: custom domains of an http service. Body `{hostname, cert_source?, cert_pem?, key_pem?}`; `cert_source` is `uploaded` (default, needs `cert_pem` and `key_pem`) or `auto` (no certificate; a wildcard, or a certificate sent with it, is 400). The object carries `cert_source` and `cert_status` (`ready`, `pending` or `not_needed`). Names are normalised (lower case, no trailing dot) and validated: a single label, an IP address or a non-punycode IDN is 400; a name that a tcp service uses or covers, is under `BURROW_TCP_DOMAIN`, or is one of the relay's own is 409. Writes ask for a recent password confirmation and are not MCP tools |
+| **domains** | `/api/v1/services/{id}/domains` | `GET`, `POST`, and `GET`, `PUT`, `DELETE` on `…/domains/{did}`: custom domains of an http service. Body `{hostname, cert_source?, cert_pem?, key_pem?}`; `cert_source` is `uploaded` (default, needs `cert_pem` and `key_pem`) or `auto` (no certificate; a wildcard, or a certificate sent with it, is 400). The object carries `cert_source` and `cert_status` (`ready`, `pending` or `not_needed`). Names are normalised (lower case, no trailing dot) and validated: a single label, an IP address or a non-punycode IDN is 400; a name that a tcp service uses or covers, is under `BURROW_TCP_DOMAIN`, or is one of the relay's own is 409, and so is a name under another service's wildcard custom domain or a wildcard over another service's name (`hostname overlaps a wildcard custom domain of another service…`). `auto` needs `services:configure:any` (403 for `:own`: upload a certificate instead) and is capped by `BURROW_ACME_CUSTOM_MAX` (default 100) and `BURROW_ACME_CUSTOM_PER_USER` (default 10; `0` allows none), 429 over a cap. Writes ask for a recent password confirmation and are not MCP tools |
 | **http-settings** | `/api/v1/services/{id}/http-settings` | `GET`, `PUT`: `upstream_protocol` (`http1`, `https`, `h2c`, `h2`), `upstream_tls_verify`, `upstream_tls_server_name`, `upstream_tls_ca_pem` (write only; `GET` returns `upstream_tls_ca_sha256`) and `grpc_max_duration_s` (0, or 1 to 86400). `GET` also returns `client_upstream_protocol` (what a connected client chose, `""` for none) and `effective_upstream_protocol`. A partial body keeps the other fields; `""` clears the server name and the CA. http services only (409 for tcp). Permission `services:configure:own` or `any`, no recent-auth. The `PUT` is not an MCP tool |
 | **ingress** | `/api/v1/ingress/status` | `GET`: `h2c` (`BURROW_HTTP_H2C`), `https_passthrough` (`BURROW_TLS_PASSTHROUGH_ON_HTTPS`), `passthrough_listen` (`BURROW_TLS_PASSTHROUGH_LISTEN`, `""` for none) and `acme`. Permission `services:configure:own` or `any` |
 | **tcp-hostname** | `/api/v1/services/{id}/tcp-hostname` | `GET`, `PUT {tcp_hostname?, hostname_only?}`: the custom host name for TLS passthrough (`""` clears it), and whether the service is reached by host name only (no public port; needs the passthrough listener and a name). `GET` lists `hostnames`, and `passthrough`, `reachable`, `reachable_on` (`https` for the `:443` mux, and the dedicated listener's address; empty when not reachable), `shadowed_by` (`custom_domain` or `relay`, only while the mux runs and the http side wins a name) and `hostname_only`. A name that is, or lies under, an ACME name or another name the relay serves itself, or that a custom domain covers, is 409. Setting a name needs `services:configure:any`; a change asks for a recent password confirmation |
@@ -144,8 +144,9 @@ The table below lists the major resource groups, their path prefixes, and what t
 
 The connection-log rows (`GET /api/v1/connection-logs`, the `connection_logs_list`
 tool) of http services carry `protocol` (`grpc`, `grpc-web`, `h2` or
-`http/1.1`). The gRPC method and status are stored, but the REST list does not
-return `grpc_method` and `grpc_status` in this release.
+`http/1.1`), and gRPC calls `grpc_method` (the request path) and `grpc_status`
+(the code; `null` for every other row). The ndjson and CSV exports have both
+columns too.
 
 ---
 
@@ -288,6 +289,9 @@ curl -H "Authorization: Bearer bua_YOUR_TOKEN_HERE" \
   -d '{"hostname":"grpc.example.com","cert_source":"auto"}'
 ```
 
+`auto` takes an administrator (`services:configure:any`); a service owner
+with `:own` gets 403 and uploads `cert_pem` and `key_pem` instead. Over
+`BURROW_ACME_CUSTOM_MAX` or `BURROW_ACME_CUSTOM_PER_USER` the answer is 429.
 `cert_status` of the answer is `pending` while the relay obtains the
 certificate under ACME, then `ready`; `not_needed` behind a proxy that holds
 it. For `auto`, `cert_sha256` is empty and `not_before` and `not_after` are the

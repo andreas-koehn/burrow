@@ -39,7 +39,21 @@ front of it. The address for the caller is `grpc.example.com:443`.
 | `auto` | None uploaded. Under ACME the relay obtains it itself (HTTP-01 on `:80` or TLS-ALPN-01 on `443`) when the domain is bound and again at start. On a plain dashboard listener, a proxy in front holds the certificate and none is needed. | Default choice for gRPC. |
 | `uploaded` (default) | `cert_pem` and `key_pem` are sent with the domain. | A wildcard domain, or a certificate you manage. |
 
+- `auto` is **for administrators**: it needs `services:configure:any`. A user
+  with `services:configure:own` gets 403 (`automatic certificates need an
+  administrator; upload a certificate instead`) and uploads a certificate,
+  which proves control of the name. The dashboard offers only the upload to
+  such users.
+- `auto` names are capped: at most `BURROW_ACME_CUSTOM_MAX` on the relay
+  (default 100) and `BURROW_ACME_CUSTOM_PER_USER` per service owner (default
+  10). `0` allows none. Over a cap the write gets 429 naming the variable.
+  Uploaded domains do not count. See
+  [Configuration](/guide/configuration#acme-automatic-tls).
 - A wildcard custom domain needs `uploaded`.
+- A name under another service's wildcard custom domain, a wildcard over
+  another service's name, and nested wildcards across services are refused
+  (409, `hostname overlaps a wildcard custom domain of another service…`),
+  whatever the `cert_source`. A service's own names may overlap.
 - `auto` is refused (400) when the dashboard serves a file certificate without
   ACME: nobody could serve that name. Use `uploaded`, or ACME.
 - `auto` takes no certificate. Sending `cert_pem` or `key_pem` with it is
@@ -54,8 +68,15 @@ front of it. The address for the caller is `grpc.example.com:443`.
 - The relay sends a request to a custom domain's service by its `Host` header
   once it knows a name of its own: `BURROW_AUTH_DOMAIN`, ACME, or a file
   certificate. Without one it leaves custom domains to the host-routed ingress.
+  **Behind Traefik (a plain dashboard listener) set `BURROW_AUTH_DOMAIN`**, or
+  gRPC calls to the custom domain reach the dashboard's router instead of the
+  service. Coolify's template sets it.
 - Single-label names and IP addresses are refused as custom domains (400). An
   IDN must be given as punycode.
+
+In the dashboard, the **Host names** card of an http service lists its custom
+domains with the certificate source, the certificate status and the gRPC
+address to copy (`grpc.example.com:443`), and adds or removes them.
 
 Adding or changing a custom domain asks for a recent password confirmation and
 is not an MCP tool, as before. A name that a tcp service uses is refused (409);
@@ -98,6 +119,13 @@ Where it comes from:
 - Otherwise the stored setting applies, which you change with
   `PUT /api/v1/services/{id}/http-settings`.
 - `effective_upstream_protocol` in `GET …/http-settings` is the one in force.
+
+In the dashboard, the **Protocol** card of an http service sets the upstream
+protocol, the TLS fields for `https` and `h2` and the gRPC maximum duration,
+and shows the protocol the client set and the one in effect. It also says when
+`burrow_login` is the access mode (browsers only), when the inspector is on
+(gRPC calls are not recorded), when AI controls are switched on (gRPC is
+refused) and when the relay has h2c off.
 
 A native gRPC call to a service whose effective protocol is `http1` or `https`
 is answered by the relay with `UNAVAILABLE` and the message `service upstream
@@ -149,7 +177,10 @@ fingerprint). It applies only to http services (409 for a tcp service).
 - `grpc-timeout` is forwarded unchanged. The relay's own deadline for the
   call is `grpc-timeout` plus one second. When it fires before the response
   started, the caller gets `DEADLINE_EXCEEDED` as a trailers-only reply; after
-  that, the stream is reset.
+  that, the stream is reset. A gRPC server usually ends the call itself when
+  the forwarded `grpc-timeout` runs out (grpc-go resets the stream); once the
+  call's timeout has passed, the relay answers that reset with
+  `DEADLINE_EXCEEDED` too, not `UNAVAILABLE`.
 - `grpc_max_duration_s` (0 = off, otherwise 1 to 86400) caps every call,
   streams included. A `grpc-timeout` that is missing, malformed or longer than
   the cap is rewritten down to the cap, so the upstream knows its deadline too.
@@ -237,15 +268,19 @@ The connection log has one row per call, with:
 - `grpc_method`: the request path, at most 256 bytes;
 - `grpc_status`: the call's `grpc-status`, `0` for OK, empty for other rows.
 
-The REST list of connection logs returns `protocol` for these rows but, in
-this release, not `grpc_method` and `grpc_status` yet; the metric and the relay
-log carry the status.
+`GET /api/v1/connection-logs` and its ndjson export return `protocol`,
+`grpc_method` and `grpc_status` (`null` for other rows); the CSV export has the
+columns `protocol`, `sni`, `grpc_method` and `grpc_status`. In the dashboard,
+the Traffic table has a gRPC column (code and name, the method on hover) and
+the row details show the method and status.
 
 The status is read from a trailers-only reply, an announced trailer or a
 trailer sent after the body. The codes 2, 4, 13, 14 and 15 make the row
 `closed_error`, as a 5xx does. A stream that ends without any `grpc-status` is
 `closed_error` with reason `grpc_no_status`. A refusal by the relay is a row
-too, with the code the caller saw.
+too, with the code the caller saw. A call to an offline service has no tunnel
+to log against and writes no row (as an offline HTTP request never did); the
+relay log has it at debug level.
 
 Prometheus has `burrow_grpc_requests_total{service,code}` with the code by name
 (`OK`, `UNAVAILABLE`, …) or `none`. The `burrow_http_requests_total` family

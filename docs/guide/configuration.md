@@ -23,6 +23,8 @@ complete production example.
 | `BURROW_ACME_EMAIL` | `""` | Contact email sent to the CA. Required when `ACME_DOMAIN` is set; used for expiry notices. |
 | `BURROW_ACME_CA` | `https://acme-v02.api.letsencrypt.org/directory` | ACME directory URL. Swap for the [staging URL](#acme-staging) during testing. |
 | `BURROW_ACME_STORAGE` | `<dir(database_path)>/acme` | Directory where certificates and account keys are persisted across restarts. |
+| `BURROW_ACME_CUSTOM_MAX` | `100` | Most custom domains with `cert_source: auto` on the relay. The relay orders their certificates from the same CA account as its own names, so this keeps the CA's order limits for the relay's renewals. `0` allows no automatic custom domains. Over the cap a write gets 429. Uploaded domains do not count. |
+| `BURROW_ACME_CUSTOM_PER_USER` | `10` | Most `auto` custom domains on the services of one owner. `0` allows none. Over the cap a write gets 429. |
 
 ::: warning ACME is mutually exclusive with file certificates
 Setting `BURROW_ACME_DOMAIN` and any of `BURROW_TLS_CERT`, `BURROW_TLS_KEY`,
@@ -254,7 +256,7 @@ BURROW_LOG_LEVEL=warn
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `BURROW_AUTH_DOMAIN` | `""` | Base domain of the relay. HTTP services are served at `https://<domain>/svc/<slug>/`. Inferred from `BURROW_ACME_DOMAIN` when ACME is on — no need to set separately. |
+| `BURROW_AUTH_DOMAIN` | `""` | Base domain of the relay. HTTP services are served at `https://<domain>/svc/<slug>/`. Inferred from `BURROW_ACME_DOMAIN` when ACME is on — no need to set separately. On a plain dashboard listener (behind Traefik or another TLS-terminating proxy) it is also how the relay knows its own host: without it, custom domains are not dispatched by `Host` on the dashboard listener, so gRPC to a custom domain does not reach the service. See [gRPC](/guide/grpc#certificates-cert-source). |
 | `BURROW_SERVICES_DOMAIN` | `""` | Optional second host name for the tunnelled apps, for example `apps.example.com`. Set, HTTP services are served at `https://<services domain>/svc/<slug>/` and the dashboard's host keeps nothing of them. A bare host name, different from the dashboard's. Needs `BURROW_AUTH_DOMAIN` or `BURROW_ACME_DOMAIN`. See [Services domain](#services-domain). |
 
 #### Services domain {#services-domain}

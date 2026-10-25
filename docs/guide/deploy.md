@@ -336,6 +336,9 @@ Then, in Burrow:
 1. Add `grpc.example.com` as a custom domain of the http service with
    `cert_source: auto`. Behind a proxy on a plain listener the relay needs no
    certificate for it (`cert_status` is `not_needed`); Traefik holds it.
+   `auto` takes an administrator (`services:configure:any`); a service owner
+   without it uploads a certificate instead, or asks an administrator. The
+   Host names card of the service does this in the dashboard.
 2. Set the service's upstream protocol to `h2c` (or start the client with
    `burrow grpc 50051`).
 3. Keep `BURROW_AUTH_DOMAIN` set, as Coolify does. The relay sends a request
