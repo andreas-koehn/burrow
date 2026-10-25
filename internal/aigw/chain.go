@@ -2273,8 +2273,16 @@ func (r *replayRecorder) Flush() {}
 
 // serveMeteredBypass serves a gRPC-like call unbuffered, as the bypass does,
 // and then writes its usage row: the bytes the call carried each way, no
-// tokens, the upstream's status, and the service and key attribution of
-// run()'s rows. It is not reported to the observer (no model request).
+// tokens, streamed, the upstream's status, and the service and key
+// attribution of run()'s rows. It is not reported to the observer (no model
+// request).
+//
+// The row is written in a deferred function, so a call that is cut off
+// counts too: ReverseProxy panics http.ErrAbortHandler when the upstream
+// dies mid-body or the client goes away, and httpduplex raises it again.
+// The panic is recovered for the row and then raised again unchanged, so the
+// server aborts the connection as before (run() does the same through
+// serveUpstream).
 func (c *Chain) serveMeteredBypass(w http.ResponseWriter, r *http.Request, svc Service, proxyHandler http.Handler) {
 	started := time.Now()
 	body := &countingBody{ReadCloser: r.Body}
@@ -2282,13 +2290,27 @@ func (c *Chain) serveMeteredBypass(w http.ResponseWriter, r *http.Request, svc S
 		r.Body = body
 	}
 	cw := &countingWriter{ResponseWriter: w}
+	panicked := true
+	defer func() {
+		var abort any
+		if panicked {
+			abort = recover()
+		}
+		status := cw.status
+		if status == 0 {
+			status = http.StatusOK
+			if panicked {
+				status = http.StatusBadGateway // nothing reached the caller
+			}
+		}
+		ev := observe.ModelRequest{ServiceID: svc.ID, APIKeyID: svc.APIKeyID}
+		c.recordMeter(r.Context(), &ev, svc, KindUnknown, 0, 0, body.n.Load(), cw.n.Load(), true, false, status, nil, time.Since(started), 0)
+		if panicked {
+			panic(abort)
+		}
+	}()
 	httpduplex.Serve(cw, r, proxyHandler)
-	status := cw.status
-	if status == 0 {
-		status = http.StatusOK
-	}
-	ev := observe.ModelRequest{ServiceID: svc.ID, APIKeyID: svc.APIKeyID}
-	c.recordMeter(r.Context(), &ev, svc, KindUnknown, 0, 0, body.n.Load(), cw.n.Load(), false, false, status, nil, time.Since(started), 0)
+	panicked = false
 }
 
 // countingBody counts the bytes read from a request body. The transport may

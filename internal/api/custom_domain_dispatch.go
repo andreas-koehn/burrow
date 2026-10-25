@@ -47,7 +47,11 @@ func CustomDomainSwitch(owns func(string) bool, bound func(ctx context.Context, 
 		}
 		ok, err := bound(r.Context(), host)
 		if err != nil {
-			log.Warn("custom domain lookup failed; serving the dashboard", "host", host, "err", err)
+			answer := "serving the dashboard"
+			if grpcwire.Classify(r).GRPCShaped() {
+				answer = "answering the gRPC call UNAVAILABLE"
+			}
+			log.Warn("custom domain lookup failed; "+answer, "host", host, "err", err)
 		}
 		if ok && err == nil {
 			// site routes on Host too: hand it the name as it was looked

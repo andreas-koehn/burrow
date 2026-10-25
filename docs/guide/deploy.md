@@ -361,7 +361,13 @@ longest time Traefik reads a request, body included. Its default is **60
 seconds** (`DefaultReadTimeout` in Traefik's `pkg/config/static`, checked at
 v3.7.16), and over HTTP/2 it applies to each stream. A client-streaming or
 bidi call that keeps sending for more than 60 seconds is reset; unary and
-server-streaming calls, whose request ends at once, are not affected.
+server-streaming calls over HTTP/2, whose request ends at once, are not
+affected. grpc-web and Connect over HTTP/1.1 behave the same way: Traefik's
+entry point is Go's `net/http` server, and with its read timeout a response
+that streams past the timeout is delivered whole, while a request body still
+arriving after it is cut (checked with Go 1.25's server, HTTP/1.1 and h2,
+a 1 s timeout against a 3 s stream each way). Only an upload slower than the
+timeout is affected there.
 
 `readTimeout=0` removes the bound, or set a value above your longest stream
 (`=3600s`). The trade-off: the setting is per entry point, so it also lifts

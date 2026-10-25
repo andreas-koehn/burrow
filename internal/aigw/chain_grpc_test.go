@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ankoehn/burrow/internal/aigw"
+	"github.com/ankoehn/burrow/internal/aimeter"
 	"github.com/ankoehn/burrow/internal/cache/exact"
 	"github.com/ankoehn/burrow/internal/credinject"
 	"github.com/ankoehn/burrow/internal/guardrails"
@@ -186,7 +190,7 @@ func TestChain_GRPCBypassesTheBufferedPath(t *testing.T) {
 	u := rows[0]
 	if u.ServiceID != "svc-grpc" || u.APIKeyID != "key-grpc" || u.TokensIn != 0 || u.TokensOut != 0 ||
 		u.BytesIn != int64(len(grpcMsg(text))) || u.BytesOut != int64(len(grpcMsg("echo:"+text))) ||
-		u.UpstreamStatus != http.StatusOK || u.CacheHit {
+		u.UpstreamStatus != http.StatusOK || u.CacheHit || !u.Streamed {
 		t.Errorf("usage row %+v, want svc-grpc/key-grpc, no tokens, bytes %d in %d out, status 200",
 			u, len(grpcMsg(text)), len(grpcMsg("echo:"+text)))
 	}
@@ -332,4 +336,106 @@ func TestChain_GRPCRefusedOnlyWhereControlsAreOn(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A bypassed call that is cut off still writes its one usage row, with the
+// bytes seen so far (final re-review). ReverseProxy panics
+// http.ErrAbortHandler when the upstream dies mid-body or the client goes
+// away mid-stream; the row is written before the panic goes on.
+func TestChain_GRPCBypassAbortedStreamsAreMetered(t *testing.T) {
+	newChain := func() (*aigw.Chain, *memSink) {
+		meter := newMemSink()
+		return aigw.NewChain(nil, nil, nil, nil, guardrails.NewEngine(), inspector.NewManager(), nil, meter, testLog()), meter
+	}
+	svc := aigw.Service{ID: "svc-grpc", APIKeyID: "key-grpc", AIConfig: aigw.ServiceAIConfig{
+		Inspector: &aigw.InspectorConfig{Enabled: true, MaxRequests: 10},
+	}}
+	first := grpcMsg("first")
+	waitRow := func(t *testing.T, meter *memSink) aimeter.Sample {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for len(meter.all()) == 0 && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		time.Sleep(50 * time.Millisecond) // a second row would show up now
+		rows := meter.all()
+		if len(rows) != 1 {
+			t.Fatalf("%d usage rows for one aborted call, want 1", len(rows))
+		}
+		return rows[0]
+	}
+
+	t.Run("the upstream dies mid-body", func(t *testing.T) {
+		chain, meter := newChain()
+		// What ReverseProxy does when the upstream's body breaks off: the
+		// part it copied is out, then it aborts the handler.
+		proxyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.Header().Set("Content-Type", "application/grpc")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(first)
+			panic(http.ErrAbortHandler)
+		})
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			chain.ServeHTTP(w, r, svc, proxyHandler)
+		}))
+		defer ts.Close()
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/pkg.Chat/Talk", strings.NewReader(string(grpcMsg("hi"))))
+		req.Header.Set("Content-Type", "application/grpc")
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+		}
+		u := waitRow(t, meter)
+		if u.BytesIn != int64(len(grpcMsg("hi"))) || u.BytesOut != int64(len(first)) || !u.Streamed || u.ServiceID != "svc-grpc" || u.APIKeyID != "key-grpc" {
+			t.Fatalf("row %+v, want %d bytes in, %d out, streamed", u, len(grpcMsg("hi")), len(first))
+		}
+	})
+
+	t.Run("the client cancels mid-stream", func(t *testing.T) {
+		chain, meter := newChain()
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/grpc")
+			w.WriteHeader(http.StatusOK)
+			rc := http.NewResponseController(w)
+			for {
+				if _, err := w.Write(first); err != nil {
+					return
+				}
+				_ = rc.Flush()
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(20 * time.Millisecond):
+				}
+			}
+		}))
+		defer upstream.Close()
+		target, _ := url.Parse(upstream.URL)
+		proxyHandler := &httputil.ReverseProxy{
+			Rewrite:       func(pr *httputil.ProxyRequest) { pr.SetURL(target) },
+			FlushInterval: -1,
+			ErrorLog:      log.New(io.Discard, "", 0),
+		}
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			chain.ServeHTTP(w, r, svc, proxyHandler)
+		}))
+		defer ts.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/pkg.Chat/Watch", strings.NewReader(string(grpcMsg("hi"))))
+		req.Header.Set("Content-Type", "application/grpc")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m, err := readGRPCMsg(resp.Body); err != nil || m != "first" {
+			t.Fatalf("first message %q %v", m, err)
+		}
+		cancel()
+		resp.Body.Close()
+		u := waitRow(t, meter)
+		if u.BytesOut < int64(len(first)) || u.BytesIn != int64(len(grpcMsg("hi"))) || !u.Streamed {
+			t.Fatalf("row %+v, want at least %d bytes out (seen before the cancel), streamed", u, len(first))
+		}
+	})
 }
